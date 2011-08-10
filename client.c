@@ -213,6 +213,9 @@ client_send_identify(int flags)
 {
 	struct msg_identify_data	data;
 	char			       *term;
+#ifdef XTMUX
+	struct msg_xdisplay_data	xdata;
+#endif
 	int				fd;
 
 	data.flags = flags;
@@ -239,6 +242,11 @@ client_send_identify(int flags)
 		fatal("dup failed");
 	imsg_compose(&client_ibuf,
 	    MSG_STDERR, PROTOCOL_VERSION, -1, fd, NULL, 0);
+
+#ifdef XTMUX
+	if (xdisplay && strlcpy(xdata.display, xdisplay, sizeof xdata.display) < sizeof xdata.display)
+		client_write_server(MSG_XDISPLAY, &xdata, sizeof xdata);
+#endif
 }
 
 /* Forward entire environment to server. */
@@ -298,6 +306,11 @@ client_signal(int sig, unused short events, unused void *data)
 		switch (sig) {
 		case SIGHUP:
 			client_exitmsg = "lost tty";
+			client_exitval = 1;
+			client_write_server(MSG_EXITING, NULL, 0);
+			break;
+		case SIGINT:
+			client_exitmsg = "interrupt";
 			client_exitval = 1;
 			client_write_server(MSG_EXITING, NULL, 0);
 			break;

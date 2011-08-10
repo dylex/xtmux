@@ -156,6 +156,13 @@ server_start(void)
 	mode_key_init_trees();
 	key_bindings_init();
 	utf8_build();
+#ifdef XTMUX
+	if (xdisplay)
+	{
+		xfree(xdisplay);
+		xdisplay = NULL;
+	}
+#endif
 
 	start_time = time(NULL);
 	log_debug("socket path %s", socket_path);

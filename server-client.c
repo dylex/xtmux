@@ -695,6 +695,9 @@ server_client_msg_dispatch(struct client *c)
 	struct imsg		 imsg;
 	struct msg_command_data	 commanddata;
 	struct msg_identify_data identifydata;
+#ifdef XTMUX
+	struct msg_xdisplay_data xdisplaydata;
+#endif
 	struct msg_environ_data	 environdata;
 	ssize_t			 n, datalen;
 
@@ -768,6 +771,15 @@ server_client_msg_dispatch(struct client *c)
 			setblocking(c->stderr_fd, 0);
 
 			break;
+#ifdef XTMUX
+		case MSG_XDISPLAY:
+			if (datalen != sizeof xdisplaydata)
+				fatalx("bad MSG_XDISPLAY size");
+			memcpy(&xdisplaydata, imsg.data, sizeof xdisplaydata);
+			xdisplaydata.display[(sizeof xdisplaydata.display)-1] = '\0';
+			xtmux_init(c, xdisplaydata.display);
+			break;
+#endif
 		case MSG_RESIZE:
 			if (datalen != 0)
 				fatalx("bad MSG_RESIZE size");

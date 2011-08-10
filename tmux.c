@@ -50,6 +50,9 @@ int		 login_shell;
 char		*environ_path;
 pid_t		 environ_pid = -1;
 int		 environ_idx = -1;
+#ifdef XTMUX
+char		*xdisplay = NULL;
+#endif
 
 __dead void	 usage(void);
 void	 	 parseenvironment(void);
@@ -252,7 +255,11 @@ main(int argc, char **argv)
 	quiet = flags = 0;
 	label = path = NULL;
 	login_shell = (**argv == '-');
-	while ((opt = getopt(argc, argv, "28c:df:lL:qS:uUvV")) != -1) {
+	while ((opt = getopt(argc, argv, "28c:df:lL:qS:uUvV"
+#ifdef XTMUX
+					"x"
+#endif
+					)) != -1) {
 		switch (opt) {
 		case '2':
 			flags |= IDENTIFY_256COLOURS;
@@ -297,6 +304,13 @@ main(int argc, char **argv)
 		case 'v':
 			debug_level++;
 			break;
+#ifdef XTMUX
+		case 'x':
+			if (!optarg)
+				optarg = getenv("DISPLAY");
+			xdisplay = xstrdup(optarg);
+			break;
+#endif
 		default:
 			usage();
 		}

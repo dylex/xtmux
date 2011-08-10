@@ -1,7 +1,7 @@
 # $Id$
 
 # Miscellaneous autofoo bullshit.
-AC_INIT(tmux, 1.6)
+AC_INIT(tmux, 1.6x)
 
 AC_CONFIG_AUX_DIR(etc)
 AM_INIT_AUTOMAKE([foreign])
@@ -473,6 +473,25 @@ AM_CONDITIONAL(IS_OPENBSD, test "x$PLATFORM" = xopenbsd)
 AM_CONDITIONAL(IS_SUNOS, test "x$PLATFORM" = xsunos)
 AM_CONDITIONAL(IS_HPUX, test "x$PLATFORM" = xhpux)
 AM_CONDITIONAL(IS_UNKNOWN, test "x$PLATFORM" = xunknown)
+
+AC_PATH_XTRA
+
+AC_ARG_ENABLE(
+	xtmux,
+	AC_HELP_STRING(--disable-xtmux, do not build X11 terminal interface),
+	enable_xtmux="$enableval", enable_xtmux="$have_x"
+)
+if test "$enable_xtmux" = yes; then
+	if test "$have_x" = no ; then
+		AC_MSG_ERROR("X required for xtmux")
+	fi
+	AC_DEFINE(XTMUX)
+fi
+AM_CONDITIONAL(XTMUX, test "x$enable_xtmux" = xyes)
+
+if test "x$have_x" = xyes ; then
+	AC_SEARCH_LIBS(XOpenDisplay, X11)
+fi
 
 # autoconf should create a Makefile. A shock!
 AC_OUTPUT(Makefile)
