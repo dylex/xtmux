@@ -1,0 +1,22 @@
+tmux: X edition, under development
+
+This is a fork of tmux that has a built-in X-terminal (ala xterm, rxvt, etc.).
+See NOTES for more information on tmux itself.  Aside from the new features,
+xtmux is binary-compatible with tmux (i.e., a tmux client can talk to an xtmux
+server just fine), and building with --disbable-xtmux should result in an
+exact, original tmux.
+
+The motivation for this is efficiency: normally when you run tmux (or screen)
+in an xterm, all the terminal control commands from programs are interpreted by
+tmux, kept in a screen buffer, translated and sent to the xterm, interpreted by
+the xterm, buffered again and rendered.  With xtmux, we can eliminate more that
+half of that processing and memory usage.  Additionally, a single tmux server
+will be able to manage multiple terminal windows, further saving memory.
+
+Usage: 
+  configure --enable-xtmux
+  tmux -x
+
+xtmux is still under heavy development and has only limited functionality.
+
+Dylan Simon <dylan-tmux@dylex.net>

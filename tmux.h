@@ -380,7 +380,10 @@ enum msgtype {
 	MSG_SHELL,
 	MSG_STDERR,
 	MSG_STDOUT,
-	MSG_DETACHKILL
+	MSG_DETACHKILL,
+#ifdef XTMUX
+	MSG_XDISPLAY,
+#endif
 };
 
 /*
@@ -406,6 +409,12 @@ struct msg_identify_data {
 #define IDENTIFY_88COLOURS 0x4
 	int		flags;
 };
+
+#ifdef XTMUX
+struct msg_xdisplay_data {
+	char		display[MAXHOSTNAMELEN+16]; /* should be enough: host + port */
+};
+#endif
 
 struct msg_lock_data {
 	char		cmd[COMMAND_LENGTH];
@@ -1004,6 +1013,10 @@ struct tty_term {
 };
 LIST_HEAD(tty_terms, tty_term);
 
+#ifdef XTMUX
+struct xtmux;
+#endif
+
 struct tty {
 	char		*path;
 
@@ -1047,6 +1060,10 @@ struct tty {
 	void		*key_data;
 	struct event	 key_timer;
 	struct tty_key	*key_tree;
+
+#ifdef XTMUX
+	struct xtmux 	*xtmux;
+#endif
 };
 
 /* TTY command context and function pointer. */
@@ -1328,6 +1345,9 @@ extern int	 login_shell;
 extern char	*environ_path;
 extern pid_t	 environ_pid;
 extern int	 environ_idx;
+#ifdef XTMUX
+extern char	*xdisplay;
+#endif
 void		 logfile(const char *);
 const char	*getshell(void);
 int		 checkshell(const char *);
@@ -2065,5 +2085,30 @@ int printflike2	 xasprintf(char **, const char *, ...);
 int		 xvasprintf(char **, const char *, va_list);
 int printflike3	 xsnprintf(char *, size_t, const char *, ...);
 int		 xvsnprintf(char *, size_t, const char *, va_list);
+
+#ifdef XTMUX
+void	xtmux_init(struct client *, char *);
+int	xtmux_open(struct tty *, char **);
+void	xtmux_close(struct tty *);
+void	xtmux_free(struct tty *);
+void	xtmux_set_title(struct tty *, const char *);
+void	xtmux_attributes(struct tty *, const struct grid_cell *);
+void	xtmux_reset(struct tty *);
+void	xtmux_cursor(struct tty *, u_int, u_int);
+void 	xtmux_putc(struct tty *, u_char);
+void	xtmux_pututf8(struct tty *, const struct grid_utf8 *, size_t size);
+void	xtmux_cmd_insertcharacter(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_deletecharacter(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_insertline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_deleteline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearendofline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearstartofline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_reverseindex(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_linefeed(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearendofscreen(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearstartofscreen(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearscreen(struct tty *, const struct tty_ctx *);
+#endif
 
 #endif /* TMUX_H */
