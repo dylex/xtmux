@@ -450,6 +450,11 @@ tty_set_title(struct tty *tty, const char *title)
 void
 tty_force_cursor_colour(struct tty *tty, const char *ccolour)
 {
+#ifdef XTMUX
+	if (tty->xtmux)
+		/*xtmux_force_cursor_colour(tty, ccolour)*/;
+	else
+#endif
 	if (*ccolour == '\0')
 		tty_putcode(tty, TTYC_CR);
 	else
@@ -463,16 +468,16 @@ tty_update_mode(struct tty *tty, int mode, struct screen *s)
 {
 	int	changed;
 
-#ifdef XTMUX
-	if (tty->xtmux)
-		return;
-#endif
-
 	if (strcmp(s->ccolour, tty->ccolour))
 		tty_force_cursor_colour(tty, s->ccolour);
 
 	if (tty->flags & TTY_NOCURSOR)
 		mode &= ~MODE_CURSOR;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_update_mode(tty, mode, s);
+#endif
 
 	changed = mode ^ tty->mode;
 	if (changed & MODE_CURSOR) {
@@ -574,6 +579,11 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 	const struct grid_utf8	*gu;
 	u_int			 i, sx;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_draw_line(tty, s, py, ox, oy);
+#endif
+
 	tty_update_mode(tty, tty->mode & ~MODE_CURSOR, s);
 
 	sx = screen_size_x(s);
@@ -620,10 +630,6 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 	tty_reset(tty);
 
 	tty_cursor(tty, ox + sx, oy + py);
-#ifdef XTMUX
-	if (tty->xtmux)
-		return;
-#endif
 	if (screen_size_x(s) >= tty->sx && tty_term_has(tty->term, TTYC_EL))
 		tty_putcode(tty, TTYC_EL);
 	else {
@@ -1090,6 +1096,11 @@ tty_cmd_cell(struct tty *tty, const struct tty_ctx *ctx)
 		tty_cursor_pane(tty, ctx, ctx->ocx, ctx->ocy);
 
 	tty_cell(tty, ctx->cell, ctx->utf8);
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		xtmux_cursor(tty, tty->cx, tty->cy);
+#endif
 }
 
 void
@@ -1682,4 +1693,14 @@ tty_try_88(struct tty *tty, u_char colour, const char *type)
 	xsnprintf(s, sizeof s, "\033[%s;5;%hhum", type, colour);
 	tty_puts(tty, s);
 	return (0);
+}
+
+void
+tty_bell(struct tty *tty)
+{
+#ifdef XTMUX
+	if (tty->xtmux)
+		return;
+#endif
+	tty_putcode(tty, TTYC_BEL);
 }

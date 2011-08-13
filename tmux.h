@@ -1474,6 +1474,7 @@ void	tty_cmd_utf8character(struct tty *, const struct tty_ctx *);
 void	tty_cmd_reverseindex(struct tty *, const struct tty_ctx *);
 void	tty_cmd_setselection(struct tty *, const struct tty_ctx *);
 void	tty_cmd_rawstring(struct tty *, const struct tty_ctx *);
+void	tty_bell(struct tty *);
 
 /* tty-term.c */
 extern struct tty_terms tty_terms;
@@ -2097,6 +2098,8 @@ void	xtmux_reset(struct tty *);
 void	xtmux_cursor(struct tty *, u_int, u_int);
 void 	xtmux_putc(struct tty *, u_char);
 void	xtmux_pututf8(struct tty *, const struct grid_utf8 *, size_t size);
+void	xtmux_update_mode(struct tty *, int, struct screen *);
+void	xtmux_draw_line(struct tty *, struct screen *, u_int, u_int, u_int);
 void	xtmux_cmd_insertcharacter(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_deletecharacter(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_insertline(struct tty *, const struct tty_ctx *);
