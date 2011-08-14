@@ -605,13 +605,18 @@ const struct options_table_entry window_options_table[] = {
 const struct options_table_entry client_options_table[] = {
 #ifdef XTMUX
 	{ .name = "xtmux-bg",
-	  .type = OPTIONS_TABLE_COLOUR,
-	  .default_num = 0
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "color0"
+	},
+
+	{ .name = "xtmux-colors",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
 	},
 
 	{ .name = "xtmux-fg",
-	  .type = OPTIONS_TABLE_COLOUR,
-	  .default_num = 7
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "color7"
 	},
 
 	{ .name = "xtmux-font",

@@ -197,8 +197,13 @@ cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 	recalculate_sizes();
 	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
 		c = ARRAY_ITEM(&clients, i);
-		if (c != NULL && c->session != NULL)
+		if (c != NULL && c->session != NULL) {
 			server_redraw_client(c);
+#ifdef XTMUX
+			if ((oo == &c->options || oo == &global_c_options) && c->tty.xtmux)
+				xtmux_setup(&c->tty);
+#endif
+		}
 	}
 
 	return (0);
