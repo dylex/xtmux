@@ -624,6 +624,11 @@ const struct options_table_entry client_options_table[] = {
 	  .default_str = "fixed"
 	},
 
+	{ .name = "xtmux-prefix",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
+	},
+
 #endif
 
 	{ .name = NULL }

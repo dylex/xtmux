@@ -359,13 +359,15 @@ server_client_handle_key(int key, struct mouse_event *mouse, void *data)
 	}
 
 	/* Is this a prefix key? */
+	isprefix = key == KEYC_PREFIX;
+	if (!isprefix) {
 	keylist = options_get_data(&c->session->options, "prefix");
-	isprefix = 0;
 	for (i = 0; i < ARRAY_LENGTH(keylist); i++) {
 		if (key == ARRAY_ITEM(keylist, i)) {
 			isprefix = 1;
 			break;
 		}
+	}
 	}
 
 	/* No previous prefix key. */
