@@ -83,6 +83,8 @@ struct xtmux {
 #define INSIDE(x, y, X, Y, W, H) \
 			(INSIDE1(x, X, W) && INSIDE1(y, Y, H))
 
+#define EVENT_MASK	(KeyPressMask | ExposureMask | StructureNotifyMask)
+
 void
 xtmux_init(struct client *c, char *display)
 {
@@ -209,7 +211,7 @@ xtmux_open(struct tty *tty, char **cause)
 	gc_values.function = GXxor; /* this'll be fine for TrueColor, etc, but we might want to avoid PseudoColor for this */
 	x->cursor_gc = XCreateGC(x->display, x->window, GCFunction | GCForeground | GCBackground, &gc_values);
 
-	XSelectInput(x->display, x->window, KeyPressMask | ExposureMask | StructureNotifyMask);
+	XSelectInput(x->display, x->window, EVENT_MASK);
 
 	XMapWindow(x->display, x->window);
 
@@ -435,6 +437,19 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 		xt_draw_cursor(x, tty->cx, tty->cy);
 	else if (!(s->mode & MODE_CURSOR))
 		xt_draw_cursor(x, -1, -1);
+
+	if ((tty->mode ^ mode) & (MODE_MOUSE_STANDARD | MODE_MOUSE_BUTTON | MODE_MOUSE_ANY))
+	{
+		long em = EVENT_MASK;
+
+		if (mode & (MODE_MOUSE_STANDARD | MODE_MOUSE_BUTTON | MODE_MOUSE_ANY))
+			em |= ButtonPressMask | ButtonReleaseMask;
+		if (mode & MODE_MOUSE_ANY)
+			em |= PointerMotionMask;
+		else if (mode & MODE_MOUSE_BUTTON)
+			em |= ButtonMotionMask;
+		XSelectInput(x->display, x->window, em);
+	}
 
 	tty->mode = mode;
 }
@@ -747,6 +762,19 @@ xtmux_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 	XUPDATE();
 }
 
+void
+xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
+{
+	struct xtmux 		*x = tty->xtmux;
+
+	XSetSelectionOwner(x->display, XA_PRIMARY, x->window, CurrentTime);
+	if (XGetSelectionOwner(x->display, XA_PRIMARY) != x->window)
+		return;
+
+	XChangeProperty(x->display, DefaultRootWindow(x->display),
+			XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace, ctx->ptr, ctx->num);
+}
+
 static void
 xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int right, u_int ox, u_int oy)
 {
@@ -850,13 +878,142 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 static void
 xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 {
-	int r, i;
+	int r, i, key;
 	static char buf[32];
-	KeySym key;
+	KeySym xks;
 
-	r = XLookupString(xev, buf, sizeof buf, &key, NULL);
-	for (i = 0; i < r; i ++)
-		tty->key_callback(buf[i], NULL, tty->key_data);
+	r = XLookupString(xev, buf, sizeof buf, &xks, NULL);
+	switch (xks)
+	{
+		case XK_BackSpace: 	key = KEYC_BSPACE;	break;
+		case XK_F1: 		key = KEYC_F1; 	   	break;
+		case XK_F2: 		key = KEYC_F2; 	   	break;
+		case XK_F3: 		key = KEYC_F3; 	   	break;
+		case XK_F4: 		key = KEYC_F4; 	 	break;
+		case XK_F5: 		key = KEYC_F5; 	 	break;
+		case XK_F6: 		key = KEYC_F6; 	 	break;
+		case XK_F7: 		key = KEYC_F7; 	 	break;
+		case XK_F8: 		key = KEYC_F8; 	 	break;
+		case XK_F9: 		key = KEYC_F9; 	 	break;
+		case XK_F10: 		key = KEYC_F10;  	break;
+		case XK_F11: 		key = KEYC_F11;  	break;
+		case XK_F12: 		key = KEYC_F12;  	break;
+		case XK_F13: 		key = KEYC_F13;  	break;
+		case XK_F14: 		key = KEYC_F14;  	break;
+		case XK_F15: 		key = KEYC_F15;  	break;
+		case XK_F16: 		key = KEYC_F16;  	break;
+		case XK_F17: 		key = KEYC_F17;  	break;
+		case XK_F18: 		key = KEYC_F18;  	break;
+		case XK_F19: 		key = KEYC_F19;  	break;
+		case XK_F20: 		key = KEYC_F20;  	break;
+		case XK_KP_Insert:
+		case XK_Insert:		key = KEYC_IC;		break;
+		case XK_KP_Delete:
+		case XK_Delete:		key = KEYC_DC;		break;
+		case XK_KP_Begin:
+		case XK_Begin:
+		case XK_KP_Home:
+		case XK_Home:		key = KEYC_HOME;	break;
+		case XK_KP_End:
+		case XK_End:		key = KEYC_END;		break;
+		case XK_KP_Next:
+		case XK_Next:		key = KEYC_NPAGE;	break;
+		case XK_KP_Prior:
+		case XK_Prior:		key = KEYC_PPAGE;	break;
+		case XK_ISO_Left_Tab:	key = KEYC_BTAB;	break;
+		case XK_KP_Up:
+		case XK_Up:		key = KEYC_UP;		break;
+		case XK_KP_Down:
+		case XK_Down:		key = KEYC_DOWN;	break;
+		case XK_KP_Left:
+		case XK_Left:		key = KEYC_LEFT;	break;
+		case XK_KP_Right:
+		case XK_Right:		key = KEYC_RIGHT;	break;
+		case XK_KP_Divide:	key = KEYC_KP_SLASH;	break;
+		case XK_KP_Multiply:	key = KEYC_KP_STAR;	break;
+		case XK_KP_Subtract:	key = KEYC_KP_MINUS;	break;
+		case XK_KP_7:		key = KEYC_KP_SEVEN;	break;
+		case XK_KP_8:		key = KEYC_KP_EIGHT;	break;
+		case XK_KP_9:		key = KEYC_KP_NINE;	break;
+		case XK_KP_Add:		key = KEYC_KP_PLUS;	break;
+		case XK_KP_4:		key = KEYC_KP_FOUR;	break;
+		case XK_KP_5:		key = KEYC_KP_FIVE;	break;
+		case XK_KP_6:		key = KEYC_KP_SIX;	break;
+		case XK_KP_1:		key = KEYC_KP_ONE;	break;
+		case XK_KP_2:		key = KEYC_KP_TWO;	break;
+		case XK_KP_3:		key = KEYC_KP_THREE;	break;
+		case XK_KP_Enter:	key = KEYC_KP_ENTER;	break;
+		case XK_KP_0:		key = KEYC_KP_ZERO;	break;
+		case XK_KP_Decimal:	key = KEYC_KP_PERIOD;	break;
+		default:		key = 0;
+	}
+
+	if (key && !r)
+	{
+		if (xev->state & ShiftMask)
+			key |= KEYC_SHIFT;
+		if (xev->state & ControlMask)
+			key |= KEYC_CTRL;
+		if (xev->state & Mod1Mask) /* TODO: ALT */
+			key |= KEYC_ESCAPE;
+		if (xev->state & Mod4Mask) /* TODO: META */
+			key |= KEYC_PREFIX;
+		tty->key_callback(key, NULL, tty->key_data);
+	}
+	else
+		for (i = 0; i < r; i ++)
+			tty->key_callback(buf[i], NULL, tty->key_data);
+}
+
+static void
+xtmux_button_press(struct tty *tty, XButtonEvent *xev)
+{
+	struct mouse_event m;
+
+	m.x = xev->x / tty->xtmux->font_width;
+	m.y = xev->y / tty->xtmux->font_height;
+
+	switch (xev->type) {
+		case ButtonPress:
+			switch (xev->button)
+			{
+				case Button1: m.b = MOUSE_1; break;
+				case Button2: m.b = MOUSE_2; break;
+				case Button3: m.b = MOUSE_3; break;
+				case Button4: m.b = MOUSE_1 | MOUSE_45; break;
+				case Button5: m.b = MOUSE_2 | MOUSE_45; break;
+				default: return;
+			}
+		case ButtonRelease:
+			m.b = MOUSE_UP;
+			break;
+		case MotionNotify:
+			if (xev->state & Button1Mask)
+				m.b = MOUSE_1;
+			else if (xev->state & Button2Mask)
+				m.b = MOUSE_2;
+			else if (xev->state & Button3Mask)
+				m.b = MOUSE_3;
+			else if (xev->state & Button4Mask)
+				m.b = MOUSE_1 | MOUSE_45;
+			else if (xev->state & Button5Mask)
+				m.b = MOUSE_2 | MOUSE_45;
+			else
+				m.b = MOUSE_UP;
+			m.b |= MOUSE_DRAG;
+			break;
+		default:
+			return;
+	}
+
+	if (xev->state & ShiftMask)
+		m.b |= 4;
+	if (xev->state & Mod4Mask) /* TODO: META */
+		m.b |= 8;
+	if (xev->state & ControlMask)
+		m.b |= 16;
+
+	tty->key_callback(KEYC_MOUSE, &m, tty->key_data);
 }
 
 static void 
@@ -901,6 +1058,12 @@ xtmux_main(struct tty *tty)
 		{
 			case KeyPress:
 				xtmux_key_press(tty, &xev.xkey);
+				break;
+
+			case ButtonPress:
+			case ButtonRelease:
+			case MotionNotify:
+				xtmux_button_press(tty, &xev.xbutton);
 				break;
 
 			case Expose:

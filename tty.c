@@ -1121,6 +1121,11 @@ tty_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 	char	*buf;
 	size_t	 off;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_setselection(tty, ctx);
+#endif
+
 	if (!tty_term_has(tty->term, TTYC_MS))
 		return;
 
