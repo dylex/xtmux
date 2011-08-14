@@ -366,7 +366,9 @@ server_client_handle_key(int key, struct mouse_event *mouse, void *data)
 	}
 
 	/* Is this a prefix key? */
-	if (key == options_get_number(&c->session->options, "prefix"))
+	if (key == KEYC_PREFIX)
+		isprefix = 1;
+	else if (key == options_get_number(&c->session->options, "prefix"))
 		isprefix = 1;
 	else if (key == options_get_number(&c->session->options, "prefix2"))
 		isprefix = 1;

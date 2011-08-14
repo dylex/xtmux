@@ -59,6 +59,9 @@ struct xtmux {
 
 	int		cx, cy; /* last drawn cursor location, or -1 if none/hidden */
 
+	KeySym		prefix_key;
+	char		prefix_mod;
+
 	struct client	*client; /* pointer back up to support redraws */
 };
 
@@ -214,7 +217,8 @@ xtmux_setup(struct tty *tty)
 	struct xtmux *x = tty->xtmux;
 	struct options *o = &x->client->options;
 	XFontStruct *fs;
-	const char *font;
+	const char *font, *prefix;
+	KeySym pkey = NoSymbol;
 
 	font = options_get_string(o, "xtmux-font");
 	fs = XLoadQueryFont(x->display, font);
@@ -243,6 +247,39 @@ xtmux_setup(struct tty *tty)
 	x->fg = xt_parse_color(x, options_get_string(o, "xtmux-fg"), WhitePixel(x->display, XSCREEN));
 	if (x->window)
 		XSetWindowBackground(x->display, x->window, x->bg);
+
+	prefix = options_get_string(o, "xtmux-prefix");
+	x->prefix_mod = -1;
+	if (strlen(prefix) == 4 && !strncasecmp(prefix, "mod", 3) && prefix[3] >= '1' && prefix[3] <= '5')
+		x->prefix_mod = Mod1MapIndex + prefix[3] - '1';
+	else if (!strcasecmp(prefix, "meta")) 
+		pkey = XK_Meta_L;
+	else if (!strcasecmp(prefix, "alt")) 
+		pkey = XK_Alt_L;
+	else if (!strcasecmp(prefix, "super")) 
+		pkey = XK_Super_L;
+	else if (!strcasecmp(prefix, "hyper")) 
+		pkey = XK_Hyper_L;
+	else if (!strcasecmp(prefix, "control") || !strcasecmp(prefix, "ctrl")) 
+		pkey = XK_Control_L;
+	else if (*prefix)
+		pkey = XStringToKeysym(prefix);
+	if (pkey != NoSymbol)
+	{
+		XModifierKeymap *xmodmap = XGetModifierMapping(x->display);
+		int i;
+
+		for (i = 0; i < 8*xmodmap->max_keypermod; i ++)
+			if (xmodmap->modifiermap[i] == pkey)
+			{
+				pkey = NoSymbol;
+				x->prefix_mod = i/xmodmap->max_keypermod;
+				break;
+			}
+
+		XFreeModifiermap(xmodmap);
+	}
+	x->prefix_key = pkey;
 }
 
 int
@@ -933,12 +970,15 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 static void
 xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 {
+	struct xtmux *x = tty->xtmux;
 	int r, i, key;
 	static char buf[32];
 	KeySym xks;
 
 	r = XLookupString(xev, buf, sizeof buf, &xks, NULL);
-	switch (xks)
+	if (x->prefix_key && xks == x->prefix_key)
+		key = KEYC_PREFIX;
+	else switch (xks)
 	{
 		case XK_BackSpace: 	key = KEYC_BSPACE;	break;
 		case XK_F1: 		key = KEYC_F1; 	   	break;
@@ -1003,21 +1043,24 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 		default:		key = 0;
 	}
 
-	if (key && !r)
+	if (key)
 	{
+		r = -1;
 		if (xev->state & ShiftMask)
 			key |= KEYC_SHIFT;
 		if (xev->state & ControlMask)
 			key |= KEYC_CTRL;
-		if (xev->state & Mod1Mask) /* TODO: ALT */
+		if (xev->state & (x->prefix_mod == Mod1MapIndex ? Mod4Mask : Mod1Mask)) /* ALT */
 			key |= KEYC_ESCAPE;
-		if (xev->state & Mod4Mask) /* TODO: META */
-			key |= KEYC_PREFIX;
-		tty->key_callback(key, NULL, tty->key_data);
 	}
-	else
-		for (i = 0; i < r; i ++)
-			tty->key_callback(buf[i], NULL, tty->key_data);
+
+	if (x->prefix_mod >= 0 && xev->state & (1<<x->prefix_mod))
+		key |= KEYC_PREFIX;
+
+	if (r < 0)
+		tty->key_callback(key, NULL, tty->key_data);
+	else for (i = 0; i < r; i ++)
+		tty->key_callback(key | buf[i], NULL, tty->key_data);
 }
 
 static void
@@ -1063,7 +1106,7 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 
 	if (xev->state & ShiftMask)
 		m.b |= 4;
-	if (xev->state & Mod4Mask) /* TODO: META */
+	if (xev->state & Mod4Mask) /* META */
 		m.b |= 8;
 	if (xev->state & ControlMask)
 		m.b |= 16;
