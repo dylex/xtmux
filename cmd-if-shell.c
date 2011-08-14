@@ -97,7 +97,7 @@ cmd_if_shell_free(void *data)
 {
 	struct cmd_if_shell_data	*cdata = data;
 	struct cmd_ctx			*ctx = &cdata->ctx;
-	struct msg_exit_data		 exitdata;
+	struct msg_exit_data		 unused exitdata;
 
 	if (ctx->cmdclient != NULL) {
 		ctx->cmdclient->references--;
