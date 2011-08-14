@@ -44,8 +44,6 @@ set_signals(void(*handler)(int, short, unused void *))
 #ifdef XTMUX
 	if (xdisplay)
 	{
-		if (sigaction(SIGTSTP, &sigact, NULL) != 0)
-			fatal("sigaction failed");
 		if (sigaction(SIGHUP, &sigact, NULL) != 0)
 			fatal("sigaction failed");
 

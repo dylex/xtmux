@@ -66,8 +66,8 @@ struct xtmux {
 #define XSCREEN		DefaultScreen(x->display)
 #define XCOLORMAP	DefaultColormap(x->display, XSCREEN)
 // #define XUPDATE()	xtmux_main(tty)
-// #define XUPDATE()	event_active(&tty->xtmux->event, EV_READ, 0)
-#define XUPDATE()	XFlush(tty->xtmux->display)
+#define XUPDATE()	event_active(&tty->xtmux->event, EV_WRITE, 0)
+// #define XUPDATE()	XFlush(tty->xtmux->display)
 
 #define C2W(C) 		(x->font_width * (C))
 #define C2H(C) 		(x->font_height * (C))
@@ -480,6 +480,10 @@ xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cel
 	else if (c > ' ')
 	{
 		XChar2b c2;
+		
+		/* TODO: fix ACS arrows, block, etc? */
+		if (gc->attr & GRID_ATTR_CHARSET && c > 0x5f && c < 0x7f)
+			c -= 0x5f;
 		c2.byte1 = c >> 8;
 		c2.byte2 = c;
 		if (cleared && gcv.background == x->colors[x->bg])
