@@ -138,7 +138,8 @@ int
 xtmux_open(struct tty *tty, char **cause)
 {
 	struct xtmux *x = tty->xtmux;
-	const char *font = "fixed";
+	struct options *o = &x->client->options;
+	const char *font;
 	XWMHints wm_hints;
 	XClassHint class_hints;
 	XSizeHints size_hints;
@@ -161,6 +162,7 @@ xtmux_open(struct tty *tty, char **cause)
 		return -1;
 	}
 
+	font = options_get_string(o, "xtmux-font");
 	x->font = XLoadQueryFont(x->display, font);
 	if (!x->font)
 	{
@@ -194,8 +196,8 @@ xtmux_open(struct tty *tty, char **cause)
 	Xutf8SetWMProperties(x->display, x->window, "xtmux", "xtmux", NULL, 0, &size_hints, &wm_hints, &class_hints);
 
 	xt_fill_colors(x);
-	x->fg = 7;
-	x->bg = 0;
+	x->fg = options_get_number(&x->client->options, "xtmux-fg");
+	x->bg = options_get_number(&x->client->options, "xtmux-bg");
 
 	gc_values.foreground = x->colors[x->fg];
 	gc_values.background = x->colors[x->bg];
