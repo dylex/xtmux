@@ -1251,6 +1251,10 @@ status_prompt_complete(const char *s)
 		if (strncmp(oe->name, s, strlen(s)) == 0)
 			ARRAY_ADD(&list, oe->name);
 	}
+	for (oe = client_options_table; oe->name != NULL; oe++) {
+		if (strncmp(oe->name, s, strlen(s)) == 0)
+			ARRAY_ADD(&list, oe->name);
+	}
 
 	/* If none, bail now. */
 	if (ARRAY_LENGTH(&list) == 0) {

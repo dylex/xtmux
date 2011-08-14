@@ -601,6 +601,12 @@ const struct options_table_entry window_options_table[] = {
 	{ .name = NULL }
 };
 
+/* Session options. */
+const struct options_table_entry client_options_table[] = {
+
+	{ .name = NULL }
+};
+
 /* Populate an options tree from a table. */
 void
 options_table_populate_tree(

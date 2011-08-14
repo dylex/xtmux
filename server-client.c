@@ -93,6 +93,8 @@ server_client_create(int fd)
 
 	evtimer_set(&c->repeat_timer, server_client_repeat_timer, c);
 
+	options_init(&c->options, &global_c_options);
+
 	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
 		if (ARRAY_ITEM(&clients, i) == NULL) {
 			ARRAY_SET(&clients, i, c);
@@ -173,6 +175,8 @@ server_client_lost(struct client *c)
 	close(c->ibuf.fd);
 	imsg_clear(&c->ibuf);
 	event_del(&c->event);
+
+	options_free(&c->options);
 
 	for (i = 0; i < ARRAY_LENGTH(&dead_clients); i++) {
 		if (ARRAY_ITEM(&dead_clients, i) == NULL) {
