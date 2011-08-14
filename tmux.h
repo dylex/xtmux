@@ -2123,6 +2123,7 @@ int		 xvsnprintf(char *, size_t, const char *, va_list);
 #ifdef XTMUX
 void	xtmux_init(struct client *, char *);
 int	xtmux_open(struct tty *, char **);
+void	xtmux_setup(struct tty *);
 void	xtmux_close(struct tty *);
 void	xtmux_free(struct tty *);
 void	xtmux_set_title(struct tty *, const char *);

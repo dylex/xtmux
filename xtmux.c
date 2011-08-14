@@ -23,7 +23,6 @@
 #include "tmux.h"
 
 static void xtmux_main(struct tty *);
-static void xt_fill_colors(struct xtmux *);
 
 #define XTMUX_NUM_COLORS 256
 
@@ -36,7 +35,7 @@ static const unsigned char xtmux_colors[16][3] = {
 	{0xCC,0x00,0xCC}, /* 5 magenta */
 	{0x00,0xCC,0xCC}, /* 6 cyan */
 	{0xCC,0xCC,0xCC}, /* 7 white */
-	{0x40,0x40,0x40}, /* 8 bright black */
+	{0x80,0x80,0x80}, /* 8 bright black */
 	{0xFF,0x00,0x00}, /* 9 bright red */
 	{0x00,0xFF,0x00}, /* 10 bright green */
 	{0xFF,0xFF,0x00}, /* 11 bright yellow */
@@ -55,8 +54,8 @@ struct xtmux {
 	u_short		font_width, font_height;
 
 	GC		gc, cursor_gc;
+	unsigned long	fg, bg;
 	unsigned long	colors[XTMUX_NUM_COLORS];
-	u_char		fg, bg;
 
 	int		cx, cy; /* last drawn cursor location, or -1 if none/hidden */
 
@@ -65,9 +64,9 @@ struct xtmux {
 
 #define XSCREEN		DefaultScreen(x->display)
 #define XCOLORMAP	DefaultColormap(x->display, XSCREEN)
+// #define XUPDATE()	XFlush(tty->xtmux->display)
 // #define XUPDATE()	xtmux_main(tty)
 #define XUPDATE()	event_active(&tty->xtmux->event, EV_WRITE, 0)
-// #define XUPDATE()	XFlush(tty->xtmux->display)
 
 #define C2W(C) 		(x->font_width * (C))
 #define C2H(C) 		(x->font_height * (C))
@@ -136,12 +135,120 @@ xdisplay_callback(unused int fd, unused short events, void *data)
 	xtmux_main((struct tty *)data);
 }
 
+static unsigned long
+xt_parse_color(struct xtmux *x, char *s, unsigned long def)
+{
+	int n;
+	XColor c, m;
+	size_t cl;
+	char *p = s;
+	const char *e;
+
+	/* partial colour_fromstring */
+	if (strncasecmp(p, "colour", cl = (sizeof "colour") - 1) == 0 ||
+			strncasecmp(p, "color", cl = (sizeof "color") - 1) == 0)
+		p += cl;
+	n = strtonum(p, 0, 255, &e);
+	if (!e)
+		return x->colors[n];
+
+	if (XLookupColor(x->display, XCOLORMAP, s, &m, &c) &&
+			XAllocColor(x->display, XCOLORMAP, &c))
+		return c.pixel;
+
+	return def;
+}
+
+static void
+xt_fill_color(struct xtmux *x, u_int i, u_char r, u_char g, u_char b)
+{
+	XColor c;
+	c.red   = r << 8 | r;
+	c.green = g << 8 | g;
+	c.blue  = b << 8 | b;
+	if (!XAllocColor(x->display, XCOLORMAP, &c))
+		c.pixel = (i & 1) ? WhitePixel(x->display, XSCREEN) : BlackPixel(x->display, XSCREEN);
+	x->colors[i] = c.pixel;
+}
+
+static void
+xt_fill_colors(struct xtmux *x, const char *colors)
+{
+	u_int c, i;
+	u_char r, g, b;
+	char *s, *cs, *cn;
+
+	/* hard-coded */
+	for (c = 0; c < 16; c ++)
+		xt_fill_color(x, c, xtmux_colors[c][0], xtmux_colors[c][1], xtmux_colors[c][2]);
+
+	/* 6x6x6 cube */
+	for (r = 0; r < 6; r ++)
+		for (g = 0; g < 6; g ++)
+			for (b = 0; b < 6; b ++)
+				xt_fill_color(x, c ++, 51*r, 51*g, 51*b);
+
+	/* gray ramp */
+	for (i = 1; i < 25; i ++)
+		xt_fill_color(x, c ++, (51*i+3)/5, (51*i+3)/5, (51*i+3)/5);
+
+	cn = s = xstrdup(colors);
+	while ((cs = strsep(&cn, ";, ")))
+	{
+		char *es;
+		int ci;
+		if (!(es = strchr(cs, '=')))
+			continue;
+		*es++ = 0;
+
+		if ((ci = colour_fromstring(cs)) < 0)
+			continue;
+		x->colors[ci & 0xff] = xt_parse_color(x, es, x->colors[ci]);
+	}
+	xfree(s);
+}
+
+void
+xtmux_setup(struct tty *tty)
+{
+	struct xtmux *x = tty->xtmux;
+	struct options *o = &x->client->options;
+	XFontStruct *fs;
+	const char *font;
+
+	font = options_get_string(o, "xtmux-font");
+	fs = XLoadQueryFont(x->display, font);
+	if (fs)
+	{
+		x->font = fs;
+		x->font_width = fs->max_bounds.width;
+		x->font_height = fs->ascent + fs->descent;
+
+		if (x->window)
+		{
+			Window root;
+			int xpos, ypos, border, depth;
+			u_int width, height;
+
+			XGetGeometry(x->display, x->window, &root, &xpos, &ypos, &width, &height, &border, &depth);
+			tty->sx = width  / x->font_width;
+			tty->sy = height / x->font_height;
+
+			recalculate_sizes();
+		}
+	}
+
+	xt_fill_colors(x, options_get_string(o, "xtmux-colors"));
+	x->bg = xt_parse_color(x, options_get_string(o, "xtmux-bg"), BlackPixel(x->display, XSCREEN));
+	x->fg = xt_parse_color(x, options_get_string(o, "xtmux-fg"), WhitePixel(x->display, XSCREEN));
+	if (x->window)
+		XSetWindowBackground(x->display, x->window, x->bg);
+}
+
 int
 xtmux_open(struct tty *tty, char **cause)
 {
 	struct xtmux *x = tty->xtmux;
-	struct options *o = &x->client->options;
-	const char *font;
 	XWMHints wm_hints;
 	XClassHint class_hints;
 	XSizeHints size_hints;
@@ -164,20 +271,16 @@ xtmux_open(struct tty *tty, char **cause)
 		return -1;
 	}
 
-	font = options_get_string(o, "xtmux-font");
-	x->font = XLoadQueryFont(x->display, font);
+	xtmux_setup(tty);
 	if (!x->font)
 	{
-		xasprintf(cause, "could not load font: %s", font);
+		xasprintf(cause, "could not load font");
 		return -1;
 	}
 
-	x->font_width = x->font->max_bounds.width;
-	x->font_height = x->font->ascent + x->font->descent;
-
 	x->window = XCreateSimpleWindow(x->display, DefaultRootWindow(x->display),
 			0, 0, C2W(tty->sx), C2H(tty->sy),
-			0, 0, 0);
+			0, 0, x->bg);
 	if (x->window == None)
 	{
 		xasprintf(cause, "could not create window");
@@ -197,12 +300,8 @@ xtmux_open(struct tty *tty, char **cause)
 	class_hints.res_class = (char *)"Xtmux";
 	Xutf8SetWMProperties(x->display, x->window, "xtmux", "xtmux", NULL, 0, &size_hints, &wm_hints, &class_hints);
 
-	xt_fill_colors(x);
-	x->fg = options_get_number(&x->client->options, "xtmux-fg");
-	x->bg = options_get_number(&x->client->options, "xtmux-bg");
-
-	gc_values.foreground = x->colors[x->fg];
-	gc_values.background = x->colors[x->bg];
+	gc_values.foreground = x->fg;
+	gc_values.background = x->bg;
 	gc_values.font = x->font->fid;
 	x->gc = XCreateGC(x->display, x->window, GCForeground | GCBackground | GCFont, &gc_values);
 
@@ -272,39 +371,6 @@ xtmux_free(struct tty *tty)
 	xfree(tty->xtmux);
 }
 
-static void
-xt_fill_color(struct xtmux *x, u_int i, u_char r, u_char g, u_char b)
-{
-	XColor c;
-	c.red   = r << 8 | r;
-	c.green = g << 8 | g;
-	c.blue  = b << 8 | b;
-	if (!XAllocColor(x->display, XCOLORMAP, &c))
-		c.pixel = (i & 1) ? WhitePixel(x->display, XSCREEN) : BlackPixel(x->display, XSCREEN);
-	x->colors[i] = c.pixel;
-}
-
-static void
-xt_fill_colors(struct xtmux *x)
-{
-	u_int c, i;
-	u_char r, g, b;
-
-	/* hard-coded */
-	for (c = 0; c < 16; c ++)
-		xt_fill_color(x, c, xtmux_colors[c][0], xtmux_colors[c][1], xtmux_colors[c][2]);
-
-	/* 6x6x6 cube */
-	for (r = 0; r < 6; r ++)
-		for (g = 0; g < 6; g ++)
-			for (b = 0; b < 6; b ++)
-				xt_fill_color(x, c ++, 51*r, 51*g, 51*b);
-
-	/* gray ramp */
-	for (i = 1; i < 25; i ++)
-		xt_fill_color(x, c ++, (51*i+3)/5, (51*i+3)/5, (51*i+3)/5);
-}
-
 void
 xtmux_set_title(struct tty *tty, const char *title)
 {
@@ -316,50 +382,9 @@ xtmux_set_title(struct tty *tty, const char *title)
 	XChangeProperty(x->display, x->window, XA_WM_NAME, XA_STRING, 8, PropModeReplace, title, strlen(title));
 }
 
-static void
-xt_attributes_set(struct xtmux *x, const struct grid_cell *gc)
-{
-	u_char			 fg = gc->fg, bg = gc->bg, flags = gc->flags;
-	XGCValues		 gcv;
-	unsigned long		 gcm = 0;
-
-	if (!(flags & GRID_FLAG_FG256))
-	{
-		if (fg == 8)
-			fg = x->fg;
-		if (fg >= 90 && fg <= 97)
-			fg -= 90 - 8;
-	}
-	if (!(flags & GRID_FLAG_BG256))
-	{
-		if (bg == 8)
-			bg = x->bg;
-		if (bg >= 100 && bg <= 107)
-			bg -= 100 - 8;
-	}
-
-	if (gc->attr & GRID_ATTR_REVERSE)
-	{
-		u_char xg = fg;
-		fg = bg;
-		bg = xg;
-	}
-
-	if (gc->attr & GRID_ATTR_BRIGHT && fg < 8)
-		fg += 8;
-
-	gcv.foreground = x->colors[fg];
-	gcm |= GCForeground;
-	gcv.background = x->colors[bg];
-	gcm |= GCBackground;
-
-	XChangeGC(x->display, x->gc, gcm, &gcv);
-}
-
 void
 xtmux_attributes(struct tty *tty, const struct grid_cell *gc)
 {
-	xt_attributes_set(tty->xtmux, gc);
 	tty->cell = *gc;
 }
 
@@ -472,39 +497,69 @@ grid_char(const struct grid_cell *gc, const struct grid_utf8 *gu)
 static void
 xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cell *gc, int cleared)
 {
-	XGCValues gcv;
+	u_int			px = C2X(cx), py = C2Y(cy);
+	u_char			fgc = gc->fg, bgc = gc->bg;
+	unsigned long		fg, bg;
 
-	u_int px = C2X(cx);
-	u_int py = C2Y(cy);
+	if (fgc >= 90 && fgc <= 97 && !(gc->flags & GRID_FLAG_FG256))
+		fgc -= 90 - 8;
+	if (bgc >= 100 && bgc <= 107 && !(gc->flags & GRID_FLAG_BG256))
+		bgc -= 100 - 8;
 
-	XGetGCValues(x->display, x->gc, GCForeground | GCBackground, &gcv);
+	if (fgc == 8 && !(gc->flags & GRID_FLAG_FG256))
+		fg = x->fg;
+	else
+		fg = x->colors[fgc];
+
+	if (bgc == 8 && !(gc->flags & GRID_FLAG_BG256))
+		bg = x->bg;
+	else
+		bg = x->colors[bgc];
+
+	if (gc->attr & GRID_ATTR_REVERSE)
+	{
+		unsigned long xg;
+		u_char xgc;
+		xg = fg; xgc = fgc;
+		fg = bg; fgc = bgc;
+		bg = xg; bgc = xgc;
+	}
+
+	/* TODO: configurable BRIGHT semantics */
+	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && fg == bg)
+		fg = x->colors[fgc += 8];
+
 	if (c == ' ')
 	{
-		if (gcv.background == x->colors[x->bg])
+		if (bg == x->bg)
 		{
 			if (!cleared)
 				XClearArea(x->display, x->window, px, py, x->font_width, x->font_height, False);
 		}
 		else
 		{
-			XSetForeground(x->display, x->gc, gcv.background);
+			XSetForeground(x->display, x->gc, bg);
 			XFillRectangle(x->display, x->window, x->gc, px, py, x->font_width, x->font_height);
-			XSetForeground(x->display, x->gc, gcv.foreground);
 		}
 	}
 	else if (c > ' ')
 	{
 		XChar2b c2;
 		
+		XSetForeground(x->display, x->gc, fg);
+
 		/* TODO: fix ACS arrows, block, etc? */
 		if (gc->attr & GRID_ATTR_CHARSET && c > 0x5f && c < 0x7f)
 			c -= 0x5f;
 		c2.byte1 = c >> 8;
 		c2.byte2 = c;
-		if (cleared && gcv.background == x->colors[x->bg])
+		if (cleared && bg == x->bg)
 			XDrawString16(x->display, x->window, x->gc, px, py + x->font->ascent, &c2, 1);
 		else
+		{
+			XSetBackground(x->display, x->gc, bg);
 			XDrawImageString16(x->display, x->window, x->gc, px, py + x->font->ascent, &c2, 1);
+		}
 	}
 
 	if (gc->attr & GRID_ATTR_UNDERSCORE)
@@ -512,6 +567,7 @@ xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cel
 		u_int y = py + x->font->ascent;
 		if (x->font->descent > 1)
 			y ++;
+		XSetForeground(x->display, x->gc, fg);
 		XDrawLine(x->display, x->window, x->gc, 
 				px, y,
 				px + x->font_width - 1, y);
@@ -523,7 +579,6 @@ xt_draw_cell(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, co
 {
 	if (gc->flags & GRID_FLAG_PADDING)
 		return;
-	xt_attributes_set(x, gc);
 	xt_draw_char(x, cx, cy, grid_char(gc, gu), gc, 1);
 }
 
