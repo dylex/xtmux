@@ -63,8 +63,8 @@ struct options_entry *cmd_set_option_choice(struct cmd *, struct cmd_ctx *,
 
 const struct cmd_entry cmd_set_option_entry = {
 	"set-option", "set",
-	"agst:uw", 1, 2,
-	"[-agsuw] [-t target-session|target-window] option [value]",
+	"acgst:uw", 1, 2,
+	"[-acgsuw] [-t target-session|target-window|target-client] option [value]",
 	0,
 	NULL,
 	NULL,
@@ -90,7 +90,8 @@ cmd_set_option_find(
 	static const struct options_table_entry	*tables[] = {
 		server_options_table,
 		window_options_table,
-		session_options_table
+		session_options_table,
+		client_options_table
 	};
 	const struct options_table_entry	*oe_loop;
 	u_int					 i;
@@ -168,6 +169,15 @@ cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 			if (s == NULL)
 				return (-1);
 			oo = &s->options;
+		}
+	} else if (table == client_options_table) {
+		if (args_has(self->args, 'g'))
+			oo = &global_c_options;
+		else {
+			c = cmd_find_client(ctx, args_get(args, 't'));
+			if (c == NULL)
+				return (-1);
+			oo = &c->options;
 		}
 	} else {
 		ctx->error(ctx, "unknown table");

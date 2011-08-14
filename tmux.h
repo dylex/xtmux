@@ -1191,6 +1191,8 @@ struct client {
 
 	struct mouse_event last_mouse;
 
+	struct options	 options;
+
 	int		 references;
 };
 ARRAY_DECL(clients, struct client *);
@@ -1329,6 +1331,7 @@ ARRAY_DECL(causelist, char *);
 extern struct options global_options;
 extern struct options global_s_options;
 extern struct options global_w_options;
+extern struct options global_c_options;
 extern struct environ global_environ;
 extern struct event_base *ev_base;
 extern char	*cfg_file;
@@ -1407,6 +1410,7 @@ long long options_get_number(struct options *, const char *);
 extern const struct options_table_entry server_options_table[];
 extern const struct options_table_entry session_options_table[];
 extern const struct options_table_entry window_options_table[];
+extern const struct options_table_entry client_options_table[];
 void	options_table_populate_tree(
 	    const struct options_table_entry *, struct options *);
 const char *options_table_print_entry(

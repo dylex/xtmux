@@ -1696,11 +1696,12 @@ or for normal mode without.
 The appearance and behaviour of
 .Nm
 may be modified by changing the value of various options.
-There are three types of option:
+There are four types of option:
 .Em server options ,
-.Em session options
+.Em session options ,
+.Em window options ,
 and
-.Em window options .
+.Em client options .
 .Pp
 The
 .Nm
@@ -1727,8 +1728,8 @@ The available server and session options are listed under the
 .Ic set-option
 command.
 .Pp
-Similarly, a set of window options is attached to each window, and there is
-a set of global window options from which any unset options are inherited.
+Similarly, a set of options is attached to each window and client, and there is
+a set of global window and client options from which any unset options are inherited.
 Window options are altered with the
 .Ic set-window-option
 command and can be listed with the
@@ -1737,12 +1738,19 @@ command.
 All window options are documented with the
 .Ic set-window-option
 command.
+Client options can be altered and listed using
+.Ic set-option
+.Fl c
+and
+.Ic show-options
+.Fl c
+respectively.
 .Pp
 Commands which set options are as follows:
 .Bl -tag -width Ds
 .It Xo Ic set-option
-.Op Fl agsuw
-.Op Fl t Ar target-session | Ar target-window
+.Op Fl acgsuw
+.Op Fl t Ar target-session | Ar target-window | Ar target-client
 .Ar option Ar value
 .Xc
 .D1 (alias: Ic set )
@@ -1751,13 +1759,15 @@ Set a window option with
 (equivalent to the
 .Ic set-window-option
 command),
+a client option with
+.Fl c ,
 a server option with
 .Fl s ,
 otherwise a session option.
 .Pp
 If
 .Fl g
-is specified, the global session or window option is set.
+is specified, the global session, window, or client option is set.
 With
 .Fl a ,
 and if the option expects a string,
@@ -2324,6 +2334,10 @@ separators, for the purposes of the next and previous word commands in
 copy mode.
 The default is
 .Ql \ -_@ .
+.El
+.Pp
+Available client options are:
+.Bl -tag -width Ds
 .El
 .It Xo Ic set-window-option
 .Op Fl agu
