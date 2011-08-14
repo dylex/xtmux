@@ -675,6 +675,11 @@ const struct options_table_entry client_options_table[] = {
 	  .default_str = "color0"
 	},
 
+	{ .name = "xtmux-bold-font",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
+	},
+
 	{ .name = "xtmux-colors",
 	  .type = OPTIONS_TABLE_STRING,
 	  .default_str = ""
@@ -688,6 +693,11 @@ const struct options_table_entry client_options_table[] = {
 	{ .name = "xtmux-font",
 	  .type = OPTIONS_TABLE_STRING,
 	  .default_str = "fixed"
+	},
+
+	{ .name = "xtmux-italic-font",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
 	},
 
 	{ .name = "xtmux-prefix",

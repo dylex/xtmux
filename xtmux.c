@@ -51,6 +51,7 @@ struct xtmux {
 	Window		window;
 
 	XFontStruct	*font;
+	Font		font_bold, font_italic;
 	u_short		font_width, font_height;
 
 	GC		gc, cursor_gc;
@@ -224,6 +225,8 @@ xtmux_setup(struct tty *tty)
 	fs = XLoadQueryFont(x->display, font);
 	if (fs)
 	{
+		if (x->font)
+			XFreeFont(x->display, x->font);
 		x->font = fs;
 		x->font_width = fs->max_bounds.width;
 		x->font_height = fs->ascent + fs->descent;
@@ -241,6 +244,22 @@ xtmux_setup(struct tty *tty)
 			recalculate_sizes();
 		}
 	}
+
+	if (x->font_bold)
+	{
+		XUnloadFont(x->display, x->font_bold);
+		x->font_bold = None;
+	}
+	if (*(font = options_get_string(o, "xtmux-bold-font")))
+		x->font_bold = XLoadFont(x->display, font);
+
+	if (x->font_italic)
+	{
+		XUnloadFont(x->display, x->font_italic);
+		x->font_italic = None;
+	}
+	if (*(font = options_get_string(o, "xtmux-italic-font")))
+		x->font_italic = XLoadFont(x->display, font);
 
 	xt_fill_colors(x, options_get_string(o, "xtmux-colors"));
 	x->bg = xt_parse_color(x, options_get_string(o, "xtmux-bg"), BlackPixel(x->display, XSCREEN));
@@ -384,6 +403,18 @@ xtmux_close(struct tty *tty)
 
 		XDestroyWindow(x->display, x->window);
 		x->window = None;
+	}
+
+	if (x->font_bold != None)
+	{
+		XUnloadFont(x->display, x->font_bold);
+		x->font_bold = None;
+	}
+
+	if (x->font_italic != None)
+	{
+		XUnloadFont(x->display, x->font_italic);
+		x->font_italic = None;
 	}
 
 	if (x->font != NULL)
@@ -566,7 +597,9 @@ xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cel
 	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && fg == bg)
 		fg = x->colors[fgc += 8];
 
-	if (c == ' ')
+	/* TODO: DIM, maybe only for TrueColor */
+
+	if (c == ' ' || gc->attr & GRID_ATTR_HIDDEN)
 	{
 		if (bg == x->bg)
 		{
@@ -585,11 +618,19 @@ xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cel
 		
 		XSetForeground(x->display, x->gc, fg);
 
+		if (gc->attr & GRID_ATTR_ITALICS && x->font_italic)
+			XSetFont(x->display, x->gc, x->font_italic);
+		else if (gc->attr & GRID_ATTR_BRIGHT && x->font_bold)
+			XSetFont(x->display, x->gc, x->font_bold);
+		else
+			XSetFont(x->display, x->gc, x->font->fid);
+
 		/* TODO: fix ACS arrows, block, etc? */
 		if (gc->attr & GRID_ATTR_CHARSET && c > 0x5f && c < 0x7f)
 			c -= 0x5f;
 		c2.byte1 = c >> 8;
 		c2.byte2 = c;
+
 		if (cleared && bg == x->bg)
 			XDrawString16(x->display, x->window, x->gc, px, py + x->font->ascent, &c2, 1);
 		else
@@ -608,6 +649,13 @@ xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cel
 		XDrawLine(x->display, x->window, x->gc, 
 				px, y,
 				px + x->font_width - 1, y);
+	}
+	if (gc->attr & GRID_ATTR_BLINK)
+	{
+		/* a little odd but blink is weird anyway */
+		XDrawRectangle(x->display, x->window, x->cursor_gc,
+				px-1, py-1,
+				x->font_width, x->font_height);
 	}
 }
 
