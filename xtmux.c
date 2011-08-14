@@ -913,6 +913,16 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 
 	XChangeProperty(x->display, DefaultRootWindow(x->display),
 			XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace, ctx->ptr, ctx->num);
+
+	XUPDATE();
+}
+
+void
+xtmux_bell(struct tty *tty)
+{
+	XBell(tty->xtmux->display, 100);
+
+	XUPDATE();
 }
 
 static void

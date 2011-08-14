@@ -2118,6 +2118,7 @@ void	xtmux_cmd_clearendofscreen(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_clearstartofscreen(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_clearscreen(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_setselection(struct tty *, const struct tty_ctx *);
+void	xtmux_bell(struct tty *);
 #endif
 
 #endif /* TMUX_H */
