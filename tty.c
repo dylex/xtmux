@@ -1099,11 +1099,6 @@ tty_cmd_cell(struct tty *tty, const struct tty_ctx *ctx)
 		tty_cursor_pane(tty, ctx, ctx->ocx, ctx->ocy);
 
 	tty_cell(tty, ctx->cell, ctx->utf8);
-
-#ifdef XTMUX
-	if (tty->xtmux)
-		xtmux_cursor(tty, tty->cx, tty->cy);
-#endif
 }
 
 void
@@ -1271,17 +1266,17 @@ tty_cursor(struct tty *tty, u_int cx, u_int cy)
 	if (cx > tty->sx - 1)
 		cx = tty->sx - 1;
 
-#ifdef XTMUX
-	if (tty->xtmux)
-		return xtmux_cursor(tty, cx, cy);
-#endif
-
 	thisx = tty->cx;
 	thisy = tty->cy;
 
 	/* No change. */
 	if (cx == thisx && cy == thisy)
 		return;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cursor(tty, cx, cy);
+#endif
 
 	/* Very end of the line, just use absolute movement. */
 	if (thisx > tty->sx - 1)
