@@ -82,7 +82,7 @@ struct xtmux {
 #define PANE_CY 	(PANE_Y(ctx->ocy))
 
 #define INSIDE1(x, X, L) \
-			((unsigned)((x) - (X)) <= (unsigned)(L))
+			((unsigned)((x) - (X)) < (unsigned)(L))
 #define INSIDE(x, y, X, Y, W, H) \
 			(INSIDE1(x, X, W) && INSIDE1(y, Y, H))
 
@@ -485,6 +485,8 @@ xt_draw_cursor(struct xtmux *x, int cx, int cy)
 	return 1;
 }
 
+#define DRAW_CURSOR(X, CX, CY) ({ if (xt_draw_cursor(X, CX, CY)) XUPDATE(); })
+
 static void
 xt_invalidate(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 {
@@ -514,8 +516,7 @@ void
 xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 {
 	if (tty->mode & MODE_CURSOR)
-		if (xt_draw_cursor(tty->xtmux, cx, cy))
-			XUPDATE();
+		DRAW_CURSOR(tty->xtmux, cx, cy);
 
 	tty->cx = cx;
 	tty->cy = cy;
@@ -527,9 +528,9 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	struct xtmux *x = tty->xtmux;
 
 	if (mode & MODE_CURSOR)
-		xt_draw_cursor(x, tty->cx, tty->cy);
+		DRAW_CURSOR(x, tty->cx, tty->cy);
 	else if (!(s->mode & MODE_CURSOR))
-		xt_draw_cursor(x, -1, -1);
+		DRAW_CURSOR(x, -1, -1);
 
 	if ((tty->mode ^ mode) & (MODE_MOUSE_STANDARD | MODE_MOUSE_BUTTON | MODE_MOUSE_ANY))
 	{
