@@ -64,6 +64,7 @@ struct xtmux {
 	unsigned long	colors[XTMUX_NUM_COLORS];
 
 	int		cx, cy; /* last drawn cursor location, or -1 if none/hidden */
+	u_int		mx, my; /* last known mouse location */
 
 	KeySym		prefix_key;
 	short		prefix_mod;
@@ -93,8 +94,6 @@ struct xtmux {
 			((unsigned)((x) - (X)) < (unsigned)(L))
 #define INSIDE(x, y, X, Y, W, H) \
 			(INSIDE1(x, X, W) && INSIDE1(y, Y, H))
-
-#define EVENT_MASK	(KeyPressMask | ExposureMask | StructureNotifyMask)
 
 void
 xtmux_init(struct client *c, char *display)
@@ -144,6 +143,25 @@ static void
 xdisplay_callback(unused int fd, unused short events, void *data)
 {
 	xtmux_main((struct tty *)data);
+}
+
+static long
+event_mask(int mode)
+{
+	long m = KeyPressMask | ExposureMask | StructureNotifyMask;
+
+	if (mode & (MODE_MOUSE_STANDARD | MODE_MOUSE_BUTTON | MODE_MOUSE_ANY))
+	{
+		m |= ButtonPressMask | ButtonReleaseMask;
+		if (mode & MODE_MOUSE_ANY)
+			m |= PointerMotionMask;
+		else /* if (mode & MODE_MOUSE_BUTTON) */
+			/* as ButtonMotionMask cannot take effect while a button is down, 
+			 * which is how tmux uses it, we must always set it here */
+			m |= ButtonMotionMask;
+	}
+
+	return m;
 }
 
 static unsigned long
@@ -366,14 +384,15 @@ xtmux_open(struct tty *tty, char **cause)
 	gc_values.foreground = x->fg;
 	gc_values.background = x->bg;
 	gc_values.font = x->font->fid;
-	x->gc = XCreateGC(x->display, x->window, GCForeground | GCBackground | GCFont, &gc_values);
+	gc_values.graphics_exposures = False;
+	x->gc = XCreateGC(x->display, x->window, GCForeground | GCBackground | GCFont | GCGraphicsExposures, &gc_values);
 
 	gc_values.foreground = WhitePixel(x->display, XSCREEN);
 	gc_values.background = BlackPixel(x->display, XSCREEN);
 	gc_values.function = GXxor; /* this'll be fine for TrueColor, etc, but we might want to avoid PseudoColor for this */
 	x->cursor_gc = XCreateGC(x->display, x->window, GCFunction | GCForeground | GCBackground, &gc_values);
 
-	XSelectInput(x->display, x->window, EVENT_MASK);
+	XSelectInput(x->display, x->window, event_mask(tty->mode));
 
 	XMapWindow(x->display, x->window);
 
@@ -572,15 +591,8 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 
 	if ((tty->mode ^ mode) & (MODE_MOUSE_STANDARD | MODE_MOUSE_BUTTON | MODE_MOUSE_ANY))
 	{
-		long em = EVENT_MASK;
-
-		if (mode & (MODE_MOUSE_STANDARD | MODE_MOUSE_BUTTON | MODE_MOUSE_ANY))
-			em |= ButtonPressMask | ButtonReleaseMask;
-		if (mode & MODE_MOUSE_ANY)
-			em |= PointerMotionMask;
-		else if (mode & MODE_MOUSE_BUTTON)
-			em |= ButtonMotionMask;
-		XSelectInput(x->display, x->window, em);
+		XSelectInput(x->display, x->window, event_mask(mode));
+		XUPDATE();
 	}
 
 	tty->mode = mode;
@@ -1225,10 +1237,11 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 static void
 xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 {
+	struct xtmux *x = tty->xtmux;
 	struct mouse_event m;
 
-	m.x = xev->x / tty->xtmux->font_width;
-	m.y = xev->y / tty->xtmux->font_height;
+	m.x = xev->x / x->font_width;
+	m.y = xev->y / x->font_height;
 
 	switch (xev->type) {
 		case ButtonPress:
@@ -1241,10 +1254,15 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 				case Button5: m.b = MOUSE_2 | MOUSE_45; break;
 				default: return;
 			}
+			break;
 		case ButtonRelease:
 			m.b = MOUSE_UP;
 			break;
 		case MotionNotify:
+			if (!(tty->mode & (MODE_MOUSE_BUTTON | MODE_MOUSE_ANY)))
+				return;
+			if (m.x == x->mx && m.y == x->my)
+				return;
 			if (xev->state & Button1Mask)
 				m.b = MOUSE_1;
 			else if (xev->state & Button2Mask)
@@ -1256,11 +1274,13 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 			else if (xev->state & Button5Mask)
 				m.b = MOUSE_2 | MOUSE_45;
 			else
+			{
+				if (!(tty->mode & MODE_MOUSE_ANY))
+					return;
 				m.b = MOUSE_UP;
+			}
 			m.b |= MOUSE_DRAG;
 			break;
-		default:
-			return;
 	}
 
 	if (xev->state & ShiftMask)
@@ -1269,6 +1289,9 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 		m.b |= 8;
 	if (xev->state & ControlMask)
 		m.b |= 16;
+
+	x->mx = m.x;
+	x->my = m.y;
 
 	tty->key_callback(KEYC_MOUSE, &m, tty->key_data);
 }
@@ -1339,7 +1362,7 @@ xtmux_main(struct tty *tty)
 				break;
 
 			default:
-				log_warn("unhandled x event %d", xev.type);
+				log_warnx("unhandled x event %d", xev.type);
 		}
 	}
 }
