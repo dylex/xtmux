@@ -23,6 +23,7 @@
 #include "tmux.h"
 
 static void xtmux_main(struct tty *);
+static void xtmux_putc_flush(struct tty *);
 
 #define XTMUX_NUM_COLORS 256
 
@@ -45,6 +46,10 @@ static const unsigned char xtmux_colors[16][3] = {
 	{0xFF,0xFF,0xFF}, /* 15 bright white */
 };
 
+#define PUTC_BUF_LEN 128
+
+typedef u_short wchar;
+
 struct xtmux {
 	Display		*display;
 	struct event	event;
@@ -61,7 +66,10 @@ struct xtmux {
 	int		cx, cy; /* last drawn cursor location, or -1 if none/hidden */
 
 	KeySym		prefix_key;
-	char		prefix_mod;
+	short		prefix_mod;
+
+	u_short		putc_buf_len;
+	wchar		putc_buf[PUTC_BUF_LEN];
 
 	struct client	*client; /* pointer back up to support redraws */
 };
@@ -135,7 +143,6 @@ xdisplay_connection_watch(unused Display *display, XPointer data, int fd, Bool o
 static void
 xdisplay_callback(unused int fd, unused short events, void *data)
 {
-	log_debug("xdisplay_callback");
 	xtmux_main((struct tty *)data);
 }
 
@@ -450,9 +457,38 @@ xtmux_set_title(struct tty *tty, const char *title)
 	XChangeProperty(x->display, x->window, XA_WM_NAME, XA_STRING, 8, PropModeReplace, title, strlen(title));
 }
 
+static inline int
+grid_attr_cmp(const struct grid_cell *a, const struct grid_cell *b)
+{
+	/* could be more aggressive here with UTF8 and ' ', but good enough for now */
+	return !(a->attr == b->attr && 
+			a->flags == b->flags && 
+			a->fg == b->fg && 
+			a->bg == b->bg);
+}
+
+static u_int
+grid_char(const struct grid_cell *gc, const struct grid_utf8 *gu)
+{
+	if (gc->flags & GRID_FLAG_PADDING)
+		return 0;
+	if (gc->flags & GRID_FLAG_UTF8)
+	{
+		struct utf8_data u8;
+		u8.size = grid_utf8_size(gu);
+		memcpy(u8.data, gu->data, u8.size);
+		return utf8_combine(&u8);
+	}
+	return gc->data;
+}
+
 void
 xtmux_attributes(struct tty *tty, const struct grid_cell *gc)
 {
+	if (!grid_attr_cmp(&tty->cell, gc))
+		return;
+
+	xtmux_putc_flush(tty);
 	tty->cell = *gc;
 }
 
@@ -515,6 +551,8 @@ xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int 
 void
 xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 {
+	xtmux_putc_flush(tty);
+
 	if (tty->mode & MODE_CURSOR)
 		DRAW_CURSOR(tty->xtmux, cx, cy);
 
@@ -548,25 +586,10 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	tty->mode = mode;
 }
 
-static u_int
-grid_char(const struct grid_cell *gc, const struct grid_utf8 *gu)
-{
-	if (gc->flags & GRID_FLAG_PADDING)
-		return 0;
-	if (gc->flags & GRID_FLAG_UTF8)
-	{
-		struct utf8_data u8;
-		u8.size = grid_utf8_size(gu);
-		memcpy(u8.data, gu->data, u8.size);
-		return utf8_combine(&u8);
-	}
-	return gc->data;
-}
-
 static void
-xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const u_int *cp, size_t n, const struct grid_cell *gc, int cleared)
+xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, const struct grid_cell *gc, int cleared)
 {
-	u_int			px = C2X(cx), py = C2Y(cy), wx = C2W(n), hy = C2H(1);
+	u_int			i, px = C2X(cx), py = C2Y(cy), wx = C2W(n), hy = C2H(1);
 	u_char			fgc = gc->fg, bgc = gc->bg;
 	unsigned long		fg, bg;
 
@@ -588,7 +611,8 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const u_int *cp, size_t n, co
 	else
 		bg = x->colors[bgc];
 
-	if (gc->attr & GRID_ATTR_REVERSE)
+	if (gc->attr & GRID_ATTR_REVERSE || 
+			(gc->attr & GRID_ATTR_ITALICS && !x->font_italic))
 	{
 		unsigned long xg;
 		u_char xgc;
@@ -603,7 +627,11 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const u_int *cp, size_t n, co
 
 	/* TODO: DIM, maybe only for TrueColor */
 
-	if (!cp || gc->attr & GRID_ATTR_HIDDEN)
+	for (i = 0; i < n; i ++)
+		if (cp[i] != ' ')
+			break;
+
+	if (i == n || gc->attr & GRID_ATTR_HIDDEN)
 	{
 		if (bg == x->bg)
 		{
@@ -619,7 +647,6 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const u_int *cp, size_t n, co
 	else
 	{
 		XChar2b c2[n];
-		u_int i;
 		
 		XSetForeground(x->display, x->gc, fg);
 
@@ -632,7 +659,7 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const u_int *cp, size_t n, co
 
 		for (i = 0; i < n; i ++)
 		{
-			u_int c = cp[i];
+			wchar c = cp[i];
 			/* TODO: fix ACS arrows, block, etc? */
 			if (gc->attr & GRID_ATTR_CHARSET && c > 0x5f && c < 0x7f)
 				c -= 0x5f;
@@ -671,32 +698,54 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const u_int *cp, size_t n, co
 static void
 xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, const struct grid_utf8 *gu, size_t n, const struct grid_cell *ga)
 {
-	u_int i, c[n], *cp = NULL;
+	u_int i;
+	wchar c[n];
 
 	if (!n)
 		return;
 
 	for (i = 0; i < n; i ++)
-	{
 		c[i] = grid_char(&gc[i], &gu[i]);
-		if (c[i] != ' ')
-			cp = c;
-	}
 
-	xt_draw_chars(x, cx, cy, cp, n, ga, 1);
+	xt_draw_chars(x, cx, cy, c, n, ga, 1);
+}
+
+static void
+xtmux_putc_flush(struct tty *tty)
+{
+	struct xtmux *x = tty->xtmux;
+
+	if (!x->putc_buf_len)
+		return;
+
+	xt_draw_chars(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf, x->putc_buf_len, &tty->cell, 0);
+	xt_invalidate(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf_len, 1);
+	x->putc_buf_len = 0;
+
+	if (tty->mode & MODE_CURSOR)
+		xt_draw_cursor(x, tty->cx, tty->cy);
 }
 
 static void
 xtmux_putwc(struct tty *tty, u_int c)
 {
+	struct xtmux *x = tty->xtmux;
+
 	if (tty->cx >= tty->sx)
 	{
+		xtmux_putc_flush(tty);
+
 		tty->cx = 0;
 		if (tty->cy < tty->rlower)
 			tty->cy ++;
 	}
-	xt_draw_chars(tty->xtmux, tty->cx, tty->cy, c == ' ' ? NULL : &c, 1, &tty->cell, 0);
-	xt_invalidate(tty->xtmux, tty->cx, tty->cy, 1, 1);
+	else if (x->putc_buf_len >= PUTC_BUF_LEN)
+		xtmux_putc_flush(tty);
+
+	if (c < 0x20)
+		return;
+
+	x->putc_buf[x->putc_buf_len++] = c;
 	XUPDATE();
 }
 
@@ -723,6 +772,8 @@ xtmux_cmd_insertcharacter(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int dx = ctx->ocx + ctx->num;
 
+	xtmux_putc_flush(tty);
+
 	xt_copy(x,
 			PANE_CX, PANE_CY,
 			PANE_X(dx), PANE_CY,
@@ -741,6 +792,8 @@ xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int dx = ctx->ocx + ctx->num;
 
+	xtmux_putc_flush(tty);
+
 	xt_copy(x,
 			PANE_X(dx), PANE_CY, 
 			PANE_CX, PANE_CY,
@@ -758,6 +811,8 @@ xtmux_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 	u_int dy = ctx->ocy + ctx->num;
+
+	xtmux_putc_flush(tty);
 
 	if (dy < ctx->orlower + 1)
 		xt_copy(x,
@@ -778,6 +833,8 @@ xtmux_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int dy = ctx->ocy + ctx->num;
 
+	xtmux_putc_flush(tty);
+
 	if (dy < ctx->orlower + 1)
 		xt_copy(x,
 				PANE_X(0), PANE_Y(dy),
@@ -796,6 +853,8 @@ xtmux_cmd_clearline(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
+	xtmux_putc_flush(tty);
+
 	xt_clear(x,
 			PANE_X(0), PANE_CY,
 			screen_size_x(s), 1);
@@ -809,6 +868,8 @@ xtmux_cmd_clearendofline(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
+	xtmux_putc_flush(tty);
+
 	xt_clear(x,
 			PANE_CX, PANE_CY,
 			screen_size_x(s) - ctx->ocx, 1);
@@ -820,6 +881,8 @@ void
 xtmux_cmd_clearstartofline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
+
+	xtmux_putc_flush(tty);
 
 	xt_clear(x,
 			PANE_X(0), PANE_CY,
@@ -833,6 +896,8 @@ xtmux_cmd_reverseindex(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
+
+	xtmux_putc_flush(tty);
 
 	/* same as insertline(1) at top */
 	xt_copy(x,
@@ -852,6 +917,8 @@ xtmux_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
+	xtmux_putc_flush(tty);
+
 	/* same as deleteline(1) at top */
 	xt_copy(x,
 			PANE_X(0), PANE_Y(ctx->orupper+1),
@@ -870,6 +937,8 @@ xtmux_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 	u_int y = ctx->ocy;
+
+	xtmux_putc_flush(tty);
 
 	if (ctx->ocx > 0)
 	{
@@ -894,6 +963,8 @@ xtmux_cmd_clearstartofscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int y = ctx->ocy;
 
+	xtmux_putc_flush(tty);
+
 	if (ctx->ocx < screen_size_x(s))
 		xt_clear(x,
 				PANE_X(0), PANE_CY,
@@ -913,6 +984,8 @@ xtmux_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
+
+	xtmux_putc_flush(tty);
 
 	xt_clear(x,
 			PANE_X(0), PANE_Y(ctx->orupper),
@@ -966,9 +1039,7 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 			gc.bg = s->sel.cell.bg;
 		}
 
-		/* could be more aggressive here with UTF8 and ' ', but good enough for now */
-		if (!(i > b && gc.attr == ga.attr && gc.flags == ga.flags && 
-				gc.fg == ga.fg && gc.bg == ga.bg))
+		if (i == b || grid_attr_cmp(&gc, &ga))
 		{
 			xt_draw_cells(x, ox+b, oy+py, &gl->celldata[b], &gl->utf8data[b], i-b, &ga);
 			b = i;
@@ -982,6 +1053,8 @@ void
 xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 {
 	u_int sx = screen_size_x(s);
+
+	xtmux_putc_flush(tty);
 
 	if (sx > tty->sx)
 		sx = tty->sx;
@@ -1232,6 +1305,8 @@ static void
 xtmux_main(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
+
+	xtmux_putc_flush(tty);
 
 	while (XPending(x->display))
 	{
