@@ -564,11 +564,14 @@ grid_char(const struct grid_cell *gc, const struct grid_utf8 *gu)
 }
 
 static void
-xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cell *gc, int cleared)
+xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const u_int *cp, size_t n, const struct grid_cell *gc, int cleared)
 {
-	u_int			px = C2X(cx), py = C2Y(cy);
+	u_int			px = C2X(cx), py = C2Y(cy), wx = C2W(n), hy = C2H(1);
 	u_char			fgc = gc->fg, bgc = gc->bg;
 	unsigned long		fg, bg;
+
+	if (gc->flags & GRID_FLAG_PADDING)
+		return;
 
 	if (fgc >= 90 && fgc <= 97 && !(gc->flags & GRID_FLAG_FG256))
 		fgc -= 90 - 8;
@@ -600,22 +603,23 @@ xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cel
 
 	/* TODO: DIM, maybe only for TrueColor */
 
-	if (c == ' ' || gc->attr & GRID_ATTR_HIDDEN)
+	if (!cp || gc->attr & GRID_ATTR_HIDDEN)
 	{
 		if (bg == x->bg)
 		{
 			if (!cleared)
-				XClearArea(x->display, x->window, px, py, x->font_width, x->font_height, False);
+				XClearArea(x->display, x->window, px, py, wx, hy, False);
 		}
 		else
 		{
 			XSetForeground(x->display, x->gc, bg);
-			XFillRectangle(x->display, x->window, x->gc, px, py, x->font_width, x->font_height);
+			XFillRectangle(x->display, x->window, x->gc, px, py, wx, hy);
 		}
 	}
-	else if (c > ' ')
+	else
 	{
-		XChar2b c2;
+		XChar2b c2[n];
+		u_int i;
 		
 		XSetForeground(x->display, x->gc, fg);
 
@@ -626,18 +630,22 @@ xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cel
 		else
 			XSetFont(x->display, x->gc, x->font->fid);
 
-		/* TODO: fix ACS arrows, block, etc? */
-		if (gc->attr & GRID_ATTR_CHARSET && c > 0x5f && c < 0x7f)
-			c -= 0x5f;
-		c2.byte1 = c >> 8;
-		c2.byte2 = c;
+		for (i = 0; i < n; i ++)
+		{
+			u_int c = cp[i];
+			/* TODO: fix ACS arrows, block, etc? */
+			if (gc->attr & GRID_ATTR_CHARSET && c > 0x5f && c < 0x7f)
+				c -= 0x5f;
+			c2[i].byte1 = c >> 8;
+			c2[i].byte2 = c;
+		}
 
 		if (cleared && bg == x->bg)
-			XDrawString16(x->display, x->window, x->gc, px, py + x->font->ascent, &c2, 1);
+			XDrawString16(x->display, x->window, x->gc, px, py + x->font->ascent, c2, n);
 		else
 		{
 			XSetBackground(x->display, x->gc, bg);
-			XDrawImageString16(x->display, x->window, x->gc, px, py + x->font->ascent, &c2, 1);
+			XDrawImageString16(x->display, x->window, x->gc, px, py + x->font->ascent, c2, n);
 		}
 	}
 
@@ -649,23 +657,33 @@ xt_draw_char(struct xtmux *x, u_int cx, u_int cy, u_int c, const struct grid_cel
 		XSetForeground(x->display, x->gc, fg);
 		XDrawLine(x->display, x->window, x->gc, 
 				px, y,
-				px + x->font_width - 1, y);
+				px + wx - 1, y);
 	}
 	if (gc->attr & GRID_ATTR_BLINK)
 	{
 		/* a little odd but blink is weird anyway */
 		XDrawRectangle(x->display, x->window, x->cursor_gc,
 				px-1, py-1,
-				x->font_width, x->font_height);
+				wx, hy);
 	}
 }
 
 static void
-xt_draw_cell(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, const struct grid_utf8 *gu)
+xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, const struct grid_utf8 *gu, size_t n, const struct grid_cell *ga)
 {
-	if (gc->flags & GRID_FLAG_PADDING)
+	u_int i, c[n], *cp = NULL;
+
+	if (!n)
 		return;
-	xt_draw_char(x, cx, cy, grid_char(gc, gu), gc, 1);
+
+	for (i = 0; i < n; i ++)
+	{
+		c[i] = grid_char(&gc[i], &gu[i]);
+		if (c[i] != ' ')
+			cp = c;
+	}
+
+	xt_draw_chars(x, cx, cy, cp, n, ga, 1);
 }
 
 static void
@@ -677,7 +695,7 @@ xtmux_putwc(struct tty *tty, u_int c)
 		if (tty->cy < tty->rlower)
 			tty->cy ++;
 	}
-	xt_draw_char(tty->xtmux, tty->cx, tty->cy, c, &tty->cell, 0);
+	xt_draw_chars(tty->xtmux, tty->cx, tty->cy, c == ' ' ? NULL : &c, 1, &tty->cell, 0);
 	xt_invalidate(tty->xtmux, tty->cx, tty->cy, 1, 1);
 	XUPDATE();
 }
@@ -930,15 +948,15 @@ static void
 xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int right, u_int ox, u_int oy)
 {
 	const struct grid_line *gl = &s->grid->linedata[s->grid->hsize+py];
+	struct grid_cell ga;
 	u_int sx = right;
-	u_int i;
+	u_int i, b;
 
 	if (sx > gl->cellsize)
 		sx = gl->cellsize;
-	for (i = left; i < sx; i ++)
+	for (i = left, b = left; i < sx; i ++)
 	{
 		struct grid_cell gc = gl->celldata[i];
-		const struct grid_utf8 *gu = &gl->utf8data[i];
 
 		if (screen_check_selection(s, i, py)) {
 			gc.attr = s->sel.cell.attr;
@@ -947,8 +965,17 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 			gc.fg = s->sel.cell.fg;
 			gc.bg = s->sel.cell.bg;
 		}
-		xt_draw_cell(x, ox+i, oy+py, &gc, gu);
+
+		/* could be more aggressive here with UTF8 and ' ', but good enough for now */
+		if (!(i > b && gc.attr == ga.attr && gc.flags == ga.flags && 
+				gc.fg == ga.fg && gc.bg == ga.bg))
+		{
+			xt_draw_cells(x, ox+b, oy+py, &gl->celldata[b], &gl->utf8data[b], i-b, &ga);
+			b = i;
+			ga = gc;
+		}
 	}
+	xt_draw_cells(x, ox+b, oy+py, &gl->celldata[b], &gl->utf8data[b], i-b, &ga);
 }
 
 void
