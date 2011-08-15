@@ -1011,7 +1011,7 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 
-	XSetSelectionOwner(x->display, XA_PRIMARY, x->window, CurrentTime);
+	XSetSelectionOwner(x->display, XA_PRIMARY, x->window, CurrentTime /* XXX */);
 	if (XGetSelectionOwner(x->display, XA_PRIMARY) != x->window)
 		return;
 
@@ -1019,6 +1019,59 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 			XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace, ctx->ptr, ctx->num);
 
 	XUPDATE();
+}
+
+static void 
+xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
+{
+	struct xtmux *x = tty->xtmux;
+	XSelectionEvent r;
+	struct paste_buffer *pb;
+
+	if (xev->owner != x->window || xev->selection != XA_PRIMARY)
+		return;
+
+	if (xev->property == None)
+		xev->property = xev->target;
+
+	r.type = SelectionNotify;
+	r.display = xev->display;
+	r.requestor = xev->requestor;
+	r.selection = xev->selection;
+	r.target = xev->target;
+	r.time = xev->time;
+	r.property = None;
+
+	pb = paste_get_top(&global_buffers);
+
+	if (xev->target == XA_STRING)
+	{
+		if (pb && XChangeProperty(x->display, r.requestor, xev->property, 
+					XA_STRING, 8, PropModeReplace, pb->data, pb->size))
+			r.property = xev->property;
+	}
+	else
+	{
+		char *target = XGetAtomName(x->display, xev->target);
+		if (!strcmp(target, "TARGETS"))
+		{
+			/* silly, but easy enough */
+			Atom targets[] = { XA_STRING, xev->target };
+
+			if (XChangeProperty(x->display, r.requestor, xev->property, XA_ATOM, 32, PropModeReplace, 
+						(unsigned char *)targets, sizeof targets/sizeof *targets))
+				r.property = xev->property;
+		}
+		else if (!strcmp(target, "TEXT"))
+		{
+			if (pb && XChangeProperty(x->display, r.requestor, xev->property, 
+						XA_STRING, 8, PropModeReplace, pb->data, pb->size))
+				r.property = xev->property;
+		}
+		XFree(target);
+	}
+
+	XSendEvent(x->display, r.requestor, False, 0, (XEvent *)&r);
 }
 
 void
@@ -1359,6 +1412,15 @@ xtmux_main(struct tty *tty)
 
 			case MappingNotify:
 				XRefreshKeyboardMapping(&xev.xmapping);
+				break;
+
+			case SelectionClear:
+				/* could do paste_free_top or something, but probably shouldn't.
+				 * might want to visually indicate X selection some other way, though */
+				break;
+
+			case SelectionRequest:
+				xtmux_selection_request(tty, &xev.xselectionrequest);
 				break;
 
 			default:
