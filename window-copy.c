@@ -809,10 +809,10 @@ window_copy_mouse(
 	 * pressed, or stop the selection on their release.
 	 */
 	if (s->mode & MODE_MOUSE_BUTTON) {
+		window_copy_update_cursor(wp, m->x, m->y);
+		if (window_copy_update_selection(wp))
+			window_copy_redraw_screen(wp);
 		if ((m->b & MOUSE_BUTTON) != MOUSE_UP) {
-			window_copy_update_cursor(wp, m->x, m->y);
-			if (window_copy_update_selection(wp))
-				window_copy_redraw_screen(wp);
 			return;
 		}
 		goto reset_mode;
