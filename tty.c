@@ -670,7 +670,7 @@ tty_write(void (*cmdfn)(
 #endif
 					)
 				continue;
-			if (c->tty.flags & (TTY_FREEZE|TTY_BACKOFF))
+			if (c->tty.flags & (TTY_FREEZE|TTY_BACKOFF|TTY_UNMAPPED))
 				continue;
 			cmdfn(&c->tty, ctx);
 		}

@@ -1625,10 +1625,23 @@ xtmux_main(struct tty *tty)
 
 			case Expose:
 			case GraphicsExpose:
-				xtmux_expose(tty, &xev.xexpose);
+				if (xev.xexpose.window == x->window)
+					xtmux_expose(tty, &xev.xexpose);
+				break;
+
+			case UnmapNotify:
+				if (xev.xunmap.window == x->window)
+					tty->flags |= TTY_UNMAPPED;
+				break;
+
+			case MapNotify:
+				if (xev.xmap.window == x->window)
+					tty->flags &= ~TTY_UNMAPPED;
 				break;
 
 			case ConfigureNotify:
+				if (xev.xconfigure.window != x->window)
+					return;
 				while (XCheckTypedWindowEvent(x->display, x->window, ConfigureNotify, &xev));
 				xtmux_configure_notify(tty, &xev.xconfigure);
 				break;
@@ -1652,7 +1665,8 @@ xtmux_main(struct tty *tty)
 				break;
 
 			case DestroyNotify:
-				x->client->flags |= CLIENT_EXIT;
+				if (xev.xdestroywindow.window == x->window)
+					x->client->flags |= CLIENT_EXIT;
 				break;
 
 			default:
