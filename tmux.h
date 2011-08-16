@@ -1056,6 +1056,7 @@ struct tty {
 #define TTY_STARTED 0x10
 #define TTY_OPENED 0x20
 #define TTY_BACKOFF 0x40
+#define TTY_UNMAPPED 0x80
 	int		 flags;
 
 	int		 term_flags;

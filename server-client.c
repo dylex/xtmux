@@ -579,6 +579,9 @@ server_client_check_redraw(struct client *c)
 	struct window_pane	*wp;
 	int		 	 flags, redraw;
 
+	if (c->tty.flags & TTY_UNMAPPED)
+		return;
+
 	flags = c->tty.flags & TTY_FREEZE;
 	c->tty.flags &= ~TTY_FREEZE;
 
