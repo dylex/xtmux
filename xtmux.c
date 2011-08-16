@@ -14,6 +14,7 @@
  * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <setjmp.h>
 #include <string.h>
 #include <unistd.h>
 #include <X11/Xlib.h>
@@ -23,7 +24,7 @@
 #include "tmux.h"
 
 static void xtmux_main(struct tty *);
-static void xtmux_putc_flush(struct tty *);
+static int xtmux_putc_flush(struct tty *);
 
 #define XTMUX_NUM_COLORS 256
 
@@ -82,13 +83,27 @@ struct xtmux {
 	struct paste_ctx paste; /* one outstanding paste request at a time is enough */
 
 	struct client	*client; /* pointer back up to support redraws */
+	int		ioerror;
 };
 
 #define XSCREEN		DefaultScreen(x->display)
 #define XCOLORMAP	DefaultColormap(x->display, XSCREEN)
-// #define XUPDATE()	XFlush(tty->xtmux->display)
-// #define XUPDATE()	xtmux_main(tty)
 #define XUPDATE()	event_active(&tty->xtmux->event, EV_WRITE, 0)
+
+static u_int xdisplay_recover_active;
+static jmp_buf xdisplay_recover;
+
+/* One of these must be called at every entry point before an X call: */
+#define WHEN_XFATAL 	if (tty->xtmux->ioerror || \
+		((xdisplay_recover_active = 1) && setjmp(xdisplay_recover)))
+#define CHECK_XFATAL(E) WHEN_XFATAL return E
+#define CHECK_PUTC_FLUSH(ERR) ({ \
+		int _r = xtmux_putc_flush(tty); \
+		if (_r == -1) \
+			return ERR; \
+		if (!_r) \
+			CHECK_XFATAL(ERR); \
+	})
 
 #define C2W(C) 		(x->font_width * (C))
 #define C2H(C) 		(x->font_height * (C))
@@ -117,13 +132,63 @@ xtmux_init(struct client *c, char *display)
 	c->tty.xtmux->client = c;
 }
 
+static int
+xdisplay_error(Display *disp, XErrorEvent *e)
+{
+	u_int i;
+	struct client *c;
+	char msg[256] = "<unknown error>";
+
+	XGetErrorText(disp, e->error_code, msg, sizeof msg-1);
+	log_warnx("X11 error: %s %u,%u", msg, e->request_code, e->minor_code);
+
+	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
+		c = ARRAY_ITEM(&clients, i);
+		if (!c || !c->tty.xtmux || c->tty.xtmux->display != disp)
+			continue;
+		c->flags |= CLIENT_EXIT;
+	}
+
+	return 0;
+}
+
+static int
+xdisplay_ioerror(Display *disp)
+{
+	u_int i;
+	struct client *c;
+
+	log_warnx("X11 IO error");
+
+	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
+		c = ARRAY_ITEM(&clients, i);
+		if (!c || !c->tty.xtmux || c->tty.xtmux->display != disp)
+			continue;
+		c->flags |= CLIENT_EXIT;
+		c->tty.xtmux->ioerror = 1;
+	}
+
+	if ((i = xdisplay_recover_active))
+	{
+		xdisplay_recover_active = 0;
+		longjmp(xdisplay_recover, i);
+	}
+
+	fatalx("X11 fatal error");
+}
+
 static void
 xdisplay_connection_callback(int fd, short events, void *data)
 {
 	struct tty *tty = data;
 
 	if (events & EV_READ)
+	{
+		CHECK_XFATAL();
+
 		XProcessInternalConnection(tty->xtmux->display, fd);
+		xtmux_main(tty);
+	}
 }
 
 static void
@@ -151,7 +216,10 @@ xdisplay_connection_watch(unused Display *display, XPointer data, int fd, Bool o
 static void
 xdisplay_callback(unused int fd, unused short events, void *data)
 {
-	xtmux_main((struct tty *)data);
+	struct tty *tty = (struct tty *)data;
+
+	CHECK_PUTC_FLUSH();
+	xtmux_main(tty);
 }
 
 static long
@@ -246,7 +314,7 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 	xfree(s);
 }
 
-void
+int
 xtmux_setup(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
@@ -254,6 +322,8 @@ xtmux_setup(struct tty *tty)
 	XFontStruct *fs;
 	const char *font, *prefix;
 	KeySym pkey = NoSymbol;
+
+	CHECK_XFATAL(-1);
 
 	font = options_get_string(o, "xtmux-font");
 	fs = XLoadQueryFont(x->display, font);
@@ -333,6 +403,8 @@ xtmux_setup(struct tty *tty)
 		XFreeModifiermap(xmodmap);
 	}
 	x->prefix_key = pkey;
+
+	return 0;
 }
 
 int
@@ -344,38 +416,39 @@ xtmux_open(struct tty *tty, char **cause)
 	XSizeHints size_hints;
 	XGCValues gc_values;
 
+	XSetErrorHandler(xdisplay_error);
+	XSetIOErrorHandler(xdisplay_ioerror);
+
+#define FAIL(...) ({ \
+		xasprintf(cause, __VA_ARGS__); \
+		return -1; \
+	})
+
+	WHEN_XFATAL
+		FAIL("fatal error opening X display: %s", tty->path);
+
 	x->display = XOpenDisplay(tty->path);
 	if (!x->display)
-	{
-		xasprintf(cause, "could not open X display: %s", tty->path);
-		return -1;
-	}
+		FAIL("could not open X display: %s", tty->path);
 
 	event_set(&x->event, ConnectionNumber(x->display), EV_READ|EV_PERSIST, xdisplay_callback, tty);
 	if (event_add(&x->event, NULL) < 0)
 		fatal("failed to add X display event");
 
 	if (!XAddConnectionWatch(x->display, &xdisplay_connection_watch, (XPointer)tty))
-	{
-		xasprintf(cause, "could not get X display connection: %s", tty->path);
-		return -1;
-	}
+		FAIL("could not get X display connection: %s", tty->path);
 
-	xtmux_setup(tty);
+	if (xtmux_setup(tty))
+		FAIL("failed to setup X display");
+
 	if (!x->font)
-	{
-		xasprintf(cause, "could not load font");
-		return -1;
-	}
+		FAIL("could not load X font");
 
 	x->window = XCreateSimpleWindow(x->display, DefaultRootWindow(x->display),
 			0, 0, C2W(tty->sx), C2H(tty->sy),
 			0, 0, x->bg);
 	if (x->window == None)
-	{
-		xasprintf(cause, "could not create window");
-		return -1;
-	}
+		FAIL("could not create X window");
 
 	size_hints.min_width = x->font_width;
 	size_hints.min_height = x->font_height;
@@ -410,6 +483,7 @@ xtmux_open(struct tty *tty, char **cause)
 
 	XUPDATE();
 
+#undef FAIL
 	return 0;
 }
 
@@ -421,6 +495,9 @@ xtmux_close(struct tty *tty)
 	tty->flags &= ~TTY_OPENED;
 
 	event_del(&x->event);
+
+	/* Must be careful here if we got an IO error: 
+	 * want to free resources without using the connection */
 
 	if (x->paste.sep)
 	{
@@ -442,40 +519,48 @@ xtmux_close(struct tty *tty)
 
 	if (x->window != None)
 	{
-		XFreeColors(x->display, XCOLORMAP, x->colors, XTMUX_NUM_COLORS, 0);
+		if (!x->ioerror)
+			XFreeColors(x->display, XCOLORMAP, x->colors, XTMUX_NUM_COLORS, 0);
 		XDestroyWindow(x->display, x->window);
 		x->window = None;
 	}
 
 	if (x->font_bold != None)
 	{
-		XUnloadFont(x->display, x->font_bold);
+		if (!x->ioerror)
+			XUnloadFont(x->display, x->font_bold);
 		x->font_bold = None;
 	}
 
 	if (x->font_italic != None)
 	{
-		XUnloadFont(x->display, x->font_italic);
+		if (!x->ioerror)
+			XUnloadFont(x->display, x->font_italic);
 		x->font_italic = None;
 	}
 
 	if (x->font != NULL)
 	{
-		XFreeFont(x->display, x->font);
+		if (!x->ioerror)
+			XFreeFont(x->display, x->font);
+		else
+			XFreeFontInfo(NULL, x->font, 1);
 		x->font = NULL;
 	}
 
 	if (x->display != NULL)
 	{
+		int fd = ConnectionNumber(x->display);
 		XCloseDisplay(x->display);
 		x->display = NULL;
+		/* if ioerror, sometimes connection is left open; should be safe regardless */
+		close(fd);
 	}
 }
 
 void 
 xtmux_free(struct tty *tty)
 {
-	xtmux_close(tty);
 	xfree(tty->xtmux);
 }
 
@@ -486,6 +571,8 @@ xtmux_set_title(struct tty *tty, const char *title)
 
 	if (!x->window)
 		return;
+
+	CHECK_XFATAL();
 
 	XChangeProperty(x->display, x->window, XA_WM_NAME, XA_STRING, 8, PropModeReplace, title, strlen(title));
 }
@@ -584,7 +671,7 @@ xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int 
 void
 xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 {
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	if (tty->mode & MODE_CURSOR)
 		DRAW_CURSOR(tty->xtmux, cx, cy);
@@ -597,6 +684,8 @@ void
 xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 {
 	struct xtmux *x = tty->xtmux;
+
+	CHECK_XFATAL();
 
 	if (mode & MODE_CURSOR)
 		DRAW_CURSOR(x, tty->cx, tty->cy);
@@ -736,13 +825,15 @@ xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, c
 	xt_draw_chars(x, cx, cy, c, n, ga, 1);
 }
 
-static void
+static int
 xtmux_putc_flush(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
 
 	if (!x->putc_buf_len)
-		return;
+		return 0;
+
+	CHECK_XFATAL(-1);
 
 	xt_draw_chars(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf, x->putc_buf_len, &tty->cell, 0);
 	xt_invalidate(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf_len, 1);
@@ -750,6 +841,8 @@ xtmux_putc_flush(struct tty *tty)
 
 	if (tty->mode & MODE_CURSOR)
 		xt_draw_cursor(x, tty->cx, tty->cy);
+
+	return 1;
 }
 
 static void
@@ -759,14 +852,16 @@ xtmux_putwc(struct tty *tty, u_int c)
 
 	if (tty->cx >= tty->sx)
 	{
-		xtmux_putc_flush(tty);
+		if (xtmux_putc_flush(tty) == -1)
+			return;
 
 		tty->cx = 0;
 		if (tty->cy < tty->rlower)
 			tty->cy ++;
 	}
 	else if (x->putc_buf_len >= PUTC_BUF_LEN)
-		xtmux_putc_flush(tty);
+		if (xtmux_putc_flush(tty) == -1)
+			return;
 
 	if (c < 0x20)
 		return;
@@ -798,7 +893,7 @@ xtmux_cmd_insertcharacter(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int dx = ctx->ocx + ctx->num;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	xt_copy(x,
 			PANE_CX, PANE_CY,
@@ -818,7 +913,7 @@ xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int dx = ctx->ocx + ctx->num;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	xt_copy(x,
 			PANE_X(dx), PANE_CY, 
@@ -838,7 +933,7 @@ xtmux_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int dy = ctx->ocy + ctx->num;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	if (dy < ctx->orlower + 1)
 		xt_copy(x,
@@ -859,7 +954,7 @@ xtmux_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int dy = ctx->ocy + ctx->num;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	if (dy < ctx->orlower + 1)
 		xt_copy(x,
@@ -879,7 +974,7 @@ xtmux_cmd_clearline(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	xt_clear(x,
 			PANE_X(0), PANE_CY,
@@ -894,7 +989,7 @@ xtmux_cmd_clearendofline(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	xt_clear(x,
 			PANE_CX, PANE_CY,
@@ -908,7 +1003,7 @@ xtmux_cmd_clearstartofline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	xt_clear(x,
 			PANE_X(0), PANE_CY,
@@ -923,7 +1018,7 @@ xtmux_cmd_reverseindex(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	/* same as insertline(1) at top */
 	xt_copy(x,
@@ -943,7 +1038,7 @@ xtmux_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	/* same as deleteline(1) at top */
 	xt_copy(x,
@@ -964,7 +1059,7 @@ xtmux_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int y = ctx->ocy;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	if (ctx->ocx > 0)
 	{
@@ -989,7 +1084,7 @@ xtmux_cmd_clearstartofscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int y = ctx->ocy;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	if (ctx->ocx < screen_size_x(s))
 		xt_clear(x,
@@ -1011,7 +1106,7 @@ xtmux_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	xt_clear(x,
 			PANE_X(0), PANE_Y(ctx->orupper),
@@ -1024,6 +1119,8 @@ void
 xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
+
+	CHECK_XFATAL();
 
 	XSetSelectionOwner(x->display, XA_PRIMARY, x->window, CurrentTime /* XXX */);
 	if (XGetSelectionOwner(x->display, XA_PRIMARY) != x->window)
@@ -1182,6 +1279,8 @@ found:
 void
 xtmux_bell(struct tty *tty)
 {
+	CHECK_XFATAL();
+
 	XBell(tty->xtmux->display, 100);
 
 	XUPDATE();
@@ -1224,7 +1323,7 @@ xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 {
 	u_int sx = screen_size_x(s);
 
-	xtmux_putc_flush(tty);
+	CHECK_PUTC_FLUSH();
 
 	if (sx > tty->sx)
 		sx = tty->sx;
@@ -1487,8 +1586,6 @@ xtmux_main(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
 
-	xtmux_putc_flush(tty);
-
 	while (XPending(x->display))
 	{
 		XEvent xev;
@@ -1533,6 +1630,10 @@ xtmux_main(struct tty *tty)
 
 			case SelectionNotify:
 				xtmux_selection_notify(tty, &xev.xselection);
+				break;
+
+			case DestroyNotify:
+				x->client->flags |= CLIENT_EXIT;
 				break;
 
 			default:
