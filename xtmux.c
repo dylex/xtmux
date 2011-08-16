@@ -50,10 +50,17 @@ static const unsigned char xtmux_colors[16][3] = {
 
 typedef u_short wchar;
 
+struct paste_ctx {
+	Time time;
+	struct window_pane *wp;
+	char *sep;
+};
+
 struct xtmux {
 	Display		*display;
 	struct event	event;
 	Window		window;
+	Time		last_time;
 
 	XFontStruct	*font;
 	Font		font_bold, font_italic;
@@ -71,6 +78,8 @@ struct xtmux {
 
 	u_short		putc_buf_len;
 	wchar		putc_buf[PUTC_BUF_LEN];
+
+	struct paste_ctx paste; /* one outstanding paste request at a time is enough */
 
 	struct client	*client; /* pointer back up to support redraws */
 };
@@ -411,6 +420,14 @@ xtmux_close(struct tty *tty)
 
 	tty->flags &= ~TTY_OPENED;
 
+	event_del(&x->event);
+
+	if (x->paste.sep)
+	{
+		xfree(x->paste.sep);
+		x->paste.sep = NULL;
+	}
+
 	if (x->cursor_gc != None)
 	{
 		XFreeGC(x->display, x->cursor_gc);
@@ -426,7 +443,6 @@ xtmux_close(struct tty *tty)
 	if (x->window != None)
 	{
 		XFreeColors(x->display, XCOLORMAP, x->colors, XTMUX_NUM_COLORS, 0);
-
 		XDestroyWindow(x->display, x->window);
 		x->window = None;
 	}
@@ -451,8 +467,6 @@ xtmux_close(struct tty *tty)
 
 	if (x->display != NULL)
 	{
-		event_del(&x->event);
-
 		XCloseDisplay(x->display);
 		x->display = NULL;
 	}
@@ -1074,6 +1088,97 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 	XSendEvent(x->display, r.requestor, False, 0, (XEvent *)&r);
 }
 
+/* cheat a little: */
+void	cmd_paste_buffer_filter(
+	    struct window_pane *, const char *, size_t, const char *);
+
+static int 
+xt_paste_property(struct xtmux *x, Window w, Atom p)
+{
+	XTextProperty t;
+
+	if (!XGetTextProperty(x->display, w, &t, p) || !t.value || t.format != 8)
+	{
+		log_warnx("could not get text property to paste");
+		return -1;
+	}
+
+	log_warnx("pasting %lu characters", t.nitems);
+	cmd_paste_buffer_filter(x->paste.wp, t.value, t.nitems, x->paste.sep);
+
+	x->paste.time = 0;
+	x->paste.wp = NULL;
+	xfree(x->paste.sep);
+	x->paste.sep = NULL;
+	XFree(t.value);
+
+	return 0;
+}
+
+int
+xtmux_paste(struct xtmux *x, struct window_pane *wp, const char *which, const char *sep)
+{
+	Atom s = None;
+
+	if (!which || !strncasecmp(which, "primary", strlen(which)))
+		s = XA_PRIMARY;
+	else if (!strncasecmp(which, "secondary", strlen(which)))
+		s = XA_SECONDARY;
+	else if (!strncasecmp(which, "clipboard", strlen(which)))
+		s = XInternAtom(x->display, "CLIPBOARD", True);
+	else {
+		const char *e;
+		s = XA_CUT_BUFFER0 + strtonum(which, 0, 7, &e);
+		if (e)
+			s = None;
+	}
+
+	if (s == None)
+		return -1;
+
+	if (x->paste.sep)
+		xfree(x->paste.sep);
+	x->paste.time = x->last_time;
+	x->paste.wp = wp;
+	x->paste.sep = strdup(sep);
+
+	if (s >= XA_CUT_BUFFER0 && s <= XA_CUT_BUFFER7)
+		return xt_paste_property(x, DefaultRootWindow(x->display), s);
+
+	return XConvertSelection(x->display, s, XA_STRING, XA_STRING, x->window, x->paste.time);
+}
+
+static void
+xtmux_selection_notify(struct tty *tty, XSelectionEvent *xev)
+{
+	struct xtmux 		*x = tty->xtmux;
+	struct session		*s;
+	struct winlink		*wl;
+	struct window_pane	*wp;
+
+	if (!(xev->requestor == x->window && 
+				x->paste.wp &&
+				xev->time == x->paste.time &&
+				xev->target == XA_STRING &&
+				xev->property == XA_STRING))
+		return;
+
+	/* need to make sure pane is still valid */
+	RB_FOREACH(s, sessions, &sessions)
+		RB_FOREACH(wl, winlinks, &s->windows)
+			TAILQ_FOREACH(wp, &wl->window->panes, entry)
+				if (wp == x->paste.wp)
+					goto found;
+
+	log_info("paste target pane disappeared");
+	x->paste.wp = NULL;
+	return;
+
+found:
+	if (xt_paste_property(x, xev->requestor, xev->property) == 0)
+		XDeleteProperty(x->display, xev->requestor, xev->property);
+}
+
 void
 xtmux_bell(struct tty *tty)
 {
@@ -1392,12 +1497,14 @@ xtmux_main(struct tty *tty)
 		switch (xev.type)
 		{
 			case KeyPress:
+				x->last_time = xev.xkey.time;
 				xtmux_key_press(tty, &xev.xkey);
 				break;
 
 			case ButtonPress:
 			case ButtonRelease:
-			case MotionNotify:
+			case MotionNotify: /* XMotionEvent looks enough like XButtonEvent */
+				x->last_time = xev.xbutton.time;
 				xtmux_button_press(tty, &xev.xbutton);
 				break;
 
@@ -1415,12 +1522,17 @@ xtmux_main(struct tty *tty)
 				break;
 
 			case SelectionClear:
+				x->last_time = xev.xselectionclear.time;
 				/* could do paste_free_top or something, but probably shouldn't.
 				 * might want to visually indicate X selection some other way, though */
 				break;
 
 			case SelectionRequest:
 				xtmux_selection_request(tty, &xev.xselectionrequest);
+				break;
+
+			case SelectionNotify:
+				xtmux_selection_notify(tty, &xev.xselection);
 				break;
 
 			default:
