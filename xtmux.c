@@ -466,7 +466,7 @@ xtmux_open(struct tty *tty, char **cause)
 	gc_values.foreground = x->fg;
 	gc_values.background = x->bg;
 	gc_values.font = x->font->fid;
-	gc_values.graphics_exposures = False;
+	gc_values.graphics_exposures = True;
 	x->gc = XCreateGC(x->display, x->window, GCForeground | GCBackground | GCFont | GCGraphicsExposures, &gc_values);
 
 	gc_values.foreground = WhitePixel(x->display, XSCREEN);
@@ -1573,12 +1573,27 @@ static void
 xtmux_expose(struct tty *tty, XExposeEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
-	int x2 = xev->x + xev->width  + x->font_width  - 1;
-	int y2 = xev->y + xev->height + x->font_height - 1;
+	int px1 = xev->x;
+	int py1 = xev->y;
+	int cx1 = px1 / x->font_width;
+	int cy1 = py1 / x->font_height;
+	int px2 = px1 + xev->width;
+	int py2 = py1 + xev->height;
+	int cx2 = (px2 + x->font_width  - 1) / x->font_width;
+	int cy2 = (py2 + x->font_height - 1) / x->font_height;
 
-	xtmux_redraw(x->client, 
-			xev->x / x->font_width, xev->y / x->font_height,
-			x2     / x->font_width, y2     / x->font_height);
+	#define CLEAR(X1, X2, Y1, Y2) \
+		XClearArea(x->display, x->window, X1, Y1, (X2)-(X1), (Y2)-(Y1), False)
+	if  	     (C2X(cx1) < px1)
+		CLEAR(C2X(cx1),  px1, C2Y(cy1), C2Y(cy2));
+	if                           (C2Y(cy1) < py1)
+		CLEAR(px1,  C2X(cx2), C2Y(cy1),  py1);
+	if           (px2 < C2X(cx2))
+		CLEAR(px2,  C2X(cx2), py1,  C2Y(cy2));
+	if                           (py2 < C2Y(cy2))
+		CLEAR(px1,  px2,      py2,  C2Y(cy2));
+	#undef CLEAR
+	xtmux_redraw(x->client, cx1, cy1, cx2, cy2);
 }
 
 static void
@@ -1605,7 +1620,11 @@ xtmux_main(struct tty *tty)
 				xtmux_button_press(tty, &xev.xbutton);
 				break;
 
+			case NoExpose:
+				break;
+
 			case Expose:
+			case GraphicsExpose:
 				xtmux_expose(tty, &xev.xexpose);
 				break;
 
