@@ -225,11 +225,11 @@ xdisplay_callback(unused int fd, unused short events, void *data)
 static long
 event_mask(int mode)
 {
-	long m = KeyPressMask | ExposureMask | StructureNotifyMask;
+	long m = KeyPressMask | ExposureMask | StructureNotifyMask | ButtonPressMask;
 
-	if (mode & (MODE_MOUSE_STANDARD | MODE_MOUSE_BUTTON | MODE_MOUSE_ANY))
+	if (mode & ALL_MOUSE_MODES)
 	{
-		m |= ButtonPressMask | ButtonReleaseMask;
+		m |= ButtonReleaseMask;
 		if (mode & MODE_MOUSE_ANY)
 			m |= PointerMotionMask;
 		else /* if (mode & MODE_MOUSE_BUTTON) */
@@ -692,7 +692,7 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	else if (!(s->mode & MODE_CURSOR))
 		DRAW_CURSOR(x, -1, -1);
 
-	if ((tty->mode ^ mode) & (MODE_MOUSE_STANDARD | MODE_MOUSE_BUTTON | MODE_MOUSE_ANY))
+	if ((tty->mode ^ mode) & ALL_MOUSE_MODES)
 	{
 		XSelectInput(x->display, x->window, event_mask(mode));
 		XUPDATE();
@@ -1128,8 +1128,6 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 
 	XChangeProperty(x->display, DefaultRootWindow(x->display),
 			XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace, ctx->ptr, ctx->num);
-
-	XUPDATE();
 }
 
 static void 
@@ -1186,8 +1184,17 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 }
 
 /* cheat a little: */
-void	cmd_paste_buffer_filter(
-	    struct window_pane *, const char *, size_t, const char *);
+extern void cmd_paste_buffer_filter(struct window_pane *, const char *, size_t, const char *);
+
+static void
+do_paste(const struct paste_ctx *p, const char *data, size_t size)
+{
+
+	if (p->sep)
+		cmd_paste_buffer_filter(p->wp, data, size, p->sep);
+	else
+		bufferevent_write(p->wp->event, data, size);
+}
 
 static int 
 xt_paste_property(struct xtmux *x, Window w, Atom p)
@@ -1201,12 +1208,15 @@ xt_paste_property(struct xtmux *x, Window w, Atom p)
 	}
 
 	log_warnx("pasting %lu characters", t.nitems);
-	cmd_paste_buffer_filter(x->paste.wp, t.value, t.nitems, x->paste.sep);
+	do_paste(&x->paste, t.value, t.nitems);
 
 	x->paste.time = 0;
 	x->paste.wp = NULL;
-	xfree(x->paste.sep);
-	x->paste.sep = NULL;
+	if (x->paste.sep)
+	{
+		xfree(x->paste.sep);
+		x->paste.sep = NULL;
+	}
 	XFree(t.value);
 
 	return 0;
@@ -1233,14 +1243,26 @@ xtmux_paste(struct xtmux *x, struct window_pane *wp, const char *which, const ch
 	if (s == None)
 		return -1;
 
-	if (x->paste.sep)
-		xfree(x->paste.sep);
 	x->paste.time = x->last_time;
 	x->paste.wp = wp;
-	x->paste.sep = strdup(sep);
+	if (x->paste.sep)
+		xfree(x->paste.sep);
+	if (sep)
+		x->paste.sep = strdup(sep);
+	else
+		x->paste.sep = NULL;
 
 	if (s >= XA_CUT_BUFFER0 && s <= XA_CUT_BUFFER7)
 		return xt_paste_property(x, DefaultRootWindow(x->display), s);
+
+	if (XGetSelectionOwner(x->display, s) == x->window) 
+	{
+		/* short cut */
+		struct paste_buffer *pb = paste_get_top(&global_buffers);
+		if (pb)
+			do_paste(&x->paste, pb->data, pb->size);
+		return 0;
+	}
 
 	return XConvertSelection(x->display, s, XA_STRING, XA_STRING, x->window, x->paste.time);
 }
@@ -1510,6 +1532,14 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 				case Button4: m.b = MOUSE_1 | MOUSE_45; break;
 				case Button5: m.b = MOUSE_2 | MOUSE_45; break;
 				default: return;
+			}
+			if (!(tty->mode & ALL_MOUSE_MODES) || 
+					(xev->state & ShiftMask && xev->button == Button2))
+			{
+				/* this is a little hacky, but we emulate xterm's behavior */
+				if (xev->button == Button2 && x->client->session && x->client->session->curw->window->active)
+					xtmux_paste(x, x->client->session->curw->window->active, NULL, NULL);
+				return;
 			}
 			break;
 		case ButtonRelease:
