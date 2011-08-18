@@ -124,10 +124,15 @@ xtmux_init(struct client *c, char *display)
 {
 	c->tty.xtmux = xcalloc(1, sizeof *c->tty.xtmux);
 
-	xfree(c->tty.termname);
+	if (c->tty.termname)
+		xfree(c->tty.termname);
 	c->tty.termname = xstrdup("xtmux");
-	xfree(c->tty.path);
+	if (c->tty.path)
+		xfree(c->tty.path);
 	c->tty.path = xstrdup(display);
+
+	if (!c->tty.ccolour)
+		c->tty.ccolour = xstrdup("");
 	
 	c->tty.xtmux->client = c;
 }
@@ -443,6 +448,11 @@ xtmux_open(struct tty *tty, char **cause)
 
 	if (!x->font)
 		FAIL("could not load X font");
+
+	if (!tty->sx)
+		tty->sx = 80;
+	if (!tty->sy)
+		tty->sx = 24;
 
 	x->window = XCreateSimpleWindow(x->display, DefaultRootWindow(x->display),
 			0, 0, C2W(tty->sx), C2H(tty->sy),
@@ -1248,7 +1258,7 @@ xtmux_paste(struct xtmux *x, struct window_pane *wp, const char *which, const ch
 	if (x->paste.sep)
 		xfree(x->paste.sep);
 	if (sep)
-		x->paste.sep = strdup(sep);
+		x->paste.sep = xstrdup(sep);
 	else
 		x->paste.sep = NULL;
 

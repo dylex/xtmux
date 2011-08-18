@@ -77,7 +77,11 @@ cmd_attach_session_exec(struct cmd *self, struct cmd_ctx *ctx)
 		session_update_activity(s);
 		server_redraw_client(ctx->curclient);
 	} else {
-		if (!(ctx->cmdclient->flags & CLIENT_TERMINAL)) {
+		if (!(ctx->cmdclient->flags & CLIENT_TERMINAL
+#ifdef XTMUX
+					|| ctx->cmdclient->tty.xtmux
+#endif
+		     )) {
 			ctx->error(ctx, "not a terminal");
 			return (-1);
 		}
