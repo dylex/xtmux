@@ -783,6 +783,8 @@ server_client_msg_dispatch(struct client *c)
 			memcpy(&xdisplaydata, imsg.data, sizeof xdisplaydata);
 			xdisplaydata.display[(sizeof xdisplaydata.display)-1] = '\0';
 			xtmux_init(c, xdisplaydata.display);
+			c->tty.key_callback = server_client_handle_key;
+			c->tty.key_data = c;
 			break;
 #endif
 		case MSG_RESIZE:

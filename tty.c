@@ -136,6 +136,8 @@ tty_open(struct tty *tty, const char *overrides, char **cause)
 			fatal("fcntl failed");
 		tty->log_fd = fd;
 	}
+	else
+		tty->log_fd = -1;
 
 #ifdef XTMUX
 	if (tty->xtmux)
