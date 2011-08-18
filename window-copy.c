@@ -873,17 +873,8 @@ window_copy_mouse(
 		return;
 	}
 
-	/*
-	 * If already reading motion, move the cursor while buttons are still
-	 * pressed, or stop the selection on their release.
-	 */
-	if (s->mode & MODE_MOUSE_BUTTON) {
-		window_copy_update_cursor(wp, m->x, m->y);
-		if (window_copy_update_selection(wp))
-			window_copy_redraw_screen(wp);
-		if ((m->b & MOUSE_BUTTON) != MOUSE_UP) {
-			return;
-		}
+	/* ideally would like to copy + paste, but for now just copy + stop */
+	if (button == MOUSE_2)
 		goto reset_mode;
 
 	moved = m->x != data->mouse_x || m->y != data->mouse_y;
@@ -956,6 +947,10 @@ window_copy_mouse(
 		else
 			window_copy_redraw_lines(wp, data->cy, old_cy-data->cy+1);
 	}
+
+	if (!data->mouse_click && 
+			window_copy_update_selection(wp))
+		window_copy_redraw_screen(wp);
 
 	return;
 
