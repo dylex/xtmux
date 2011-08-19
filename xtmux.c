@@ -67,9 +67,12 @@ struct xtmux {
 	Font		font_bold, font_italic;
 	u_short		font_width, font_height;
 
-	GC		gc, cursor_gc;
+	GC		gc;
 	unsigned long	fg, bg;
 	unsigned long	colors[XTMUX_NUM_COLORS];
+
+	GC		cursor_gc;
+	Pixmap		cursor;
 
 	int		cx, cy; /* last drawn cursor location, or -1 if none/hidden */
 	u_int		mx, my; /* last known mouse location */
@@ -319,6 +322,60 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 	xfree(s);
 }
 
+static void
+xtmux_fill_cursor(struct tty *tty)
+{
+	struct xtmux *x = tty->xtmux;
+	u_int w = x->font_width;
+	u_int h = x->font_height;
+	GC gc;
+
+	if (!x->cursor)
+		x->cursor = XCreatePixmap(x->display, DefaultRootWindow(x->display), w, h, 1);
+
+	gc = XCreateGC(x->display, x->cursor, 0, NULL);
+	XSetForeground(x->display, gc, 0);
+	XFillRectangle(x->display, x->cursor, gc, 0, 0, w, h);
+	XSetForeground(x->display, gc, 1);
+
+	log_debug("creating cursor %d", tty->cstyle);
+	switch (tty->cstyle)
+	{
+		/* based on http://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+		 * we don't (bother to) support blinking yet */
+		default:
+		case 0: /* default */
+		case 1: /* block (blinking) */
+		case 2: /* block (steady) */
+			XFillRectangle(x->display, x->cursor, gc, 0, 0, w, h);
+			break;
+		case 3: /* underscore (blinking) */
+		case 4: /* underscore (steady) */
+			XDrawLine(x->display, x->cursor, gc, 0, h-1, w-1, h-1);
+			break;
+		/* xtmux extensions (leaving a bit for blink): */
+		case 5: /* insert bar */
+		case 6:
+			XDrawLine(x->display, x->cursor, gc, 0, 0, 0, h-1);
+			break;
+
+		case 7: /* outline */
+		case 8:
+			XDrawRectangle(x->display, x->cursor, gc, 0, 0, w-1, h-1);
+			break;
+		case 9: /* bottom half */
+		case 10:
+			XFillRectangle(x->display, x->cursor, gc, 0, h/2, w, (h+1)/2);
+			break;
+		case 11: /* left half */
+		case 12:
+			XFillRectangle(x->display, x->cursor, gc, 0, 0, w/2, h);
+			break;
+	}
+
+	XFreeGC(x->display, gc);
+}
+
 int
 xtmux_setup(struct tty *tty)
 {
@@ -352,6 +409,13 @@ xtmux_setup(struct tty *tty)
 
 			recalculate_sizes();
 		}
+
+		if (x->cursor)
+		{
+			XFreePixmap(x->display, x->cursor);
+			x->cursor = None;
+		}
+		xtmux_fill_cursor(tty);
 	}
 
 	if (x->font_bold)
@@ -515,6 +579,12 @@ xtmux_close(struct tty *tty)
 		x->paste.sep = NULL;
 	}
 
+	if (x->cursor)
+	{
+		XFreePixmap(x->display, x->cursor);
+		x->cursor = None;
+	}
+
 	if (x->cursor_gc != None)
 	{
 		XFreeGC(x->display, x->cursor_gc);
@@ -628,26 +698,24 @@ xtmux_reset(struct tty *tty)
 	xtmux_attributes(tty, &grid_default_cell);
 }
 
+static void
+xt_fill_cursor(struct xtmux *x)
+{
+	if (x->cx < 0 || x->cy < 0)
+		return;
+
+	XCopyPlane(x->display, x->cursor, x->window, x->cursor_gc, 0, 0, x->font_width, x->font_height, C2X(x->cx), C2Y(x->cy), 1);
+}
+
 static int
 xt_draw_cursor(struct xtmux *x, int cx, int cy)
 {
 	if (x->cx == cx && x->cy == cy)
 		return 0;
 
-	if (x->cx >= 0)
-	{
-		XFillRectangle(x->display, x->window, x->cursor_gc, C2X(x->cx), C2Y(x->cy), x->font_width, x->font_height);
-		x->cx = -1;
-		x->cy = -1;
-	}
-
-	if (cx >= 0)
-	{
-		XFillRectangle(x->display, x->window, x->cursor_gc, C2X(cx), C2Y(cy), x->font_width, x->font_height);
-		x->cx = cx;
-		x->cy = cy;
-	}
-
+	xt_fill_cursor(x);
+	x->cx = cx; x->cy = cy;
+	xt_fill_cursor(x);
 	return 1;
 }
 
@@ -696,6 +764,13 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	struct xtmux *x = tty->xtmux;
 
 	CHECK_XFATAL();
+
+	if (tty->cstyle != s->cstyle)
+	{
+		xt_draw_cursor(x, -1, -1);
+		tty->cstyle = s->cstyle;
+		xtmux_fill_cursor(tty);
+	}
 
 	if (mode & MODE_CURSOR)
 		DRAW_CURSOR(x, tty->cx, tty->cy);
@@ -1178,7 +1253,7 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 			Atom targets[] = { XA_STRING, xev->target };
 
 			if (XChangeProperty(x->display, r.requestor, xev->property, XA_ATOM, 32, PropModeReplace, 
-						(unsigned char *)targets, sizeof targets/sizeof *targets))
+						(unsigned char *)targets, nitems(targets)))
 				r.property = xev->property;
 		}
 		else if (!strcmp(target, "TEXT"))
