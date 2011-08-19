@@ -250,12 +250,12 @@ event_mask(int mode)
 }
 
 static unsigned long
-xt_parse_color(struct xtmux *x, char *s, unsigned long def)
+xt_parse_color(struct xtmux *x, const char *s, unsigned long def)
 {
 	int n;
 	XColor c, m;
 	size_t cl;
-	char *p = s;
+	const char *p = s;
 	const char *e;
 
 	/* partial colour_fromstring */
@@ -756,6 +756,20 @@ xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 
 	tty->cx = cx;
 	tty->cy = cy;
+}
+
+void
+xtmux_force_cursor_colour(struct tty *tty, const char *ccolour)
+{
+	struct xtmux *x = tty->xtmux;
+	unsigned long c;
+	
+	/* We draw cursor with xor, so xor with background to get right color, defaulting to inverse */
+	c = WhitePixel(x->display, XSCREEN);
+	c = xt_parse_color(x, ccolour, x->bg ^ c);
+	log_debug("setting cursor color to %s = %lx", ccolour, c);
+	xt_draw_cursor(x, -1, -1);
+	XSetForeground(x->display, x->cursor_gc, x->bg ^ c);
 }
 
 void
