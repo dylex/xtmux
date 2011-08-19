@@ -25,6 +25,7 @@
 
 static void xtmux_main(struct tty *);
 static int xtmux_putc_flush(struct tty *);
+static void xt_expose(struct xtmux *, XExposeEvent *);
 
 #define XTMUX_NUM_COLORS 256
 
@@ -82,6 +83,8 @@ struct xtmux {
 
 	u_short		putc_buf_len;
 	wchar		putc_buf[PUTC_BUF_LEN];
+
+	u_int		copy_active;
 
 	struct paste_ctx paste; /* one outstanding paste request at a time is enough */
 
@@ -546,7 +549,8 @@ xtmux_open(struct tty *tty, char **cause)
 	gc_values.foreground = WhitePixel(x->display, XSCREEN);
 	gc_values.background = BlackPixel(x->display, XSCREEN);
 	gc_values.function = GXxor; /* this'll be fine for TrueColor, etc, but we might want to avoid PseudoColor for this */
-	x->cursor_gc = XCreateGC(x->display, x->window, GCFunction | GCForeground | GCBackground, &gc_values);
+	gc_values.graphics_exposures = False;
+	x->cursor_gc = XCreateGC(x->display, x->window, GCFunction | GCForeground | GCBackground | GCGraphicsExposures, &gc_values);
 
 	XSelectInput(x->display, x->window, event_mask(tty->mode));
 
@@ -738,6 +742,28 @@ xt_clear(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 static void
 xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int h)
 {
+	while (x->copy_active)
+	{
+		XEvent xev;
+		XSync(x->display, False);
+		if (XCheckTypedWindowEvent(x->display, x->window, GraphicsExpose, &xev))
+			xt_expose(x, &xev.xexpose);
+		else if (XCheckTypedWindowEvent(x->display, x->window, NoExpose, &xev))
+			x->copy_active --;
+		else {
+			/* this should not happen;
+			 * however, if it does, we can't copy cleanly.
+			 * instead, just clear and refresh (poorly), and hope
+			 * the proper event comes in later if it matters
+			 */
+			log_warnx("didn't get expected expose event; clearing");
+			xt_invalidate(x, x2, y2, w, h);
+			XClearArea(x->display, x->window, C2X(x2), C2Y(y2), C2W(w), C2H(h), True);
+			return;
+		}
+	}
+
+	x->copy_active ++;
 	if (INSIDE(x->cx, x->cy, x1, y1, w, h))
 		xt_draw_cursor(x, -1, -1);
 	else 
@@ -1699,9 +1725,8 @@ xtmux_configure_notify(struct tty *tty, XConfigureEvent *xev)
 }
 
 static void
-xtmux_expose(struct tty *tty, XExposeEvent *xev)
+xt_expose(struct xtmux *x, XExposeEvent *xev)
 {
-	struct xtmux *x = tty->xtmux;
 	int px1 = xev->x;
 	int py1 = xev->y;
 	int cx1 = px1 / x->font_width;
@@ -1710,6 +1735,9 @@ xtmux_expose(struct tty *tty, XExposeEvent *xev)
 	int py2 = py1 + xev->height;
 	int cx2 = (px2 + x->font_width  - 1) / x->font_width;
 	int cy2 = (py2 + x->font_height - 1) / x->font_height;
+
+	if (xev->type == GraphicsExpose && !xev->count && x->copy_active)
+		x->copy_active --;
 
 	#define CLEAR(X1, X2, Y1, Y2) \
 		XClearArea(x->display, x->window, X1, Y1, (X2)-(X1), (Y2)-(Y1), False)
@@ -1750,12 +1778,14 @@ xtmux_main(struct tty *tty)
 				break;
 
 			case NoExpose:
+				if (xev.xnoexpose.drawable == x->window && x->copy_active)
+					x->copy_active --;
 				break;
 
-			case Expose:
 			case GraphicsExpose:
+			case Expose:
 				if (xev.xexpose.window == x->window)
-					xtmux_expose(tty, &xev.xexpose);
+					xt_expose(x, &xev.xexpose);
 				break;
 
 			case UnmapNotify:
