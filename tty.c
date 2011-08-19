@@ -454,7 +454,7 @@ tty_force_cursor_colour(struct tty *tty, const char *ccolour)
 {
 #ifdef XTMUX
 	if (tty->xtmux)
-		/*xtmux_force_cursor_colour(tty, ccolour)*/;
+		xtmux_force_cursor_colour(tty, ccolour);
 	else
 #endif
 	if (*ccolour == '\0')
