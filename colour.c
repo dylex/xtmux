@@ -194,6 +194,7 @@ colour_tostring(int c)
 int
 colour_fromstring(const char *s)
 {
+	size_t			 colourlen;
 	const char		*errstr;
 	const char		*cp;
 	struct colour_rgb	 rgb;
@@ -210,8 +211,9 @@ colour_fromstring(const char *s)
 		return (colour_rgb_find(&rgb) | 0x100);
 	}
 
-	if (strncasecmp(s, "colour", (sizeof "colour") - 1) == 0) {
-		n = strtonum(s + (sizeof "colour") - 1, 0, 255, &errstr);
+	if (strncasecmp(s, "colour", colourlen = (sizeof "colour") - 1) == 0 ||
+			strncasecmp(s, "color", colourlen = (sizeof "color") - 1) == 0) {
+		n = strtonum(s + colourlen, 0, 255, &errstr);
 		if (errstr != NULL)
 			return (-1);
 		return (n | 0x100);
