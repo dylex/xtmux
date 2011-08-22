@@ -68,6 +68,9 @@ struct xtmux {
 	Font		font_bold, font_italic;
 	u_short		font_width, font_height;
 
+	KeySym		prefix_key;
+	short		prefix_mod;
+
 	GC		gc;
 	unsigned long	fg, bg;
 	unsigned long	colors[XTMUX_NUM_COLORS];
@@ -78,13 +81,11 @@ struct xtmux {
 	int		cx, cy; /* last drawn cursor location, or -1 if none/hidden */
 	u_int		mx, my; /* last known mouse location */
 
-	KeySym		prefix_key;
-	short		prefix_mod;
-
 	u_short		putc_buf_len;
 	wchar		putc_buf[PUTC_BUF_LEN];
 
-	u_int		copy_active;
+	u_short		copy_active; /* outstanding XCopyArea; should be <= 1 */
+	u_short		focus_out;
 
 	struct paste_ctx paste; /* one outstanding paste request at a time is enough */
 
@@ -236,7 +237,7 @@ xdisplay_callback(unused int fd, unused short events, void *data)
 static long
 event_mask(int mode)
 {
-	long m = KeyPressMask | ExposureMask | StructureNotifyMask | ButtonPressMask;
+	long m = KeyPressMask | ExposureMask | FocusChangeMask | StructureNotifyMask | ButtonPressMask;
 
 	if (mode & ALL_MOUSE_MODES)
 	{
@@ -326,9 +327,8 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 }
 
 static void
-xtmux_fill_cursor(struct tty *tty)
+xt_fill_cursor(struct xtmux *x, u_int cstyle)
 {
-	struct xtmux *x = tty->xtmux;
 	u_int w = x->font_width;
 	u_int h = x->font_height;
 	GC gc;
@@ -341,13 +341,18 @@ xtmux_fill_cursor(struct tty *tty)
 	XFillRectangle(x->display, x->cursor, gc, 0, 0, w, h);
 	XSetForeground(x->display, gc, 1);
 
-	log_debug("creating cursor %d", tty->cstyle);
-	switch (tty->cstyle)
+	if (x->focus_out)
+		cstyle >>= 4;
+	cstyle &= 0xf;
+	if (cstyle == 0)
+		cstyle = x->focus_out ? 8 : 2;
+
+	log_debug("creating cursor %d", cstyle);
+	switch (cstyle)
 	{
 		/* based on http://invisible-island.net/xterm/ctlseqs/ctlseqs.html
 		 * we don't (bother to) support blinking yet */
 		default:
-		case 0: /* default */
 		case 1: /* block (blinking) */
 		case 2: /* block (steady) */
 			XFillRectangle(x->display, x->cursor, gc, 0, 0, w, h);
@@ -361,7 +366,6 @@ xtmux_fill_cursor(struct tty *tty)
 		case 6:
 			XDrawLine(x->display, x->cursor, gc, 0, 0, 0, h-1);
 			break;
-
 		case 7: /* outline */
 		case 8:
 			XDrawRectangle(x->display, x->cursor, gc, 0, 0, w-1, h-1);
@@ -373,6 +377,9 @@ xtmux_fill_cursor(struct tty *tty)
 		case 11: /* left half */
 		case 12:
 			XFillRectangle(x->display, x->cursor, gc, 0, 0, w/2, h);
+			break;
+		/* what else? fuzz? L? */
+		case 15: /* blank */
 			break;
 	}
 
@@ -418,7 +425,7 @@ xtmux_setup(struct tty *tty)
 			XFreePixmap(x->display, x->cursor);
 			x->cursor = None;
 		}
-		xtmux_fill_cursor(tty);
+		xt_fill_cursor(x, tty->cstyle);
 	}
 
 	if (x->font_bold)
@@ -703,7 +710,7 @@ xtmux_reset(struct tty *tty)
 }
 
 static void
-xt_fill_cursor(struct xtmux *x)
+xt_draw_cursor(struct xtmux *x)
 {
 	if (x->cx < 0 || x->cy < 0)
 		return;
@@ -712,18 +719,18 @@ xt_fill_cursor(struct xtmux *x)
 }
 
 static int
-xt_draw_cursor(struct xtmux *x, int cx, int cy)
+xt_move_cursor(struct xtmux *x, int cx, int cy)
 {
 	if (x->cx == cx && x->cy == cy)
 		return 0;
 
-	xt_fill_cursor(x);
+	xt_draw_cursor(x);
 	x->cx = cx; x->cy = cy;
-	xt_fill_cursor(x);
+	xt_draw_cursor(x);
 	return 1;
 }
 
-#define DRAW_CURSOR(X, CX, CY) ({ if (xt_draw_cursor(X, CX, CY)) XUPDATE(); })
+#define DRAW_CURSOR(X, CX, CY) ({ if (xt_move_cursor(X, CX, CY)) XUPDATE(); })
 
 static void
 xt_invalidate(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
@@ -765,7 +772,7 @@ xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int 
 
 	x->copy_active ++;
 	if (INSIDE(x->cx, x->cy, x1, y1, w, h))
-		xt_draw_cursor(x, -1, -1);
+		xt_move_cursor(x, -1, -1);
 	else 
 		xt_invalidate(x, x2, y2, w, h);
 	XCopyArea(x->display, x->window, x->window, x->gc,
@@ -794,7 +801,7 @@ xtmux_force_cursor_colour(struct tty *tty, const char *ccolour)
 	c = WhitePixel(x->display, XSCREEN);
 	c = xt_parse_color(x, ccolour, x->bg ^ c);
 	log_debug("setting cursor color to %s = %lx", ccolour, c);
-	xt_draw_cursor(x, -1, -1);
+	xt_move_cursor(x, -1, -1);
 	XSetForeground(x->display, x->cursor_gc, x->bg ^ c);
 }
 
@@ -807,9 +814,9 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 
 	if (tty->cstyle != s->cstyle)
 	{
-		xt_draw_cursor(x, -1, -1);
+		xt_move_cursor(x, -1, -1);
 		tty->cstyle = s->cstyle;
-		xtmux_fill_cursor(tty);
+		xt_fill_cursor(x, tty->cstyle);
 	}
 
 	if (mode & MODE_CURSOR)
@@ -965,7 +972,7 @@ xtmux_putc_flush(struct tty *tty)
 	x->putc_buf_len = 0;
 
 	if (tty->mode & MODE_CURSOR)
-		xt_draw_cursor(x, tty->cx, tty->cy);
+		xt_move_cursor(x, tty->cx, tty->cy);
 
 	return 1;
 }
@@ -1754,6 +1761,19 @@ xt_expose(struct xtmux *x, XExposeEvent *xev)
 }
 
 static void
+xtmux_focus(struct tty *tty, int focus)
+{
+	struct xtmux *x = tty->xtmux;
+
+	if (x->focus_out == !focus)
+		return;
+
+	xt_move_cursor(x, -1, -1);
+	x->focus_out = !focus;
+	xt_fill_cursor(x, tty->cstyle);
+}
+
+static void
 xtmux_main(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
@@ -1786,6 +1806,12 @@ xtmux_main(struct tty *tty)
 			case Expose:
 				if (xev.xexpose.window == x->window)
 					xt_expose(x, &xev.xexpose);
+				break;
+
+			case FocusIn:
+			case FocusOut:
+				if (xev.xfocus.window == x->window)
+					xtmux_focus(tty, xev.type == FocusIn);
 				break;
 
 			case UnmapNotify:
