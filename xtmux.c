@@ -779,6 +779,28 @@ xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int 
 			C2X(x1), C2Y(y1), C2W(w), C2H(h), C2X(x2), C2Y(y2));
 }
 
+static void
+xt_scroll(struct xtmux *x, u_int sx, u_int sy, u_int w, u_int h, int n)
+{
+	if (n > 0)
+	{	/* up */
+		if (h > (u_int)n)
+			xt_copy(x, sx, sy+n, sx, sy, w, h-n);
+		else
+			n = h;
+		xt_clear(x, sx, sy+h-n, w, n);
+	}
+	else
+	{ 	/* down */
+		n = -n;
+		if (h > (u_int)n)
+			xt_copy(x, sx, sy, sx, sy+n, w, h-n);
+		else
+			n = h;
+		xt_clear(x, sx, sy, w, n);
+	}
+}
+
 void
 xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 {
@@ -971,9 +993,6 @@ xtmux_putc_flush(struct tty *tty)
 	xt_invalidate(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf_len, 1);
 	x->putc_buf_len = 0;
 
-	if (tty->mode & MODE_CURSOR)
-		xt_move_cursor(x, tty->cx, tty->cy);
-
 	return 1;
 }
 
@@ -1063,18 +1082,13 @@ xtmux_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
-	u_int dy = ctx->ocy + ctx->num;
 
 	CHECK_PUTC_FLUSH();
 
-	if (dy < ctx->orlower + 1)
-		xt_copy(x,
-				PANE_X(0), PANE_CY,
-				PANE_X(0), PANE_Y(dy),
-				screen_size_x(s), ctx->orlower + 1 - dy);
-	xt_clear(x,
+	xt_scroll(x,
 			PANE_X(0), PANE_CY,
-			screen_size_x(s), ctx->num);
+			screen_size_x(s), ctx->orlower+1-ctx->ocy,
+			-ctx->num);
 
 	XUPDATE();
 }
@@ -1084,18 +1098,13 @@ xtmux_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
-	u_int dy = ctx->ocy + ctx->num;
 
 	CHECK_PUTC_FLUSH();
 
-	if (dy < ctx->orlower + 1)
-		xt_copy(x,
-				PANE_X(0), PANE_Y(dy),
-				PANE_X(0), PANE_CY,
-				screen_size_x(s), ctx->orlower + 1 - dy);
-	xt_clear(x,
-			PANE_X(0), PANE_Y(ctx->orlower + 1 - ctx->num),
-			screen_size_x(s), ctx->num);
+	xt_scroll(x,
+			PANE_X(0), PANE_CY,
+			screen_size_x(s), ctx->orlower+1-ctx->ocy,
+			ctx->num);
 
 	XUPDATE();
 }
@@ -1153,13 +1162,10 @@ xtmux_cmd_reverseindex(struct tty *tty, const struct tty_ctx *ctx)
 	CHECK_PUTC_FLUSH();
 
 	/* same as insertline(1) at top */
-	xt_copy(x,
+	xt_scroll(x,
 			PANE_X(0), PANE_Y(ctx->orupper),
-			PANE_X(0), PANE_Y(ctx->orupper + 1),
-			screen_size_x(s), ctx->orlower - ctx->orupper);
-	xt_clear(x,
-			PANE_X(0), PANE_Y(ctx->orupper),
-			screen_size_x(s), 1);
+			screen_size_x(s), ctx->orlower+1-ctx->orupper,
+			-1);
 
 	XUPDATE();
 }
@@ -1173,13 +1179,10 @@ xtmux_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 	CHECK_PUTC_FLUSH();
 
 	/* same as deleteline(1) at top */
-	xt_copy(x,
-			PANE_X(0), PANE_Y(ctx->orupper+1),
+	xt_scroll(x,
 			PANE_X(0), PANE_Y(ctx->orupper),
-			screen_size_x(s), ctx->orlower - ctx->orupper);
-	xt_clear(x,
-			PANE_X(0), PANE_Y(ctx->orlower),
-			screen_size_x(s), 1);
+			screen_size_x(s), ctx->orlower+1-ctx->orupper,
+			1);
 
 	XUPDATE();
 }
