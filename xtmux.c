@@ -25,6 +25,8 @@
 
 static void xtmux_main(struct tty *);
 static int xtmux_putc_flush(struct tty *);
+static int xt_scroll_flush(struct xtmux *);
+static void xtmux_redraw(struct client *, int, int, int, int);
 static void xt_expose(struct xtmux *, XExposeEvent *);
 
 #define XTMUX_NUM_COLORS 256
@@ -58,6 +60,11 @@ struct paste_ctx {
 	char *sep;
 };
 
+struct scroll {
+	u_int	x, y, w, h; /* the full area being scrolled (h-n lines are copied) */
+	int	n; /* number of lines to scroll, positive for up */
+};
+
 struct xtmux {
 	Display		*display;
 	struct event	event;
@@ -83,6 +90,8 @@ struct xtmux {
 
 	u_short		putc_buf_len;
 	wchar		putc_buf[PUTC_BUF_LEN];
+
+	struct scroll   scroll_buf;
 
 	u_short		copy_active; /* outstanding XCopyArea; should be <= 1 */
 	u_short		focus_out;
@@ -196,7 +205,7 @@ xdisplay_connection_callback(int fd, short events, void *data)
 
 	if (events & EV_READ)
 	{
-		CHECK_XFATAL();
+		CHECK_PUTC_FLUSH();
 
 		XProcessInternalConnection(tty->xtmux->display, fd);
 		xtmux_main(tty);
@@ -709,6 +718,40 @@ xtmux_reset(struct tty *tty)
 	xtmux_attributes(tty, &grid_default_cell);
 }
 
+/* prepare to draw in location; redraw pending if 0 */
+static int
+xt_touch(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
+{
+	struct scroll *s = &x->scroll_buf;
+	if (!s->n)
+		return 1;
+
+	/* outside scroll region? */
+	if (px+w <= s->x || px >= s->x+s->w || py+h <= s->y || py >= s->y+s->h)
+		return 1;
+
+	if (s->n > 0)
+	{
+		if (py < s->y+s->h-s->n)
+		{	/* includes copy region */
+			xt_scroll_flush(x);
+			return 2;
+		}
+		else	/* within invalidated region */
+			return 0;
+	}
+	else
+	{
+		if (py+h > s->y-s->n)
+		{
+			xt_scroll_flush(x);
+			return 2;
+		}
+		else
+			return 0;
+	}
+}
+
 static void
 xt_draw_cursor(struct xtmux *x)
 {
@@ -721,6 +764,9 @@ xt_draw_cursor(struct xtmux *x)
 static int
 xt_move_cursor(struct xtmux *x, int cx, int cy)
 {
+	if (!xt_touch(x, cx, cy, 1, 1))
+		return 0;
+
 	if (x->cx == cx && x->cy == cy)
 		return 0;
 
@@ -742,13 +788,25 @@ xt_invalidate(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 static void
 xt_clear(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 {
+	if (!xt_touch(x, cx, cy, w, h))
+		return;
 	xt_invalidate(x, cx, cy, w, h);
 	XClearArea(x->display, x->window, C2X(cx), C2Y(cy), C2W(w), C2H(h), False);
 }
 
 static void
+xt_redraw(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
+{
+	xt_clear(x, cx, cy, w, h);
+	xtmux_redraw(x->client, cx, cy, cx+w, cy+h);
+}
+
+static void
 xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int h)
 {
+	if (!xt_touch(x, x2, y2, w, h))
+		return;
+
 	while (x->copy_active)
 	{
 		XEvent xev;
@@ -763,9 +821,8 @@ xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int 
 			 * instead, just clear and refresh (poorly), and hope
 			 * the proper event comes in later if it matters
 			 */
-			log_warnx("didn't get expected expose event; clearing");
-			xt_invalidate(x, x2, y2, w, h);
-			XClearArea(x->display, x->window, C2X(x2), C2Y(y2), C2W(w), C2H(h), True);
+			log_warnx("didn't get expected expose event; redrawing");
+			xt_redraw(x, x2, y2, w, h);
 			return;
 		}
 	}
@@ -779,26 +836,50 @@ xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int 
 			C2X(x1), C2Y(y1), C2W(w), C2H(h), C2X(x2), C2Y(y2));
 }
 
-static void
-xt_scroll(struct xtmux *x, u_int sx, u_int sy, u_int w, u_int h, int n)
+static int
+xt_scroll_flush(struct xtmux *x)
 {
+	struct scroll *s = &x->scroll_buf;
+	int n = s->n;
+
+	if (!n)
+		return 0;
+
+	s->n = 0;
 	if (n > 0)
 	{	/* up */
-		if (h > (u_int)n)
-			xt_copy(x, sx, sy+n, sx, sy, w, h-n);
+		if (s->h > (u_int)n)
+			xt_copy(x, s->x, s->y+n, s->x, s->y, s->w, s->h-n);
 		else
-			n = h;
-		xt_clear(x, sx, sy+h-n, w, n);
+			n = s->h;
+		xt_redraw(x, s->x, s->y+s->h-n, s->w, n);
 	}
 	else
 	{ 	/* down */
 		n = -n;
-		if (h > (u_int)n)
-			xt_copy(x, sx, sy, sx, sy+n, w, h-n);
+		if (s->h > (u_int)n)
+			xt_copy(x, s->x, s->y, s->x, s->y+n, s->w, s->h-n);
 		else
-			n = h;
-		xt_clear(x, sx, sy, w, n);
+			n = s->h;
+		xt_redraw(x, s->x, s->y, s->w, n);
 	}
+
+	return 1;
+}
+
+static void
+xt_scroll(struct xtmux *x, u_int sx, u_int sy, u_int w, u_int h, int n)
+{
+	struct scroll *s = &x->scroll_buf;
+
+	if (s->n && (s->x != sx || s->y != sy || s->w != w || s->h != h || (s->n ^ n) < 0))
+		xt_scroll_flush(x);
+
+	s->x = sx;
+	s->y = sy;
+	s->w = w;
+	s->h = h;
+	s->n += n;
 }
 
 void
@@ -855,15 +936,18 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	tty->mode = mode;
 }
 
-static void
+static int
 xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, const struct grid_cell *gc, int cleared)
 {
 	u_int			i, px = C2X(cx), py = C2Y(cy), wx = C2W(n), hy = C2H(1);
 	u_char			fgc = gc->fg, bgc = gc->bg;
 	unsigned long		fg, bg;
 
+	if (!xt_touch(x, cx, cy, n, 1))
+		return 0;
+
 	if (gc->flags & GRID_FLAG_PADDING)
-		return;
+		return 0;
 
 	if (fgc >= 90 && fgc <= 97 && !(gc->flags & GRID_FLAG_FG256))
 		fgc -= 90 - 8;
@@ -962,6 +1046,8 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 				px-1, py-1,
 				wx, hy);
 	}
+
+	return 1;
 }
 
 static void
@@ -989,8 +1075,8 @@ xtmux_putc_flush(struct tty *tty)
 
 	CHECK_XFATAL(-1);
 
-	xt_draw_chars(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf, x->putc_buf_len, &tty->cell, 0);
-	xt_invalidate(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf_len, 1);
+	if (xt_draw_chars(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf, x->putc_buf_len, &tty->cell, 0))
+		xt_invalidate(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf_len, 1);
 	x->putc_buf_len = 0;
 
 	return 1;
@@ -1501,7 +1587,7 @@ xtmux_redraw_pane(struct tty *tty, struct window_pane *wp, int left, int top, in
 	left -= wp->xoff;
 	if (left < 0)
 		left = 0;
-	else if ((u_int)left > wp->sx)
+	else if ((u_int)left >= wp->sx)
 		return;
 	right -= wp->xoff;
 	if (right <= 0)
@@ -1780,6 +1866,8 @@ static void
 xtmux_main(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
+
+	xt_scroll_flush(x);
 
 	while (XPending(x->display))
 	{
