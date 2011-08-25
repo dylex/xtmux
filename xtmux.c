@@ -755,7 +755,7 @@ xt_touch(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 	}
 }
 
-static void
+static inline void
 xt_draw_cursor(struct xtmux *x)
 {
 	if (x->cx < 0 || x->cy < 0)
@@ -779,9 +779,13 @@ xt_move_cursor(struct xtmux *x, int cx, int cy)
 	return 1;
 }
 
-#define DRAW_CURSOR(X, CX, CY) ({ if (xt_move_cursor(X, CX, CY)) XUPDATE(); })
+static inline int
+xtmux_update_cursor(struct tty *tty)
+{
+	return (tty->mode & MODE_CURSOR) && xt_move_cursor(tty->xtmux, tty->cx, tty->cy);
+}
 
-static void
+static inline void
 xt_invalidate(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 {
 	if (INSIDE(x->cx, x->cy, cx, cy, w, h))
@@ -891,11 +895,11 @@ xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 	XENTRY();
 	xtmux_putc_flush(tty);
 
-	if (tty->mode & MODE_CURSOR)
-		DRAW_CURSOR(tty->xtmux, cx, cy);
-
 	tty->cx = cx;
 	tty->cy = cy;
+
+	if (xtmux_update_cursor(tty))
+		XUPDATE();
 
 	XRETURN();
 }
@@ -920,6 +924,7 @@ void
 xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 {
 	struct xtmux *x = tty->xtmux;
+	int up = 0;
 
 	XENTRY();
 
@@ -931,17 +936,18 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	}
 
 	if (mode & MODE_CURSOR)
-		DRAW_CURSOR(x, tty->cx, tty->cy);
+		up = xt_move_cursor(x, tty->cx, tty->cy);
 	else if (!(s->mode & MODE_CURSOR))
-		DRAW_CURSOR(x, -1, -1);
+		up = xt_move_cursor(x, -1, -1);
 
 	if ((tty->mode ^ mode) & ALL_MOUSE_MODES)
 	{
 		XSelectInput(x->display, x->window, event_mask(mode));
-		XUPDATE();
+		up = 1;
 	}
 
 	tty->mode = mode;
+	if (up) XUPDATE();
 	XRETURN_();
 }
 
@@ -1071,7 +1077,7 @@ xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, c
 	for (i = 0; i < n; i ++)
 		c[i] = grid_char(&gc[i], &gu[i]);
 
-	xt_draw_chars(x, cx, cy, c, n, ga, 1);
+	xt_draw_chars(x, cx, cy, c, n, ga, !INSIDE(x->cx, x->cy, cx, cy, n, 1));
 }
 
 static int
@@ -1649,10 +1655,9 @@ static void
 xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 {
 	struct tty *tty = &c->tty;
+	struct xtmux *x = tty->xtmux;
 	struct window *w = c->session->curw->window;
 	struct window_pane *wp;
-
-	xt_invalidate(tty->xtmux, left, top, right-left, bot-top);
 
 	if (bot >= (int)tty->sy && (c->message_string || c->prompt_string || options_get_number(&c->session->options, "status")))
 	{
@@ -1672,7 +1677,10 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 
 	/* TODO: borders, numbers */
 
-	xtmux_cursor(tty, tty->cx, tty->cy);
+	if (INSIDE(x->cx, x->cy, left, top, right-left, bot-top))
+		x->cx = x->cy = -1;
+	if (INSIDE(tty->cx, tty->cy, left, top, right-left, bot-top))
+		xtmux_update_cursor(tty);
 }
 
 static void
