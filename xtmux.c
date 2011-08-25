@@ -1113,11 +1113,12 @@ xtmux_putwc(struct tty *tty, u_int c)
 	else if (x->putc_buf_len >= PUTC_BUF_LEN)
 		xtmux_putc_flush(tty);
 
-	if (c < 0x20)
-		return;
-
-	x->putc_buf[x->putc_buf_len++] = c;
 	XUPDATE();
+
+	if (c < 0x20)
+		XRETURN_();
+	x->putc_buf[x->putc_buf_len++] = c;
+
 	XRETURN_();
 }
 
@@ -1380,7 +1381,7 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 
 	XSetSelectionOwner(x->display, XA_PRIMARY, x->window, CurrentTime /* XXX */);
 	if (XGetSelectionOwner(x->display, XA_PRIMARY) != x->window)
-		return;
+		XRETURN_();
 
 	XChangeProperty(x->display, DefaultRootWindow(x->display),
 			XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace, ctx->ptr, ctx->num);
@@ -1523,7 +1524,7 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 		struct paste_buffer *pb = paste_get_top(&global_buffers);
 		if (pb)
 			do_paste(&x->paste, pb->data, pb->size);
-		return 0;
+		XRETURN(0);
 	}
 
 	r = XConvertSelection(x->display, s, XA_STRING, XA_STRING, x->window, x->paste.time);
