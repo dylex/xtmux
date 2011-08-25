@@ -78,7 +78,7 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 			ctx->error(ctx, "not xtmux");
 			return (-1);
 		}
-		return xtmux_paste(ctx->curclient->tty.xtmux, wp, args_get(args, 'b'), sepstr);
+		return xtmux_paste(&ctx->curclient->tty, wp, args_get(args, 'b'), sepstr);
 	}
 #endif
 

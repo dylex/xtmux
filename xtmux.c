@@ -106,20 +106,18 @@ struct xtmux {
 #define XCOLORMAP	DefaultColormap(x->display, XSCREEN)
 #define XUPDATE()	event_active(&tty->xtmux->event, EV_WRITE, 0)
 
-static u_int xdisplay_recover_active;
+static u_int xdisplay_entry_count;
 static jmp_buf xdisplay_recover;
 
 /* One of these must be called at every entry point before an X call: */
-#define WHEN_XFATAL 	if (tty->xtmux->ioerror || \
-		((xdisplay_recover_active = 1) && setjmp(xdisplay_recover)))
-#define CHECK_XFATAL(E) WHEN_XFATAL return E
-#define CHECK_PUTC_FLUSH(ERR) ({ \
-		int _r = xtmux_putc_flush(tty); \
-		if (_r == -1) \
-			return ERR; \
-		if (!_r) \
-			CHECK_XFATAL(ERR); \
-	})
+#define XENTRY_CATCH 	if (tty->xtmux->ioerror || (!xdisplay_entry_count++ && setjmp(xdisplay_recover)))
+#define XENTRY(E)	XENTRY_CATCH return E
+#define XRETURN(R)	({ --xdisplay_entry_count; return R; })
+#ifdef DEBUG
+#define XRETURN_(R)	({ if (--xdisplay_entry_count) fatalx("xdisplay entry count mismatch"); return R; })
+#else
+#define	XRETURN_(R)	({ xdisplay_error_count = 0; return R; })
+#endif
 
 #define C2W(C) 		(x->font_width * (C))
 #define C2H(C) 		(x->font_height * (C))
@@ -189,9 +187,9 @@ xdisplay_ioerror(Display *disp)
 		c->tty.xtmux->ioerror = 1;
 	}
 
-	if ((i = xdisplay_recover_active))
+	if ((i = xdisplay_entry_count))
 	{
-		xdisplay_recover_active = 0;
+		xdisplay_entry_count = 0;
 		longjmp(xdisplay_recover, i);
 	}
 
@@ -205,10 +203,10 @@ xdisplay_connection_callback(int fd, short events, void *data)
 
 	if (events & EV_READ)
 	{
-		CHECK_PUTC_FLUSH();
-
+		XENTRY();
 		XProcessInternalConnection(tty->xtmux->display, fd);
 		xtmux_main(tty);
+		XRETURN_();
 	}
 }
 
@@ -239,8 +237,9 @@ xdisplay_callback(unused int fd, unused short events, void *data)
 {
 	struct tty *tty = (struct tty *)data;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
 	xtmux_main(tty);
+	XRETURN_();
 }
 
 static long
@@ -404,7 +403,7 @@ xtmux_setup(struct tty *tty)
 	const char *font, *prefix;
 	KeySym pkey = NoSymbol;
 
-	CHECK_XFATAL(-1);
+	XENTRY(-1);
 
 	font = options_get_string(o, "xtmux-font");
 	fs = XLoadQueryFont(x->display, font);
@@ -492,7 +491,7 @@ xtmux_setup(struct tty *tty)
 	}
 	x->prefix_key = pkey;
 
-	return 0;
+	XRETURN(0);
 }
 
 int
@@ -507,13 +506,15 @@ xtmux_open(struct tty *tty, char **cause)
 	XSetErrorHandler(xdisplay_error);
 	XSetIOErrorHandler(xdisplay_ioerror);
 
+	XENTRY_CATCH {
+		xasprintf(cause, "fatal error opening X display: %s", tty->path);
+		return -1;
+	}
+
 #define FAIL(...) ({ \
 		xasprintf(cause, __VA_ARGS__); \
-		return -1; \
+		XRETURN(-1); \
 	})
-
-	WHEN_XFATAL
-		FAIL("fatal error opening X display: %s", tty->path);
 
 	x->display = XOpenDisplay(tty->path);
 	if (!x->display)
@@ -575,10 +576,9 @@ xtmux_open(struct tty *tty, char **cause)
 	tty->flags |= TTY_OPENED | TTY_UTF8;
 	x->cx = x->cy = -1;
 
-	XUPDATE();
-
 #undef FAIL
-	return 0;
+	XUPDATE();
+	XRETURN_(0);
 }
 
 void 
@@ -672,9 +672,9 @@ xtmux_set_title(struct tty *tty, const char *title)
 	if (!x->window)
 		return;
 
-	CHECK_XFATAL();
-
+	XENTRY();
 	XChangeProperty(x->display, x->window, XA_WM_NAME, XA_STRING, 8, PropModeReplace, title, strlen(title));
+	XRETURN_();
 }
 
 static inline int
@@ -708,8 +708,11 @@ xtmux_attributes(struct tty *tty, const struct grid_cell *gc)
 	if (!grid_attr_cmp(&tty->cell, gc))
 		return;
 
-	xtmux_putc_flush(tty);
+	XENTRY();
+	if (xtmux_putc_flush(tty))
+		XUPDATE();
 	tty->cell = *gc;
+	XRETURN_();
 }
 
 void
@@ -885,13 +888,16 @@ xt_scroll(struct xtmux *x, u_int sx, u_int sy, u_int w, u_int h, int n)
 void
 xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 {
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	xtmux_putc_flush(tty);
 
 	if (tty->mode & MODE_CURSOR)
 		DRAW_CURSOR(tty->xtmux, cx, cy);
 
 	tty->cx = cx;
 	tty->cy = cy;
+
+	XRETURN();
 }
 
 void
@@ -900,12 +906,14 @@ xtmux_force_cursor_colour(struct tty *tty, const char *ccolour)
 	struct xtmux *x = tty->xtmux;
 	unsigned long c;
 	
+	XENTRY();
 	/* We draw cursor with xor, so xor with background to get right color, defaulting to inverse */
 	c = WhitePixel(x->display, XSCREEN);
 	c = xt_parse_color(x, ccolour, x->bg ^ c);
 	log_debug("setting cursor color to %s = %lx", ccolour, c);
 	xt_move_cursor(x, -1, -1);
 	XSetForeground(x->display, x->cursor_gc, x->bg ^ c);
+	XRETURN_();
 }
 
 void
@@ -913,7 +921,7 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 {
 	struct xtmux *x = tty->xtmux;
 
-	CHECK_XFATAL();
+	XENTRY();
 
 	if (tty->cstyle != s->cstyle)
 	{
@@ -934,6 +942,7 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	}
 
 	tty->mode = mode;
+	XRETURN_();
 }
 
 static int
@@ -1069,17 +1078,17 @@ static int
 xtmux_putc_flush(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
+	int r;
 
 	if (!x->putc_buf_len)
 		return 0;
 
-	CHECK_XFATAL(-1);
-
-	if (xt_draw_chars(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf, x->putc_buf_len, &tty->cell, 0))
+	r = xt_draw_chars(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf, x->putc_buf_len, &tty->cell, 0);
+	if (r)
 		xt_invalidate(x, tty->cx - x->putc_buf_len, tty->cy, x->putc_buf_len, 1);
 	x->putc_buf_len = 0;
 
-	return 1;
+	return r;
 }
 
 static void
@@ -1087,24 +1096,23 @@ xtmux_putwc(struct tty *tty, u_int c)
 {
 	struct xtmux *x = tty->xtmux;
 
+	XENTRY();
 	if (tty->cx >= tty->sx)
 	{
-		if (xtmux_putc_flush(tty) == -1)
-			return;
-
+		xtmux_putc_flush(tty);
 		tty->cx = 0;
 		if (tty->cy < tty->rlower)
 			tty->cy ++;
 	}
 	else if (x->putc_buf_len >= PUTC_BUF_LEN)
-		if (xtmux_putc_flush(tty) == -1)
-			return;
+		xtmux_putc_flush(tty);
 
 	if (c < 0x20)
 		return;
 
 	x->putc_buf[x->putc_buf_len++] = c;
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1130,7 +1138,7 @@ xtmux_cmd_insertcharacter(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int dx = ctx->ocx + ctx->num;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
 
 	xt_copy(x,
 			PANE_CX, PANE_CY,
@@ -1141,6 +1149,7 @@ xtmux_cmd_insertcharacter(struct tty *tty, const struct tty_ctx *ctx)
 			ctx->num, 1);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1150,7 +1159,7 @@ xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int dx = ctx->ocx + ctx->num;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
 
 	xt_copy(x,
 			PANE_X(dx), PANE_CY, 
@@ -1161,6 +1170,7 @@ xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 			ctx->num, 1);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1169,7 +1179,8 @@ xtmux_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	xtmux_putc_flush(tty);
 
 	xt_scroll(x,
 			PANE_X(0), PANE_CY,
@@ -1177,6 +1188,7 @@ xtmux_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 			-ctx->num);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1185,7 +1197,8 @@ xtmux_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	x->putc_buf_len = 0;
 
 	xt_scroll(x,
 			PANE_X(0), PANE_CY,
@@ -1193,6 +1206,7 @@ xtmux_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 			ctx->num);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1201,13 +1215,15 @@ xtmux_cmd_clearline(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	x->putc_buf_len = 0;
 
 	xt_clear(x,
 			PANE_X(0), PANE_CY,
 			screen_size_x(s), 1);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1216,13 +1232,14 @@ xtmux_cmd_clearendofline(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
 
 	xt_clear(x,
 			PANE_CX, PANE_CY,
 			screen_size_x(s) - ctx->ocx, 1);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1230,13 +1247,15 @@ xtmux_cmd_clearstartofline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	x->putc_buf_len = 0;
 
 	xt_clear(x,
 			PANE_X(0), PANE_CY,
 			ctx->ocx + 1, 1);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1245,7 +1264,8 @@ xtmux_cmd_reverseindex(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	xtmux_putc_flush(tty);
 
 	/* same as insertline(1) at top */
 	xt_scroll(x,
@@ -1254,6 +1274,7 @@ xtmux_cmd_reverseindex(struct tty *tty, const struct tty_ctx *ctx)
 			-1);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1262,7 +1283,8 @@ xtmux_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	xtmux_putc_flush(tty);
 
 	/* same as deleteline(1) at top */
 	xt_scroll(x,
@@ -1271,6 +1293,7 @@ xtmux_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 			1);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1280,7 +1303,7 @@ xtmux_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int y = ctx->ocy;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
 
 	if (ctx->ocx > 0)
 	{
@@ -1296,6 +1319,7 @@ xtmux_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 				screen_size_x(s), ctx->orlower + 1 - y);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1305,7 +1329,8 @@ xtmux_cmd_clearstartofscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = ctx->wp->screen;
 	u_int y = ctx->ocy;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	x->putc_buf_len = 0;
 
 	if (ctx->ocx < screen_size_x(s))
 		xt_clear(x,
@@ -1319,6 +1344,7 @@ xtmux_cmd_clearstartofscreen(struct tty *tty, const struct tty_ctx *ctx)
 				screen_size_x(s), y);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1327,13 +1353,16 @@ xtmux_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	x->putc_buf_len = 0;
+	x->scroll_buf.n = 0;
 
 	xt_clear(x,
 			PANE_X(0), PANE_Y(ctx->orupper),
 			screen_size_x(s), ctx->orlower + 1 - ctx->orupper);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 void
@@ -1341,7 +1370,7 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 
-	CHECK_XFATAL();
+	XENTRY();
 
 	XSetSelectionOwner(x->display, XA_PRIMARY, x->window, CurrentTime /* XXX */);
 	if (XGetSelectionOwner(x->display, XA_PRIMARY) != x->window)
@@ -1349,6 +1378,8 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 
 	XChangeProperty(x->display, DefaultRootWindow(x->display),
 			XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace, ctx->ptr, ctx->num);
+
+	XRETURN_();
 }
 
 static void 
@@ -1444,9 +1475,13 @@ xt_paste_property(struct xtmux *x, Window w, Atom p)
 }
 
 int
-xtmux_paste(struct xtmux *x, struct window_pane *wp, const char *which, const char *sep)
+xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const char *sep)
 {
+	struct xtmux *x = tty->xtmux;
 	Atom s = None;
+	int r;
+
+	XENTRY(-1);
 
 	if (!which || !strncasecmp(which, "primary", strlen(which)))
 		s = XA_PRIMARY;
@@ -1462,7 +1497,7 @@ xtmux_paste(struct xtmux *x, struct window_pane *wp, const char *which, const ch
 	}
 
 	if (s == None)
-		return -1;
+		XRETURN(-1);
 
 	x->paste.time = x->last_time;
 	x->paste.wp = wp;
@@ -1474,7 +1509,7 @@ xtmux_paste(struct xtmux *x, struct window_pane *wp, const char *which, const ch
 		x->paste.sep = NULL;
 
 	if (s >= XA_CUT_BUFFER0 && s <= XA_CUT_BUFFER7)
-		return xt_paste_property(x, DefaultRootWindow(x->display), s);
+		XRETURN(xt_paste_property(x, DefaultRootWindow(x->display), s));
 
 	if (XGetSelectionOwner(x->display, s) == x->window) 
 	{
@@ -1485,7 +1520,8 @@ xtmux_paste(struct xtmux *x, struct window_pane *wp, const char *which, const ch
 		return 0;
 	}
 
-	return XConvertSelection(x->display, s, XA_STRING, XA_STRING, x->window, x->paste.time);
+	r = XConvertSelection(x->display, s, XA_STRING, XA_STRING, x->window, x->paste.time);
+	XRETURN(r);
 }
 
 static void
@@ -1522,11 +1558,10 @@ found:
 void
 xtmux_bell(struct tty *tty)
 {
-	CHECK_XFATAL();
-
+	XENTRY();
 	XBell(tty->xtmux->display, 100);
-
 	XUPDATE();
+	XRETURN_();
 }
 
 static void
@@ -1566,7 +1601,8 @@ xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 {
 	u_int sx = screen_size_x(s);
 
-	CHECK_PUTC_FLUSH();
+	XENTRY();
+	xtmux_putc_flush(tty);
 
 	if (sx > tty->sx)
 		sx = tty->sx;
@@ -1575,6 +1611,7 @@ xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 	xt_draw_line(tty->xtmux, s, py, 0, sx, ox, oy);
 
 	XUPDATE();
+	XRETURN_();
 }
 
 static void
@@ -1759,7 +1796,7 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 			{
 				/* this is a little hacky, but we emulate xterm's behavior */
 				if (xev->button == Button2 && x->client->session && x->client->session->curw->window->active)
-					xtmux_paste(x, x->client->session->curw->window->active, NULL, NULL);
+					xtmux_paste(tty, x->client->session->curw->window->active, NULL, NULL);
 				return;
 			}
 			break;
@@ -1867,6 +1904,7 @@ xtmux_main(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
 
+	xtmux_putc_flush(tty);
 	xt_scroll_flush(x);
 
 	while (XPending(x->display))

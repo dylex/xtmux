@@ -2150,7 +2150,7 @@ void	xtmux_cmd_clearstartofscreen(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_clearscreen(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_setselection(struct tty *, const struct tty_ctx *);
 void	xtmux_bell(struct tty *);
-int	xtmux_paste(struct xtmux *, struct window_pane *, const char *, const char *);
+int	xtmux_paste(struct tty *, struct window_pane *, const char *, const char *);
 #endif
 
 #endif /* TMUX_H */
