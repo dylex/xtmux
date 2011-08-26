@@ -308,6 +308,8 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 	for (c = 0; c < 16; c ++)
 		xt_fill_color(x, c, xtmux_colors[c][0], xtmux_colors[c][1], xtmux_colors[c][2]);
 
+	/* TODO: this could use colour.c:colour_rgb_256 instead (which are, unfortunately a bit different) */
+
 	/* 6x6x6 cube */
 	for (r = 0; r < 6; r ++)
 		for (g = 0; g < 6; g ++)
@@ -674,7 +676,7 @@ xtmux_set_title(struct tty *tty, const char *title)
 
 	XENTRY();
 	XChangeProperty(x->display, x->window, XA_WM_NAME, XA_STRING, 8, PropModeReplace, title, strlen(title));
-	XRETURN_();
+	XRETURN();
 }
 
 static inline int
@@ -712,7 +714,7 @@ xtmux_attributes(struct tty *tty, const struct grid_cell *gc)
 	if (xtmux_putc_flush(tty))
 		XUPDATE();
 	tty->cell = *gc;
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -948,7 +950,7 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 
 	tty->mode = mode;
 	if (up) XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 static int
@@ -1116,10 +1118,10 @@ xtmux_putwc(struct tty *tty, u_int c)
 	XUPDATE();
 
 	if (c < 0x20)
-		XRETURN_();
+		XRETURN();
 	x->putc_buf[x->putc_buf_len++] = c;
 
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1156,7 +1158,7 @@ xtmux_cmd_insertcharacter(struct tty *tty, const struct tty_ctx *ctx)
 			ctx->num, 1);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1177,7 +1179,7 @@ xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 			ctx->num, 1);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1195,7 +1197,7 @@ xtmux_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 			-ctx->num);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1213,7 +1215,7 @@ xtmux_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 			ctx->num);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1230,7 +1232,7 @@ xtmux_cmd_clearline(struct tty *tty, const struct tty_ctx *ctx)
 			screen_size_x(s), 1);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1246,7 +1248,7 @@ xtmux_cmd_clearendofline(struct tty *tty, const struct tty_ctx *ctx)
 			screen_size_x(s) - ctx->ocx, 1);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1262,7 +1264,7 @@ xtmux_cmd_clearstartofline(struct tty *tty, const struct tty_ctx *ctx)
 			ctx->ocx + 1, 1);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1281,7 +1283,7 @@ xtmux_cmd_reverseindex(struct tty *tty, const struct tty_ctx *ctx)
 			-1);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1300,7 +1302,7 @@ xtmux_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 			1);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1326,7 +1328,7 @@ xtmux_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 				screen_size_x(s), ctx->orlower + 1 - y);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1351,7 +1353,7 @@ xtmux_cmd_clearstartofscreen(struct tty *tty, const struct tty_ctx *ctx)
 				screen_size_x(s), y);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1369,7 +1371,7 @@ xtmux_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 			screen_size_x(s), ctx->orlower + 1 - ctx->orupper);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 void
@@ -1381,12 +1383,12 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 
 	XSetSelectionOwner(x->display, XA_PRIMARY, x->window, CurrentTime /* XXX */);
 	if (XGetSelectionOwner(x->display, XA_PRIMARY) != x->window)
-		XRETURN_();
+		XRETURN();
 
 	XChangeProperty(x->display, DefaultRootWindow(x->display),
 			XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace, ctx->ptr, ctx->num);
 
-	XRETURN_();
+	XRETURN();
 }
 
 static void 
@@ -1568,7 +1570,7 @@ xtmux_bell(struct tty *tty)
 	XENTRY();
 	XBell(tty->xtmux->display, 100);
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 static void
@@ -1618,7 +1620,7 @@ xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 	xt_draw_line(tty->xtmux, s, py, 0, sx, ox, oy);
 
 	XUPDATE();
-	XRETURN_();
+	XRETURN();
 }
 
 static void
