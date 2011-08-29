@@ -323,12 +323,15 @@ client_signal(int sig, unused short events, unused void *data)
 			client_write_server(MSG_RESIZE, NULL, 0);
 			break;
 		case SIGCONT:
+			if (!xdisplay)
+			{
 			memset(&sigact, 0, sizeof sigact);
 			sigemptyset(&sigact.sa_mask);
 			sigact.sa_flags = SA_RESTART;
 			sigact.sa_handler = SIG_IGN;
 			if (sigaction(SIGTSTP, &sigact, NULL) != 0)
 				fatal("sigaction failed");
+			}
 			client_write_server(MSG_WAKEUP, NULL, 0);
 			break;
 		}
