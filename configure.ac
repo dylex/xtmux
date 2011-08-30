@@ -105,7 +105,7 @@ AC_MSG_RESULT($found_glibc)
 AC_CHECK_LIB(rt, clock_gettime)
 
 # Look for libevent.
-AC_SEARCH_LIBS(event_init, [event event-1.4 event2], found_libevent=yes, found_libevent=no)
+AC_SEARCH_LIBS(event_init, [event event2], found_libevent=yes, found_libevent=no)
 if test "x$found_libevent" = xno; then
     AC_MSG_ERROR("libevent not found")
 fi
