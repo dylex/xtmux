@@ -116,7 +116,7 @@ static jmp_buf xdisplay_recover;
 #ifdef DEBUG
 #define XRETURN_(R)	({ if (--xdisplay_entry_count) fatalx("xdisplay entry count mismatch"); return R; })
 #else
-#define	XRETURN_(R)	({ xdisplay_error_count = 0; return R; })
+#define	XRETURN_(R)	({ xdisplay_entry_count = 0; return R; })
 #endif
 
 #define C2W(C) 		(x->font_width * (C))
