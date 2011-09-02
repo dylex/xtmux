@@ -20,6 +20,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
+#include <X11/cursorfont.h>
 
 #include "tmux.h"
 
@@ -97,6 +98,8 @@ struct xtmux {
 	u_short		focus_out;
 
 	struct paste_ctx paste; /* one outstanding paste request at a time is enough */
+
+	Cursor		pointer;
 
 	struct client	*client; /* pointer back up to support redraws */
 	int		ioerror;
@@ -404,6 +407,7 @@ xtmux_setup(struct tty *tty)
 	XFontStruct *fs;
 	const char *font, *prefix;
 	KeySym pkey = NoSymbol;
+	XColor pfg, pbg;
 
 	XENTRY(-1);
 
@@ -493,6 +497,12 @@ xtmux_setup(struct tty *tty)
 	}
 	x->prefix_key = pkey;
 
+	if (!x->pointer)
+		x->pointer = XCreateFontCursor(x->display, XC_xterm);
+	if (XParseColor(x->display, XCOLORMAP, options_get_string(o, "xtmux-pointer-fg"), &pfg) &&
+			XParseColor(x->display, XCOLORMAP, options_get_string(o, "xtmux-pointer-bg"), &pbg))
+		XRecolorCursor(x->display, x->pointer, &pfg, &pbg);
+
 	XRETURN(0);
 }
 
@@ -570,6 +580,8 @@ xtmux_open(struct tty *tty, char **cause)
 	gc_values.function = GXxor; /* this'll be fine for TrueColor, etc, but we might want to avoid PseudoColor for this */
 	gc_values.graphics_exposures = False;
 	x->cursor_gc = XCreateGC(x->display, x->window, GCFunction | GCForeground | GCBackground | GCGraphicsExposures, &gc_values);
+	
+	XDefineCursor(x->display, x->window, x->pointer);
 
 	XSelectInput(x->display, x->window, event_mask(tty->mode));
 
@@ -599,6 +611,13 @@ xtmux_close(struct tty *tty)
 	{
 		xfree(x->paste.sep);
 		x->paste.sep = NULL;
+	}
+
+	if (x->pointer)
+	{
+		if (!x->ioerror)
+			XFreeCursor(x->display, x->pointer);
+		x->pointer = None;
 	}
 
 	if (x->cursor)
