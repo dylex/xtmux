@@ -1117,6 +1117,7 @@ struct mouse_event {
 #define MOUSE_DRAG 32
 #define MOUSE_45 64
 #define MOUSE_RESIZE_PANE 128 /* marker for resizing */
+#define MOUSE_PREFIX 256 /* event is intended for tmux, not application */
 	u_int	x;
 	u_int	y;
 };

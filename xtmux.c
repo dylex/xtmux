@@ -1805,7 +1805,8 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 			if (!(tty->mode & ALL_MOUSE_MODES) || 
 					(xev->state & ShiftMask && xev->button == Button2))
 			{
-				/* this is a little hacky, but we emulate xterm's behavior */
+				/* this is a little hacky, and should be moved to input_mouse,
+				 * but we emulate xterm's behavior directly for now */
 				if (xev->button == Button2 && x->client->session && x->client->session->curw->window->active)
 					xtmux_paste(tty, x->client->session->curw->window->active, NULL, NULL);
 				return;
@@ -1845,6 +1846,9 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 		m.b |= 8;
 	if (xev->state & ControlMask)
 		m.b |= 16;
+
+	if (xev->state & (x->prefix_mod >= 0 ? 1<<x->prefix_mod : ShiftMask))
+		m.b |= MOUSE_PREFIX;
 
 	x->mx = m.x;
 	x->my = m.y;
