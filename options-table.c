@@ -700,6 +700,16 @@ const struct options_table_entry client_options_table[] = {
 	  .default_str = ""
 	},
 
+	{ .name = "xtmux-pointer-bg",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "black"
+	},
+
+	{ .name = "xtmux-pointer-fg",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "white"
+	},
+
 	{ .name = "xtmux-prefix",
 	  .type = OPTIONS_TABLE_STRING,
 	  .default_str = ""
