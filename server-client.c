@@ -330,8 +330,13 @@ server_client_handle_key(int key, struct mouse_event *mouse, void *data)
 			 * (click).
 			 */
 			window_set_active_at(w, mouse->x, mouse->y);
-			server_redraw_window_borders(w);
-			wp = w->active;
+			if (wp != w->active)
+			{
+				server_redraw_window_borders(w);
+				if ("mouse-select-pane-only")
+					return;
+				wp = w->active;
+			}
 		}
 		if (mouse->y + 1 == c->tty.sy &&
 		    options_get_number(oo, "mouse-select-window") &&
