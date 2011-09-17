@@ -680,6 +680,11 @@ const struct options_table_entry client_options_table[] = {
 	  .default_str = ""
 	},
 
+	{ .name = "xtmux-bold-italic-font",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
+	},
+
 	{ .name = "xtmux-colors",
 	  .type = OPTIONS_TABLE_STRING,
 	  .default_str = ""

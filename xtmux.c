@@ -73,7 +73,7 @@ struct xtmux {
 	Time		last_time;
 
 	XFontStruct	*font;
-	Font		font_bold, font_italic;
+	Font		font_bold, font_italic, font_bold_italic;
 	u_short		font_width, font_height;
 
 	KeySym		prefix_key;
@@ -399,6 +399,67 @@ xt_fill_cursor(struct xtmux *x, u_int cstyle)
 	XFreeGC(x->display, gc);
 }
 
+static char *
+font_name_set(const char *f, unsigned seg, const char *r)
+{
+	static char out[256];
+	const char *s = f, *e;
+	unsigned n;
+	size_t sl, el, rl;
+
+	if (!f || *f != '-')
+		return NULL;
+	for (n = 1; n < seg; n ++)
+		if (!(s = strchr(s+1, '-')))
+			return NULL;
+	if (!(e = strchr(++s, '-')))
+		return NULL;
+	sl = s-f;
+	el = strlen(e);
+	rl = strlen(r);
+	if (sl+rl+el >= sizeof(out))
+		return NULL;
+	if (out == f)
+	{
+		memmove(out+sl+rl, e, el+1);
+	}
+	else
+	{
+		memcpy(out, f, sl);
+		memcpy(out+sl+rl, e, el+1);
+	}
+	memcpy(out+sl, r, rl);
+	return out;
+}
+
+static Font
+xt_load_check_font(struct xtmux *x, const char *font)
+{
+	XFontStruct *fs;
+	Font fid;
+
+	if (!font)
+		return None;
+	fs = XLoadQueryFont(x->display, font);
+	if (!fs)
+	{
+		log_warnx("font not found: %s", font);
+		return None;
+	}
+	if (x->font_width != fs->max_bounds.width || 
+			x->font_height != fs->ascent + fs->descent)
+	{
+		log_warnx("font extents mismatch: %s", font);
+		XFreeFont(x->display, fs);
+		return None;
+	}
+
+	log_debug("font loaded: %s", font);
+	fid = fs->fid;
+	XFreeFontInfo(NULL, fs, 1);
+	return fid;
+}
+
 int
 xtmux_setup(struct tty *tty)
 {
@@ -406,6 +467,7 @@ xtmux_setup(struct tty *tty)
 	struct options *o = &x->client->options;
 	XFontStruct *fs;
 	const char *font, *prefix;
+	char fontname[256] = "";
 	KeySym pkey = NoSymbol;
 	XColor pfg, pbg;
 
@@ -431,6 +493,7 @@ xtmux_setup(struct tty *tty)
 			tty->sx = width  / x->font_width;
 			tty->sy = height / x->font_height;
 
+			XClearWindow(x->display, x->window);
 			recalculate_sizes();
 		}
 
@@ -440,15 +503,28 @@ xtmux_setup(struct tty *tty)
 			x->cursor = None;
 		}
 		xt_fill_cursor(x, tty->cstyle);
+
+		unsigned long t;
+		if (XGetFontProperty(fs, XA_FONT, &t))
+		{
+			char *f = XGetAtomName(x->display, t);
+			strncpy(fontname, f, sizeof(fontname)-1);
+			XFree(f);
+		}
+		else
+			strncpy(fontname, font, sizeof(fontname)-1);
 	}
+	else if (!x->font)
+		XRETURN(0);
 
 	if (x->font_bold)
 	{
 		XUnloadFont(x->display, x->font_bold);
 		x->font_bold = None;
 	}
-	if (*(font = options_get_string(o, "xtmux-bold-font")))
-		x->font_bold = XLoadFont(x->display, font);
+	if (*(font = options_get_string(o, "xtmux-bold-font")) ||
+			(font = font_name_set(fontname, 3, "bold"))) /* or "demibold"? */
+		x->font_bold = xt_load_check_font(x, font);
 
 	if (x->font_italic)
 	{
@@ -456,7 +532,23 @@ xtmux_setup(struct tty *tty)
 		x->font_italic = None;
 	}
 	if (*(font = options_get_string(o, "xtmux-italic-font")))
-		x->font_italic = XLoadFont(x->display, font);
+		x->font_italic = xt_load_check_font(x, font);
+	else if ((font = font_name_set(fontname, 4, "o")))
+		if (!(x->font_italic = xt_load_check_font(x, font)))
+			x->font_italic = xt_load_check_font(x, 
+					font_name_set(fontname, 4, "i"));
+
+	if (x->font_bold_italic)
+	{
+		XUnloadFont(x->display, x->font_bold_italic);
+		x->font_bold_italic = None;
+	}
+	if (*(font = options_get_string(o, "xtmux-bold-italic-font")))
+		x->font_bold_italic = xt_load_check_font(x, font);
+	else if ((font = font_name_set(font_name_set(fontname, 3, "bold"), 4, "o")))
+		if (!(x->font_bold_italic = xt_load_check_font(x, font)))
+			x->font_bold_italic = xt_load_check_font(x, 
+					font_name_set(font_name_set(fontname, 3, "bold"), 4, "i"));
 
 	xt_fill_colors(x, options_get_string(o, "xtmux-colors"));
 	x->bg = xt_parse_color(x, options_get_string(o, "xtmux-bg"), BlackPixel(x->display, XSCREEN));
@@ -658,6 +750,13 @@ xtmux_close(struct tty *tty)
 		if (!x->ioerror)
 			XUnloadFont(x->display, x->font_italic);
 		x->font_italic = None;
+	}
+
+	if (x->font_bold_italic != None)
+	{
+		if (!x->ioerror)
+			XUnloadFont(x->display, x->font_bold_italic);
+		x->font_bold_italic = None;
 	}
 
 	if (x->font != NULL)
@@ -1039,7 +1138,9 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 		
 		XSetForeground(x->display, x->gc, fg);
 
-		if (gc->attr & GRID_ATTR_ITALICS && x->font_italic)
+		if (gc->attr & GRID_ATTR_ITALICS && gc->attr & GRID_ATTR_BRIGHT && x->font_bold_italic)
+			XSetFont(x->display, x->gc, x->font_bold_italic);
+		else if (gc->attr & GRID_ATTR_ITALICS && x->font_italic)
 			XSetFont(x->display, x->gc, x->font_italic);
 		else if (gc->attr & GRID_ATTR_BRIGHT && x->font_bold)
 			XSetFont(x->display, x->gc, x->font_bold);
