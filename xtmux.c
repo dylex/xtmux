@@ -1166,7 +1166,8 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 		}
 	}
 
-	if (gc->attr & GRID_ATTR_UNDERSCORE)
+	if ((gc->attr & (GRID_ATTR_UNDERSCORE | GRID_ATTR_BLINK)) == GRID_ATTR_UNDERSCORE ||
+			(gc->attr & (GRID_ATTR_UNDERSCORE | GRID_ATTR_BLINK)) == GRID_ATTR_BLINK)
 	{
 		u_int y = py + x->font->ascent;
 		if (x->font->descent > 1)
@@ -1179,9 +1180,9 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 	if (gc->attr & GRID_ATTR_BLINK)
 	{
 		/* a little odd but blink is weird anyway */
-		XDrawRectangle(x->display, x->window, x->cursor_gc,
-				px-1, py-1,
-				wx, hy);
+		XDrawLine(x->display, x->window, x->gc,
+				px, py,
+				px + wx - 1, py);
 	}
 
 	return 1;
