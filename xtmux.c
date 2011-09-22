@@ -24,6 +24,12 @@
 
 #include "tmux.h"
 
+#define XCHG(X, Y)	({ \
+		__typeof__(X) _x = (X); \
+		X = (Y); \
+		Y = _x; \
+	})
+
 static void xtmux_main(struct tty *);
 static int xtmux_putc_flush(struct tty *);
 static int xt_scroll_flush(struct xtmux *);
@@ -49,6 +55,41 @@ static const unsigned char xtmux_colors[16][3] = {
 	{0xFF,0x00,0xFF}, /* 13 bright magenta */
 	{0x00,0xFF,0xFF}, /* 14 bright cyan */
 	{0xFF,0xFF,0xFF}, /* 15 bright white */
+};
+
+static const unsigned short xtmux_acs[128] = {
+	['+'] = 0x2192, /* RARROW */
+	[','] = 0x2190, /* LARROW */
+	['-'] = 0x2191, /* UARROW */
+	['.'] = 0x2193, /* DARROW */
+	['0'] = 0x2588, /* BLOCK */
+	['`'] = 0x25C6, /* DIAMOND */
+	['a'] = 0x2592, /* CKBOARD */
+	['f'] = 0x00B0, /* DEGREE */
+	['g'] = 0x00B1, /* PLMINUS */
+	['h'] = 0x259A, /* ? BOARD */
+	['i'] = 0x240B, /* ? LANTERN */
+	['j'] = 0x2518, /* LRCORNER */
+	['k'] = 0x2510, /* URCORNER */
+	['l'] = 0x250C, /* ULCORNER */
+	['m'] = 0x2514, /* LLCORNER */
+	['n'] = 0x253C, /* PLUS */
+	['o'] = 0x23BA, /* S1 */
+	['p'] = 0x23BB, /* S3 */
+	['q'] = 0x2500, /* HLINE */
+	['r'] = 0x23BC, /* S7 */
+	['s'] = 0x23BD, /* S9 */
+	['t'] = 0x251C, /* LTEE */
+	['u'] = 0x2524, /* RTEE */
+	['v'] = 0x2534, /* BTEE */
+	['w'] = 0x252C, /* TTEE */
+	['x'] = 0x2502, /* VLINE */
+	['y'] = 0x2264, /* LEQUAL */
+	['z'] = 0x2265, /* GEQUAL */
+	['{'] = 0x03C0, /* PI */
+	['|'] = 0x2260, /* NEQUAL */
+	['}'] = 0x00A3, /* STERLING */
+	['~'] = 0x2022, /* BULLET */
 };
 
 #define PUTC_BUF_LEN 128
@@ -1099,21 +1140,17 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 	else
 		bg = x->colors[bgc];
 
-	if (gc->attr & GRID_ATTR_REVERSE || 
-			(gc->attr & GRID_ATTR_ITALICS && !x->font_italic))
+	if (gc->attr & GRID_ATTR_REVERSE)
 	{
-		unsigned long xg;
-		u_char xgc;
-		xg = fg; xgc = fgc;
-		fg = bg; fgc = bgc;
-		bg = xg; bgc = xgc;
+		XCHG(fg, bg);
+		XCHG(fgc, bgc);
 	}
 
 	/* TODO: configurable BRIGHT semantics */
-	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && fg == bg)
+	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && (fg == bg || !x->font_bold))
 		fg = x->colors[fgc += 8];
 
-	/* TODO: DIM, maybe only for TrueColor */
+	/* TODO: DIM, maybe only for TrueColor? */
 
 	for (i = 0; i < n; i ++)
 		if (cp[i] != ' ')
@@ -1136,8 +1173,6 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 	{
 		XChar2b c2[n];
 		
-		XSetForeground(x->display, x->gc, fg);
-
 		if (gc->attr & GRID_ATTR_ITALICS && gc->attr & GRID_ATTR_BRIGHT && x->font_bold_italic)
 			XSetFont(x->display, x->gc, x->font_bold_italic);
 		else if (gc->attr & GRID_ATTR_ITALICS && x->font_italic)
@@ -1147,12 +1182,21 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 		else
 			XSetFont(x->display, x->gc, x->font->fid);
 
+		if (gc->attr & GRID_ATTR_ITALICS && !x->font_italic)
+			XCHG(fg, bg);
+
+		XSetForeground(x->display, x->gc, fg);
+
 		for (i = 0; i < n; i ++)
 		{
 			wchar c = cp[i];
-			/* TODO: fix ACS arrows, block, etc? */
-			if (gc->attr & GRID_ATTR_CHARSET && c > 0x5f && c < 0x7f)
-				c -= 0x5f;
+			if (gc->attr & GRID_ATTR_CHARSET) 
+			{
+				if (c >= '`' && c <= '~')
+					c -= '`'-1;
+				else if (c < nitems(xtmux_acs))
+					c = xtmux_acs[c];
+			}
 			c2[i].byte1 = c >> 8;
 			c2[i].byte2 = c;
 		}
