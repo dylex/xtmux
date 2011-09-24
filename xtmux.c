@@ -96,6 +96,26 @@ static const unsigned short xtmux_acs[128] = {
 
 typedef u_short wchar;
 
+struct font {
+	Font fid;
+	char *name;
+	u_short ascent, descent;
+	wchar char_max;
+	u_long *char_mask;
+};
+
+#define FONT_CHAR_OFF(N)	((N)/(8*sizeof(u_long)))
+#define FONT_CHAR_BIT(N)	((u_long)1 << ((N)%(8*sizeof(u_long))))
+
+enum font_type {
+	FONT_TYPE_NONE		= -1,
+	FONT_TYPE_BASE 		= 00,
+	FONT_TYPE_BOLD 		= 01,
+	FONT_TYPE_ITALIC 	= 02,
+	FONT_TYPE_BOLD_ITALIC 	= 03,
+	FONT_TYPE_COUNT
+};
+
 struct paste_ctx {
 	Time time;
 	struct window_pane *wp;
@@ -113,9 +133,8 @@ struct xtmux {
 	Window		window;
 	Time		last_time;
 
-	XFontStruct	*font;
-	Font		font_bold, font_italic, font_bold_italic;
-	u_short		font_width, font_height;
+	struct font	font[FONT_TYPE_COUNT];
+	u_short		cw, ch;
 
 	KeySym		prefix_key;
 	short		prefix_mod;
@@ -163,8 +182,8 @@ static jmp_buf xdisplay_recover;
 #define	XRETURN_(R)	({ xdisplay_entry_count = 0; return R; })
 #endif
 
-#define C2W(C) 		(x->font_width * (C))
-#define C2H(C) 		(x->font_height * (C))
+#define C2W(C) 		(x->cw * (C))
+#define C2H(C) 		(x->ch * (C))
 #define C2X(C) 		C2W(C)
 #define C2Y(C) 		C2H(C)
 #define PANE_X(X) 	(ctx->wp->xoff + (X))
@@ -383,8 +402,8 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 static void
 xt_fill_cursor(struct xtmux *x, u_int cstyle)
 {
-	u_int w = x->font_width;
-	u_int h = x->font_height;
+	u_int w = x->cw;
+	u_int h = x->ch;
 	GC gc;
 
 	if (!x->cursor)
@@ -458,6 +477,8 @@ font_name_set(const char *f, unsigned seg, const char *r)
 	sl = s-f;
 	el = strlen(e);
 	rl = strlen(r);
+	if ((size_t)(e-s) == rl && !strncasecmp(s, r, rl))
+		return NULL; /* no change */
 	if (sl+rl+el >= sizeof(out))
 		return NULL;
 	if (out == f)
@@ -473,32 +494,120 @@ font_name_set(const char *f, unsigned seg, const char *r)
 	return out;
 }
 
-static Font
-xt_load_check_font(struct xtmux *x, const char *font)
+static int
+xt_load_font(struct xtmux *x, enum font_type type, const char *name)
 {
+	struct font *font = &x->font[type];
 	XFontStruct *fs;
-	Font fid;
+	unsigned long nameatom;
+	wchar r, c, w = 0;
+	unsigned i, n;
 
-	if (!font)
-		return None;
-	fs = XLoadQueryFont(x->display, font);
+	if (!name)
+		return 0;
+	fs = XLoadQueryFont(x->display, name);
 	if (!fs)
 	{
-		log_warnx("font not found: %s", font);
-		return None;
+		log_warnx("font not found: %s", name);
+		return 0;
 	}
-	if (x->font_width != fs->max_bounds.width || 
-			x->font_height != fs->ascent + fs->descent)
+	if (fs->fid == font->fid)
 	{
-		log_warnx("font extents mismatch: %s", font);
+		/* no change */
 		XFreeFont(x->display, fs);
-		return None;
+		return 1;
 	}
+	if (font->fid)
+	{
+		XUnloadFont(x->display, font->fid);
+		font->fid = None;
+		xfree(font->name);
+		font->name = NULL;
+		font->char_max = 0;
+	}
+	if (!type)
+	{
+		x->cw = fs->max_bounds.width;
+		x->ch = fs->ascent + fs->descent;
+	}
+	else if (x->cw != fs->max_bounds.width || 
+			x->ch != fs->ascent + fs->descent)
+	{
+		log_warnx("font extents mismatch: %s", name);
+		XFreeFont(x->display, fs);
+		return -1;
+	}
+	font->fid = fs->fid;
+	if (XGetFontProperty(fs, XA_FONT, &nameatom))
+	{
+		char *fn = XGetAtomName(x->display, nameatom);
+		font->name = xstrdup(fn);
+		XFree(fn);
+	}
+	else
+		font->name = xstrdup(name);
+	font->ascent = fs->ascent;
+	font->descent = fs->descent;
+	font->char_max = (fs->max_byte1 << 8) + fs->max_char_or_byte2;
+	font->char_mask = xrealloc(font->char_mask, FONT_CHAR_OFF(font->char_max)+1, sizeof *font->char_mask);
+	memset(font->char_mask, 0, (sizeof *font->char_mask)*(FONT_CHAR_OFF(font->char_max)+1));
 
-	log_debug("font loaded: %s", font);
-	fid = fs->fid;
+	i = n = 0;
+	for (r = fs->min_byte1; r <= fs->max_byte1; r ++)
+		for (c = fs->min_char_or_byte2; c <= fs->max_char_or_byte2; c ++)
+		{
+			XCharStruct *cs = &fs->per_char[i++];
+			if (!fs->per_char || 
+					cs->lbearing != 0 || cs->rbearing != 0 || 
+					cs->width != 0 || 
+					cs->ascent != 0 || cs->descent != 0)
+			{
+				w = (r << 8) + c;
+				font->char_mask[FONT_CHAR_OFF(w)] |= FONT_CHAR_BIT(w);
+				n ++;
+			}
+		}
+
+	/* trim */
+	font->char_max = w;
+	font->char_mask = xrealloc(font->char_mask, FONT_CHAR_OFF(font->char_max)+1, sizeof *font->char_mask);
+
+	log_debug("font loaded with %u/%u characters: %s", n, i, font->name);
 	XFreeFontInfo(NULL, fs, 1);
-	return fid;
+	return 1;
+}
+
+static void
+xt_free_font(struct xtmux *x, enum font_type type)
+{
+	struct font *font = &x->font[type];
+	if (!x->ioerror && font->fid)
+		XUnloadFont(x->display, font->fid);
+	font->fid = None;
+	if (font->name)
+	{
+		xfree(font->name);
+		font->name = NULL;
+	}
+	font->char_max = 0;
+	if (font->char_mask)
+	{
+		xfree(font->char_mask);
+		font->char_mask = NULL;
+	}
+}
+
+static inline int
+xt_font_has_char(const struct xtmux *x, enum font_type type, wchar c)
+{
+	const struct font *font = &x->font[type];
+	if (!font)
+		return 0;
+	if (c > font->char_max)
+		return 0;
+	if (font->char_mask[FONT_CHAR_OFF(c)] & FONT_CHAR_BIT(c))
+		return 1;
+	return 0;
 }
 
 int
@@ -506,24 +615,15 @@ xtmux_setup(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
 	struct options *o = &x->client->options;
-	XFontStruct *fs;
 	const char *font, *prefix;
-	char fontname[256] = "";
 	KeySym pkey = NoSymbol;
 	XColor pfg, pbg;
 
 	XENTRY(-1);
 
 	font = options_get_string(o, "xtmux-font");
-	fs = XLoadQueryFont(x->display, font);
-	if (fs)
+	if (xt_load_font(x, 0, font) > 0)
 	{
-		if (x->font)
-			XFreeFont(x->display, x->font);
-		x->font = fs;
-		x->font_width = fs->max_bounds.width;
-		x->font_height = fs->ascent + fs->descent;
-
 		if (x->window)
 		{
 			Window root;
@@ -531,8 +631,8 @@ xtmux_setup(struct tty *tty)
 			u_int width, height;
 
 			XGetGeometry(x->display, x->window, &root, &xpos, &ypos, &width, &height, &border, &depth);
-			tty->sx = width  / x->font_width;
-			tty->sy = height / x->font_height;
+			tty->sx = width  / x->cw;
+			tty->sy = height / x->ch;
 
 			XClearWindow(x->display, x->window);
 			recalculate_sizes();
@@ -544,52 +644,24 @@ xtmux_setup(struct tty *tty)
 			x->cursor = None;
 		}
 		xt_fill_cursor(x, tty->cstyle);
-
-		unsigned long t;
-		if (XGetFontProperty(fs, XA_FONT, &t))
-		{
-			char *f = XGetAtomName(x->display, t);
-			strncpy(fontname, f, sizeof(fontname)-1);
-			XFree(f);
-		}
-		else
-			strncpy(fontname, font, sizeof(fontname)-1);
 	}
-	else if (!x->font)
+	else if (!x->font->fid)
 		XRETURN(0);
 
-	if (x->font_bold)
-	{
-		XUnloadFont(x->display, x->font_bold);
-		x->font_bold = None;
-	}
-	if (*(font = options_get_string(o, "xtmux-bold-font")) ||
-			(font = font_name_set(fontname, 3, "bold"))) /* or "demibold"? */
-		x->font_bold = xt_load_check_font(x, font);
+	if (*(font = options_get_string(o, "xtmux-bold-font")))
+		xt_load_font(x, FONT_TYPE_BOLD, font);
+	else
+		xt_load_font(x, FONT_TYPE_BOLD, font_name_set(x->font->name, 3, "bold"));
 
-	if (x->font_italic)
-	{
-		XUnloadFont(x->display, x->font_italic);
-		x->font_italic = None;
-	}
 	if (*(font = options_get_string(o, "xtmux-italic-font")))
-		x->font_italic = xt_load_check_font(x, font);
-	else if ((font = font_name_set(fontname, 4, "o")))
-		if (!(x->font_italic = xt_load_check_font(x, font)))
-			x->font_italic = xt_load_check_font(x, 
-					font_name_set(fontname, 4, "i"));
+		xt_load_font(x, FONT_TYPE_ITALIC, font);
+	else if (xt_load_font(x, FONT_TYPE_ITALIC, font_name_set(x->font->name, 4, "o")) == 0)
+		xt_load_font(x, FONT_TYPE_ITALIC, font_name_set(x->font->name, 4, "i"));
 
-	if (x->font_bold_italic)
-	{
-		XUnloadFont(x->display, x->font_bold_italic);
-		x->font_bold_italic = None;
-	}
 	if (*(font = options_get_string(o, "xtmux-bold-italic-font")))
-		x->font_bold_italic = xt_load_check_font(x, font);
-	else if ((font = font_name_set(font_name_set(fontname, 3, "bold"), 4, "o")))
-		if (!(x->font_bold_italic = xt_load_check_font(x, font)))
-			x->font_bold_italic = xt_load_check_font(x, 
-					font_name_set(font_name_set(fontname, 3, "bold"), 4, "i"));
+		xt_load_font(x, FONT_TYPE_BOLD_ITALIC, font);
+	else
+		xt_load_font(x, FONT_TYPE_BOLD_ITALIC, font_name_set(x->font[FONT_TYPE_ITALIC].name, 3, "bold"));
 
 	xt_fill_colors(x, options_get_string(o, "xtmux-colors"));
 	x->bg = xt_parse_color(x, options_get_string(o, "xtmux-bg"), BlackPixel(x->display, XSCREEN));
@@ -689,10 +761,10 @@ xtmux_open(struct tty *tty, char **cause)
 	if (x->window == None)
 		FAIL("could not create X window");
 
-	size_hints.min_width = x->font_width;
-	size_hints.min_height = x->font_height;
-	size_hints.width_inc = x->font_width;
-	size_hints.height_inc = x->font_height;
+	size_hints.min_width = x->cw;
+	size_hints.min_height = x->ch;
+	size_hints.width_inc = x->cw;
+	size_hints.height_inc = x->ch;
 	size_hints.win_gravity = NorthWestGravity;
 	size_hints.flags = PMinSize | PResizeInc | PWinGravity;
 	wm_hints.input = True;
@@ -732,6 +804,7 @@ void
 xtmux_close(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
+	enum font_type ft;
 
 	tty->flags &= ~TTY_OPENED;
 
@@ -779,35 +852,8 @@ xtmux_close(struct tty *tty)
 		x->window = None;
 	}
 
-	if (x->font_bold != None)
-	{
-		if (!x->ioerror)
-			XUnloadFont(x->display, x->font_bold);
-		x->font_bold = None;
-	}
-
-	if (x->font_italic != None)
-	{
-		if (!x->ioerror)
-			XUnloadFont(x->display, x->font_italic);
-		x->font_italic = None;
-	}
-
-	if (x->font_bold_italic != None)
-	{
-		if (!x->ioerror)
-			XUnloadFont(x->display, x->font_bold_italic);
-		x->font_bold_italic = None;
-	}
-
-	if (x->font != NULL)
-	{
-		if (!x->ioerror)
-			XFreeFont(x->display, x->font);
-		else
-			XFreeFontInfo(NULL, x->font, 1);
-		x->font = NULL;
-	}
+	for (ft = 0; ft < FONT_TYPE_COUNT; ft ++)
+		xt_free_font(x, ft);
 
 	if (x->display != NULL)
 	{
@@ -922,7 +968,7 @@ xt_draw_cursor(struct xtmux *x)
 	if (x->cx < 0 || x->cy < 0)
 		return;
 
-	XCopyPlane(x->display, x->cursor, x->window, x->cursor_gc, 0, 0, x->font_width, x->font_height, C2X(x->cx), C2Y(x->cy), 1);
+	XCopyPlane(x->display, x->cursor, x->window, x->cursor_gc, 0, 0, x->cw, x->ch, C2X(x->cx), C2Y(x->cy), 1);
 }
 
 static int
@@ -1112,12 +1158,32 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	XRETURN();
 }
 
+static enum font_type
+xt_font_pick(const struct xtmux *x, enum font_type type, wchar c)
+{
+	if (c == ' ')
+		return FONT_TYPE_NONE;
+	if (!type || xt_font_has_char(x, type, c))
+		return type;
+	if (type == FONT_TYPE_BOLD_ITALIC)
+	{
+		if (xt_font_has_char(x, FONT_TYPE_ITALIC, c))
+			return FONT_TYPE_ITALIC;
+		if (xt_font_has_char(x, FONT_TYPE_BOLD, c))
+			return FONT_TYPE_BOLD;
+	}
+	if (xt_font_has_char(x, FONT_TYPE_BASE, c))
+		return FONT_TYPE_BASE;
+	return FONT_TYPE_NONE;
+}
+
 static int
 xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, const struct grid_cell *gc, int cleared)
 {
 	u_int			i, px = C2X(cx), py = C2Y(cy), wx = C2W(n), hy = C2H(1);
 	u_char			fgc = gc->fg, bgc = gc->bg;
 	unsigned long		fg, bg;
+	enum font_type 		ft;
 
 	if (!xt_touch(x, cx, cy, n, 1))
 		return 0;
@@ -1146,8 +1212,16 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 		XCHG(fgc, bgc);
 	}
 
+	if (gc->attr & GRID_ATTR_ITALICS && gc->attr & GRID_ATTR_BRIGHT && 
+			x->font[ft = FONT_TYPE_BOLD_ITALIC].fid);
+	else if (gc->attr & GRID_ATTR_ITALICS && 
+			x->font[ft = FONT_TYPE_ITALIC].fid);
+	else if (gc->attr & GRID_ATTR_BRIGHT && 
+			x->font[ft = FONT_TYPE_BOLD].fid);
+	else ft = 0;
+
 	/* TODO: configurable BRIGHT semantics */
-	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && (fg == bg || !x->font_bold))
+	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && (fg == bg || !(ft & FONT_TYPE_BOLD)))
 		fg = x->colors[fgc += 8];
 
 	/* TODO: DIM, maybe only for TrueColor? */
@@ -1172,49 +1246,59 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 	else
 	{
 		XChar2b c2[n];
+		u_int l = 0;
+		enum font_type ftl = ft, ftc;
 		
-		if (gc->attr & GRID_ATTR_ITALICS && gc->attr & GRID_ATTR_BRIGHT && x->font_bold_italic)
-			XSetFont(x->display, x->gc, x->font_bold_italic);
-		else if (gc->attr & GRID_ATTR_ITALICS && x->font_italic)
-			XSetFont(x->display, x->gc, x->font_italic);
-		else if (gc->attr & GRID_ATTR_BRIGHT && x->font_bold)
-			XSetFont(x->display, x->gc, x->font_bold);
-		else
-			XSetFont(x->display, x->gc, x->font->fid);
-
-		if (gc->attr & GRID_ATTR_ITALICS && !x->font_italic)
+		if (gc->attr & GRID_ATTR_ITALICS && !(ft & FONT_TYPE_ITALIC))
 			XCHG(fg, bg);
-
 		XSetForeground(x->display, x->gc, fg);
 
-		for (i = 0; i < n; i ++)
+		for (l = 0; l < n; l = i)
 		{
-			wchar c = cp[i];
-			if (gc->attr & GRID_ATTR_CHARSET) 
+			for (i = l; i < n; i ++)
 			{
-				if (c >= '`' && c <= '~')
-					c -= '`'-1;
-				else if (c < nitems(xtmux_acs))
-					c = xtmux_acs[c];
-			}
-			c2[i].byte1 = c >> 8;
-			c2[i].byte2 = c;
-		}
+				wchar c = cp[i];
 
-		if (cleared && bg == x->bg)
-			XDrawString16(x->display, x->window, x->gc, px, py + x->font->ascent, c2, n);
-		else
-		{
-			XSetBackground(x->display, x->gc, bg);
-			XDrawImageString16(x->display, x->window, x->gc, px, py + x->font->ascent, c2, n);
+				if (gc->attr & GRID_ATTR_CHARSET) 
+				{
+					if (c >= '`' && c <= '~' && xt_font_pick(x, ft, c-('`'-1)) != FONT_TYPE_NONE)
+						c -= '`'-1;
+					else if (c < nitems(xtmux_acs))
+						c = xtmux_acs[c];
+				}
+
+				ftc = xt_font_pick(x, ft, c);
+				if (ftc != FONT_TYPE_NONE && ftc != ftl)
+				{
+					if (i == l)
+						ftl = ftc;
+					else
+						break;
+				}
+
+				c2[i].byte1 = c >> 8;
+				c2[i].byte2 = c;
+			}
+
+			XSetFont(x->display, x->gc, x->font[ftl].fid);
+			if (cleared && bg == x->bg)
+				XDrawString16(x->display, x->window, x->gc, C2X(cx+l), py + x->font[ftl].ascent, &c2[l], i-l);
+			else
+			{
+				XSetBackground(x->display, x->gc, bg);
+				XDrawImageString16(x->display, x->window, x->gc, C2X(cx+l), py + x->font[ftl].ascent, &c2[l], i-l);
+			}
+
+			ftl = ftc;
 		}
 	}
 
+	/* UNDERSCORE xor BLINK */
 	if ((gc->attr & (GRID_ATTR_UNDERSCORE | GRID_ATTR_BLINK)) == GRID_ATTR_UNDERSCORE ||
 			(gc->attr & (GRID_ATTR_UNDERSCORE | GRID_ATTR_BLINK)) == GRID_ATTR_BLINK)
 	{
-		u_int y = py + x->font->ascent;
-		if (x->font->descent > 1)
+		u_int y = py + x->font[ft].ascent;
+		if (x->font[ft].descent > 1)
 			y ++;
 		XSetForeground(x->display, x->gc, fg);
 		XDrawLine(x->display, x->window, x->gc, 
@@ -1953,8 +2037,8 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 	struct xtmux *x = tty->xtmux;
 	struct mouse_event m;
 
-	m.x = xev->x / x->font_width;
-	m.y = xev->y / x->font_height;
+	m.x = xev->x / x->cw;
+	m.y = xev->y / x->ch;
 
 	switch (xev->type) {
 		case ButtonPress:
@@ -2025,8 +2109,8 @@ static void
 xtmux_configure_notify(struct tty *tty, XConfigureEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
-	u_int sx = xev->width  / x->font_width;
-	u_int sy = xev->height / x->font_height;
+	u_int sx = xev->width  / x->cw;
+	u_int sy = xev->height / x->ch;
 
 	if (sx != tty->sx || sy != tty->sy)
 	{
@@ -2042,12 +2126,12 @@ xt_expose(struct xtmux *x, XExposeEvent *xev)
 {
 	int px1 = xev->x;
 	int py1 = xev->y;
-	int cx1 = px1 / x->font_width;
-	int cy1 = py1 / x->font_height;
+	int cx1 = px1 / x->cw;
+	int cy1 = py1 / x->ch;
 	int px2 = px1 + xev->width;
 	int py2 = py1 + xev->height;
-	int cx2 = (px2 + x->font_width  - 1) / x->font_width;
-	int cy2 = (py2 + x->font_height - 1) / x->font_height;
+	int cx2 = (px2 + x->cw  - 1) / x->cw;
+	int cy2 = (py2 + x->ch - 1) / x->ch;
 
 	if (xev->type == GraphicsExpose && !xev->count && x->copy_active)
 		x->copy_active --;
