@@ -1263,7 +1263,7 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 				{
 					if (c >= '`' && c <= '~' && xt_font_pick(x, ft, c-('`'-1)) != FONT_TYPE_NONE)
 						c -= '`'-1;
-					else if (c < nitems(xtmux_acs))
+					else if (c < nitems(xtmux_acs) && xtmux_acs[c])
 						c = xtmux_acs[c];
 				}
 
