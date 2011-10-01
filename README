@@ -41,6 +41,4 @@ Usage:
   configure --enable-xtmux
   tmux -x
 
-libevent 2.0 is required (1.4 does not seem to work).
-
 Dylan Simon <dylan-tmux@dylex.net>
