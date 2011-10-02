@@ -139,7 +139,7 @@ struct putc {
 
 struct scroll {
 	u_int	x, y, w, h; /* the full area being scrolled (h-n lines are copied) */
-	int	n; /* number of lines to scroll, positive for up */
+	int	n; /* number of lines to scroll, positive for down */
 };
 
 struct xtmux {
@@ -946,7 +946,6 @@ xtmux_attributes(struct tty *tty, const struct grid_cell *gc)
 		return;
 
 	XENTRY();
-	xt_putc_flush(tty->xtmux);
 	tty->cell = *gc;
 	XRETURN();
 }
@@ -957,8 +956,16 @@ xtmux_reset(struct tty *tty)
 	xtmux_attributes(tty, &grid_default_cell);
 }
 
-/* make sure the given region is up-to-date */
-static void
+static inline int
+xt_redraw_pending(struct xtmux *x, u_int cx, u_int cy)
+{
+	struct scroll *s = &x->scroll_buf;
+
+	return s->n && INSIDE(cx, cy, s->x, s->y, s->w, s->h) &&
+		(s->n < 0 ? cy >= s->y+s->h+s->n : cy < s->y+s->n);
+}
+
+static inline void
 xt_flush(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 {
 	struct putc *b = &x->putc_buf;
@@ -967,62 +974,55 @@ xt_flush(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 		xt_putc_flush(x);
 }
 
-/* prepare to draw in location; redraw pending if 0 */
-static int
-xt_touch(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
-{
-	struct scroll *s = &x->scroll_buf;
-	
-	if (s->n && OVERLAPS(s->x, s->y, s->w, s->h, px, py, w, h))
-	{
-		if (s->n > 0)
-		{
-			if (py < s->y+s->h-s->n) /* includes copy region */
-				xt_scroll_flush(x);
-			else	/* within invalidated region */
-				return 0;
-		}
-		else
-		{
-			if (py+h > s->y-s->n)
-				xt_scroll_flush(x);
-			else
-				return 0;
-		}
-	}
-
-	xt_flush(x, px, py, w, h);
-	return 1;
-}
-
-static inline void
+static inline int
 xt_draw_cursor(struct xtmux *x)
 {
 	if (x->cx < 0 || x->cy < 0)
-		return;
+		return 0;
 
 	XCopyPlane(x->display, x->cursor, x->window, x->cursor_gc, 0, 0, x->cw, x->ch, C2X(x->cx), C2Y(x->cy), 1);
+	return 1;
 }
 
 static int
 xt_move_cursor(struct xtmux *x, int cx, int cy)
 {
+	int r = 0;
+
+	if (xt_redraw_pending(x, cx, cy))
+		cx = cy = -1;
 	if (x->cx == cx && x->cy == cy)
 		return 0;
 
-	if (cx >= 0 && !xt_touch(x, cx, cy, 1, 1))
-		return 0;
-
-	xt_draw_cursor(x);
+	r |= xt_draw_cursor(x);
+	xt_flush(x, cx, cy, 1, 1);
 	x->cx = cx; x->cy = cy;
-	xt_draw_cursor(x);
-	return 1;
+	r |= xt_draw_cursor(x);
+	return r;
 }
 
 static inline int
 xtmux_update_cursor(struct tty *tty)
 {
 	return (tty->mode & MODE_CURSOR) && xt_move_cursor(tty->xtmux, tty->cx, tty->cy);
+}
+
+/* make sure the given region is up-to-date */
+static int
+xt_touch(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
+{
+	struct scroll *s = &x->scroll_buf;
+
+	if (s->n && OVERLAPS(px, py, w, h, s->x, s->y, s->w, s->h))
+	{
+		if (s->n < 0 ? py < s->y+s->h+s->n : py+h > s->y+s->n)
+			xt_scroll_flush(x); /* includes copy region */
+		else if (WITHIN(px, py, w, h, s->x, s->y, s->w, s->h))
+			return 0; /* within invalidated region */
+	}
+
+	xt_flush(x, px, py, w, h);
+	return 1;
 }
 
 /* indicate an intention to completely overwrite a region */
@@ -1060,10 +1060,7 @@ xt_redraw(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 static void
 xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int h)
 {
-	xt_flush(x, x1, y1, w, h);
-	if (INSIDE(x->cx, x->cy, x1, y1, w, h))
-		xt_move_cursor(x, -1, -1);
-	if (!xt_write(x, x2, y2, w, h))
+	if (!xt_touch(x, x1, y1, w, h))
 		return;
 
 	while (x->copy_active)
@@ -1086,6 +1083,10 @@ xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int 
 		}
 	}
 
+	if (INSIDE(x->cx, x->cy, x1, y1, w, h))
+		xt_move_cursor(x, -1, -1);
+	else if (INSIDE(x->cx, x->cy, x2, y2, w, h))
+		x->cx = x->cy = -1;
 	x->copy_active ++;
 	XCopyArea(x->display, x->window, x->window, x->gc,
 			C2X(x1), C2Y(y1), C2W(w), C2H(h), C2X(x2), C2Y(y2));
@@ -1101,8 +1102,9 @@ xt_scroll_flush(struct xtmux *x)
 		return 0;
 
 	s->n = 0;
-	if (n > 0)
+	if (n < 0)
 	{	/* up */
+		n = -n;
 		if (s->h > (u_int)n)
 			xt_copy(x, s->x, s->y+n, s->x, s->y, s->w, s->h-n);
 		else
@@ -1111,7 +1113,6 @@ xt_scroll_flush(struct xtmux *x)
 	}
 	else
 	{ 	/* down */
-		n = -n;
 		if (s->h > (u_int)n)
 			xt_copy(x, s->x, s->y, s->x, s->y+n, s->w, s->h-n);
 		else
@@ -1143,7 +1144,6 @@ void
 xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 {
 	XENTRY();
-	xt_putc_flush(tty->xtmux);
 
 	tty->cx = cx;
 	tty->cy = cy;
@@ -1394,6 +1394,7 @@ xtmux_putwc(struct tty *tty, u_int c)
 	struct putc *b = &x->putc_buf;
 
 	XENTRY();
+
 	if (tty->cx >= tty->sx)
 	{
 		xt_putc_flush(x);
@@ -1401,10 +1402,16 @@ xtmux_putwc(struct tty *tty, u_int c)
 		if (tty->cy != tty->rlower)
 			tty->cy ++;
 	}
-	else if (b->n == PUTC_BUF_LEN)
-		xt_putc_flush(x);
 
-	XUPDATE();
+	if (xt_redraw_pending(x, tty->cx, tty->cy))
+		XRETURN();
+
+	if (b->n &&
+			(b->n == PUTC_BUF_LEN ||
+			 b->x+b->n != tty->cx || 
+			 b->y != tty->cy|| 
+			 grid_attr_cmp(&b->cell, &tty->cell)))
+		xt_putc_flush(x);
 
 	if (!b->n)
 	{
@@ -1412,13 +1419,9 @@ xtmux_putwc(struct tty *tty, u_int c)
 		b->y = tty->cy;
 		memcpy(&b->cell, &tty->cell, sizeof tty->cell);
 	}
-#ifdef DEBUG
-	else assert(b->x+b->n == tty->cx && 
-			b->y == tty->cy && 
-			!grid_attr_cmp(&b->cell, &tty->cell));
-#endif
 	b->s[b->n++] = c;
 
+	XUPDATE();
 	XRETURN();
 }
 
@@ -1492,7 +1495,7 @@ xtmux_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 	xt_scroll(x,
 			PANE_X(0), PANE_CY,
 			screen_size_x(s), ctx->orlower+1-ctx->ocy,
-			-ctx->num);
+			ctx->num);
 
 	XUPDATE();
 	XRETURN();
@@ -1509,7 +1512,7 @@ xtmux_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 	xt_scroll(x,
 			PANE_X(0), PANE_CY,
 			screen_size_x(s), ctx->orlower+1-ctx->ocy,
-			ctx->num);
+			-ctx->num);
 
 	XUPDATE();
 	XRETURN();
@@ -1574,7 +1577,7 @@ xtmux_cmd_reverseindex(struct tty *tty, const struct tty_ctx *ctx)
 	xt_scroll(x,
 			PANE_X(0), PANE_Y(ctx->orupper),
 			screen_size_x(s), ctx->orlower+1-ctx->orupper,
-			-1);
+			1);
 
 	XUPDATE();
 	XRETURN();
@@ -1592,7 +1595,7 @@ xtmux_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 	xt_scroll(x,
 			PANE_X(0), PANE_Y(ctx->orupper),
 			screen_size_x(s), ctx->orlower+1-ctx->orupper,
-			1);
+			-1);
 
 	XUPDATE();
 	XRETURN();
@@ -1947,7 +1950,6 @@ static void
 xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 {
 	struct tty *tty = &c->tty;
-	struct xtmux *x = tty->xtmux;
 	struct window *w = c->session->curw->window;
 	struct window_pane *wp;
 
@@ -1969,8 +1971,6 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 
 	/* TODO: borders, numbers */
 
-	if (INSIDE(x->cx, x->cy, left, top, right-left, bot-top))
-		x->cx = x->cy = -1;
 	if (INSIDE(tty->cx, tty->cy, left, top, right-left, bot-top))
 		xtmux_update_cursor(tty);
 }
