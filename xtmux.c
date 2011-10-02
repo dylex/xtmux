@@ -974,39 +974,6 @@ xt_flush(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 		xt_putc_flush(x);
 }
 
-static inline int
-xt_draw_cursor(struct xtmux *x)
-{
-	if (x->cx < 0 || x->cy < 0)
-		return 0;
-
-	XCopyPlane(x->display, x->cursor, x->window, x->cursor_gc, 0, 0, x->cw, x->ch, C2X(x->cx), C2Y(x->cy), 1);
-	return 1;
-}
-
-static int
-xt_move_cursor(struct xtmux *x, int cx, int cy)
-{
-	int r = 0;
-
-	if (xt_redraw_pending(x, cx, cy))
-		cx = cy = -1;
-	if (x->cx == cx && x->cy == cy)
-		return 0;
-
-	r |= xt_draw_cursor(x);
-	xt_flush(x, cx, cy, 1, 1);
-	x->cx = cx; x->cy = cy;
-	r |= xt_draw_cursor(x);
-	return r;
-}
-
-static inline int
-xtmux_update_cursor(struct tty *tty)
-{
-	return (tty->mode & MODE_CURSOR) && xt_move_cursor(tty->xtmux, tty->cx, tty->cy);
-}
-
 /* make sure the given region is up-to-date */
 static int
 xt_touch(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
@@ -1055,6 +1022,39 @@ xt_redraw(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 {
 	xt_clear(x, cx, cy, w, h);
 	xtmux_redraw(x->client, cx, cy, cx+w, cy+h);
+}
+
+static inline int
+xt_draw_cursor(struct xtmux *x)
+{
+	if (x->cx < 0 || x->cy < 0)
+		return 0;
+
+	XCopyPlane(x->display, x->cursor, x->window, x->cursor_gc, 0, 0, x->cw, x->ch, C2X(x->cx), C2Y(x->cy), 1);
+	return 1;
+}
+
+static int
+xt_move_cursor(struct xtmux *x, int cx, int cy)
+{
+	int r = 0;
+
+	if (xt_redraw_pending(x, cx, cy))
+		cx = cy = -1;
+	if (x->cx == cx && x->cy == cy)
+		return 0;
+
+	r |= xt_draw_cursor(x);
+	xt_flush(x, cx, cy, 1, 1);
+	x->cx = cx; x->cy = cy;
+	r |= xt_draw_cursor(x);
+	return r;
+}
+
+static inline int
+xtmux_update_cursor(struct tty *tty)
+{
+	return (tty->mode & MODE_CURSOR) && xt_move_cursor(tty->xtmux, tty->cx, tty->cy);
 }
 
 static void
