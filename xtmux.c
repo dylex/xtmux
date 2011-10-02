@@ -1009,19 +1009,20 @@ xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 	return xt_touch(x, px, py, w, h);
 }
 
-static void
+static int
 xt_clear(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 {
 	if (!xt_write(x, cx, cy, w, h))
-		return;
+		return 0;
 	XClearArea(x->display, x->window, C2X(cx), C2Y(cy), C2W(w), C2H(h), False);
+	return 1;
 }
 
 static void
 xt_redraw(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 {
-	xt_clear(x, cx, cy, w, h);
-	xtmux_redraw(x->client, cx, cy, cx+w, cy+h);
+	if (xt_clear(x, cx, cy, w, h))
+		xtmux_redraw(x->client, cx, cy, cx+w, cy+h);
 }
 
 static inline int
@@ -1908,10 +1909,12 @@ xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 	if (sx > tty->sx)
 		sx = tty->sx;
 
-	xt_clear(tty->xtmux, ox, oy+py, sx, 1);
-	xt_draw_line(tty->xtmux, s, py, 0, sx, ox, oy);
+	if (xt_clear(tty->xtmux, ox, oy+py, sx, 1))
+	{
+		xt_draw_line(tty->xtmux, s, py, 0, sx, ox, oy);
+		XUPDATE();
+	}
 
-	XUPDATE();
 	XRETURN();
 }
 
@@ -2175,6 +2178,9 @@ xt_expose(struct xtmux *x, XExposeEvent *xev)
 
 	if (xev->type == GraphicsExpose && !xev->count && x->copy_active)
 		x->copy_active --;
+
+	if (!xt_write(x, cx1, cy1, cx2-cx1, cy2-cy1))
+		return;
 
 	#define CLEAR(X1, X2, Y1, Y2) \
 		XClearArea(x->display, x->window, X1, Y1, (X2)-(X1), (Y2)-(Y1), False)
