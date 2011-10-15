@@ -782,6 +782,21 @@ window_copy_key_numeric_prefix(struct window_pane *wp, int key)
 	return 0;
 }
 
+static int
+window_copy_selection_direction(struct window_pane *wp)
+{
+	struct window_copy_mode_data	*data = wp->modedata;
+	struct screen			*s = &data->screen;
+	u_int cy;
+
+	if (!s->sel.flag)
+		return 0;
+	cy = screen_hsize(data->backing) + data->cy - data->oy;
+	if (cy < data->sely || (cy == data->sely && data->cx < data->selx))
+		return -1;
+	return 1;
+}
+
 /* ARGSUSED */
 void
 window_copy_mouse(
@@ -789,8 +804,9 @@ window_copy_mouse(
 {
 	struct window_copy_mode_data	*data = wp->modedata;
 	struct screen			*s = &data->screen;
-	u_int				 i, old_cy;
+	u_int				 i, old_cy = data->cy;
 	u_int				 button, moved;
+	struct screen_sel		 old_sel = s->sel;
 
 	if (m->x >= screen_size_x(s))
 		return;
@@ -809,7 +825,6 @@ window_copy_mouse(
 			for (i = 0; i < 5; i++)
 				window_copy_cursor_up(wp, 0);
 		} else if (button == MOUSE_2) {
-			old_cy = data->cy;
 			for (i = 0; i < 5; i++)
 				window_copy_cursor_down(wp, 0);
 			if (old_cy == data->cy)
@@ -837,8 +852,10 @@ window_copy_mouse(
 			window_copy_start_selection(wp);
 			data->mouse_click ++;
 		case 2:
-			window_copy_cursor_next_word_end(wp, 
-					options_get_string(&wp->window->options, "word-separators"));
+			(window_copy_selection_direction(wp) < 0 ? 
+				window_copy_cursor_previous_word : 
+				window_copy_cursor_next_word_end)(wp,
+					 options_get_string(&wp->window->options, "word-separators"));
 			break;
 
 		case 3: /* lines */
@@ -846,7 +863,9 @@ window_copy_mouse(
 			window_copy_start_selection(wp);
 			data->mouse_click ++;
 		case 4:
-			window_copy_cursor_end_of_line(wp);
+			(window_copy_selection_direction(wp) < 0 ?
+				window_copy_cursor_start_of_line :
+				window_copy_cursor_end_of_line)(wp);
 			break;
 
 		default: /* reset */
@@ -864,21 +883,30 @@ window_copy_mouse(
 		else
 			data->mouse_click = 0;
 	} else if (m->b & MOUSE_DRAG) {
-	} else if (!data->mouse_click) {
+	} else if (!(data->mouse_click & 1)) {
 		s->mode &= ~MODE_MOUSE_STANDARD;
 		s->mode |= MODE_MOUSE_BUTTON;
 
-		data->mouse_button = button;
-		data->mouse_x = m->x;
-		data->mouse_y = m->y;
+		if (!data->mouse_click) {
+			data->mouse_button = button;
+			data->mouse_x = m->x;
+			data->mouse_y = m->y;
 
-		if (button == MOUSE_1 || !s->sel.flag)
-			window_copy_start_selection(wp);
+			if (button == MOUSE_1 || !s->sel.flag)
+				window_copy_start_selection(wp);
+		}
 	}
 
-	if (!data->mouse_click && 
-			window_copy_update_selection(wp))
-		window_copy_redraw_screen(wp);
+	if (window_copy_update_selection(wp) && 
+			memcmp(&s->sel, &old_sel, sizeof(struct screen_sel)))
+	{
+		if (old_sel.sy != s->sel.sy)
+			window_copy_redraw_screen(wp);
+		else if (old_cy < data->cy)
+			window_copy_redraw_lines(wp, old_cy, data->cy-old_cy+1);
+		else
+			window_copy_redraw_lines(wp, data->cy, old_cy-data->cy+1);
+	}
 
 	return;
 
