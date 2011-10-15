@@ -948,10 +948,6 @@ window_copy_mouse(
 			window_copy_redraw_lines(wp, data->cy, old_cy-data->cy+1);
 	}
 
-	if (!data->mouse_click && 
-			window_copy_update_selection(wp))
-		window_copy_redraw_screen(wp);
-
 	return;
 
 reset_mode:
