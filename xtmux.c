@@ -998,15 +998,17 @@ xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 {
 	struct putc *b = &x->putc_buf;
 	struct scroll *s = &x->scroll_buf;
+	int r;
 
 	if (b->n && WITHIN(b->x, b->y, b->n, 1, px, py, w, h))
 		b->n = 0;
 	if (s->n && WITHIN(s->x, s->y, s->w, s->h, px, px, w, h))
 		s->n = 0;
-	if (INSIDE(x->cx, x->cy, px, py, w, h))
+	r = xt_touch(x, px, py, w, h);
+	if (r && INSIDE(x->cx, x->cy, px, py, w, h))
 		x->cx = x->cy = -1;
 
-	return xt_touch(x, px, py, w, h);
+	return r;
 }
 
 static int
@@ -1046,7 +1048,7 @@ xt_move_cursor(struct xtmux *x, int cx, int cy)
 		return 0;
 
 	r |= xt_draw_cursor(x);
-	xt_flush(x, cx, cy, 1, 1);
+	xt_touch(x, cx, cy, 1, 1);
 	x->cx = cx; x->cy = cy;
 	r |= xt_draw_cursor(x);
 	return r;
