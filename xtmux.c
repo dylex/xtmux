@@ -15,6 +15,7 @@
  */
 
 #include <setjmp.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <X11/Xlib.h>
@@ -41,6 +42,7 @@ static void xt_expose(struct xtmux *, XExposeEvent *);
 
 #if !defined(LIBEVENT_VERSION_NUMBER) || LIBEVENT_VERSION_NUMBER < 0x02000000
 #define EVENT_ACTIVE_BROKEN
+#warning xtmux using old libevent: some features may be broken
 #endif
 
 #define XTMUX_NUM_COLORS 256
@@ -1412,7 +1414,7 @@ xtmux_putwc(struct tty *tty, u_int c)
 	if (b->n &&
 			(b->n == PUTC_BUF_LEN ||
 			 b->x+b->n != tty->cx || 
-			 b->y != tty->cy|| 
+			 b->y != tty->cy ||
 			 grid_attr_cmp(&b->cell, &tty->cell)))
 		xt_putc_flush(x);
 
@@ -1955,8 +1957,10 @@ static void
 xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 {
 	struct tty *tty = &c->tty;
-	struct window *w = c->session->curw->window;
 	struct window_pane *wp;
+
+	if (!c->session)
+		return;
 
 	if (bot >= (int)tty->sy && (c->message_string || c->prompt_string || options_get_number(&c->session->options, "status")))
 	{
@@ -1971,7 +1975,7 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 		bot = tty->sy-1;
 	}
 
-	TAILQ_FOREACH(wp, &w->panes, entry)
+	TAILQ_FOREACH(wp, &c->session->curw->window->panes, entry)
 		xtmux_redraw_pane(tty, wp, left, top, right, bot);
 
 	/* TODO: borders, numbers */
