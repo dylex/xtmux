@@ -41,8 +41,8 @@ static void xtmux_redraw(struct client *, int, int, int, int);
 static void xt_expose(struct xtmux *, XExposeEvent *);
 
 #if !defined(LIBEVENT_VERSION_NUMBER) || LIBEVENT_VERSION_NUMBER < 0x02000000
-#define EVENT_ACTIVE_BROKEN
-#warning xtmux using old libevent: some features may be broken
+# define EVENT_ACTIVE_BROKEN
+# warning xtmux using old libevent: some features may be broken
 #endif
 
 #define XTMUX_NUM_COLORS 256
@@ -155,6 +155,10 @@ struct xtmux {
 
 	KeySym		prefix_key;
 	short		prefix_mod;
+
+	XComposeStatus	compose;
+	XIM		xim;
+	XIC		xic;
 
 	GC		gc;
 	unsigned long	fg, bg;
@@ -793,6 +797,20 @@ xtmux_open(struct tty *tty, char **cause)
 	if (x->window == None)
 		FAIL("could not create X window");
 
+	x->xim = XOpenIM(x->display, NULL, NULL, NULL);
+	if (x->xim)
+		x->xic = XCreateIC(x->xim, XNInputStyle, XIMPreeditNone | XIMStatusNone,
+				XNClientWindow, x->window,
+				XNFocusWindow, x->window,
+				NULL);
+	if (!x->xic)
+	{
+		log_warnx("xtmux: failed to initialize input method");
+		if (x->xim)
+			XCloseIM(x->xim);
+		x->xim = 0;
+	}
+
 	size_hints.min_width = x->cw;
 	size_hints.min_height = x->ch;
 	size_hints.width_inc = x->cw;
@@ -844,6 +862,18 @@ xtmux_close(struct tty *tty)
 
 	/* Must be careful here if we got an IO error: 
 	 * want to free resources without using the connection */
+
+	if (x->xic)
+	{
+		XDestroyIC(x->xic);
+		x->xic = NULL;
+	}
+
+	if (x->xim)
+	{
+		XCloseIM(x->xim);
+		x->xim = 0;
+	}
 
 	if (x->paste.sep)
 	{
@@ -1989,10 +2019,15 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
 	int r, i, key;
-	static char buf[32];
-	KeySym xks;
+	static unsigned char buf[32];
+	KeySym xks = 0;
 
-	r = XLookupString(xev, buf, sizeof buf, &xks, NULL);
+	if (x->xic)
+		r = Xutf8LookupString(x->xic, xev, buf, sizeof buf, &xks, NULL);
+	else
+		r = XLookupString(xev, buf, sizeof buf, &xks, &x->compose);
+	if (r > (int)sizeof buf)
+		log_fatalx("FIXME: xtmux LookupString result too large for buffer: %d", r);
 	if (x->prefix_key && xks == x->prefix_key)
 		key = KEYC_PREFIX;
 	else switch (xks)
@@ -2213,6 +2248,14 @@ xtmux_focus(struct tty *tty, int focus)
 	xt_move_cursor(x, -1, -1);
 	x->focus_out = !focus;
 	xt_fill_cursor(x, tty->cstyle);
+
+	if (x->xic)
+	{
+		if (focus)
+			XSetICFocus(x->xic);
+		else
+			XUnsetICFocus(x->xic);
+	}
 }
 
 static void
