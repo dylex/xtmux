@@ -40,11 +40,6 @@ static int xt_scroll_flush(struct xtmux *);
 static void xtmux_redraw(struct client *, int, int, int, int);
 static void xt_expose(struct xtmux *, XExposeEvent *);
 
-#if !defined(LIBEVENT_VERSION_NUMBER) || LIBEVENT_VERSION_NUMBER < 0x02000000
-# define EVENT_ACTIVE_BROKEN
-# warning xtmux using old libevent: some features may be broken
-#endif
-
 #define XTMUX_NUM_COLORS 256
 
 static const unsigned char xtmux_colors[16][3] = {
@@ -182,20 +177,12 @@ struct xtmux {
 
 	struct client	*client; /* pointer back up to support redraws */
 	short		ioerror;
-#ifdef EVENT_ACTIVE_BROKEN
-	short		in_main;
-#endif
 };
 
 #define XSCREEN		DefaultScreen(x->display)
 #define XCOLORMAP	DefaultColormap(x->display, XSCREEN)
 
-#ifdef EVENT_ACTIVE_BROKEN
-/* this will be slower and defeat the caches, but at least makes it work */
-#define XUPDATE()	if (!tty->xtmux->in_main) xtmux_main(tty)
-#else
-#define XUPDATE()	event_active(&tty->xtmux->event, EV_WRITE, 0)
-#endif
+#define XUPDATE()	event_active(&tty->xtmux->event, EV_WRITE, 1)
 
 static u_int xdisplay_entry_count;
 static jmp_buf xdisplay_recover;
@@ -2263,9 +2250,6 @@ xtmux_main(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
 
-#ifdef EVENT_ACTIVE_BROKEN
-	x->in_main ++;
-#endif
 	xt_putc_flush(x);
 	xt_scroll_flush(x);
 
@@ -2349,8 +2333,5 @@ xtmux_main(struct tty *tty)
 				log_warnx("unhandled x event %d", xev.type);
 		}
 	}
-#ifdef EVENT_ACTIVE_BROKEN
-	x->in_main --;
-#endif
 }
 
