@@ -633,6 +633,18 @@ xt_font_has_char(const struct xtmux *x, enum font_type type, wchar c)
 	return 0;
 }
 
+static void
+xt_size_hints(struct xtmux *x, XSizeHints *sh)
+{
+	memset(sh, 0, sizeof(*sh));
+
+	sh->min_width = x->cw;
+	sh->min_height = x->ch;
+	sh->width_inc = x->cw;
+	sh->height_inc = x->ch;
+	sh->flags = PMinSize | PResizeInc;
+}
+
 int
 xtmux_setup(struct tty *tty)
 {
@@ -652,6 +664,7 @@ xtmux_setup(struct tty *tty)
 			Window root;
 			int xpos, ypos, border, depth;
 			u_int width, height;
+			XSizeHints size_hints;
 
 			XGetGeometry(x->display, x->window, &root, &xpos, &ypos, &width, &height, &border, &depth);
 			tty->sx = width  / x->cw;
@@ -659,6 +672,9 @@ xtmux_setup(struct tty *tty)
 
 			XClearWindow(x->display, x->window);
 			recalculate_sizes();
+
+			xt_size_hints(x, &size_hints);
+			XSetWMNormalHints(x->display, x->window, &size_hints);
 		}
 
 		if (x->cursor)
@@ -798,12 +814,9 @@ xtmux_open(struct tty *tty, char **cause)
 		x->xim = 0;
 	}
 
-	size_hints.min_width = x->cw;
-	size_hints.min_height = x->ch;
-	size_hints.width_inc = x->cw;
-	size_hints.height_inc = x->ch;
+	xt_size_hints(x, &size_hints);
 	size_hints.win_gravity = NorthWestGravity;
-	size_hints.flags = PMinSize | PResizeInc | PWinGravity;
+	size_hints.flags |= PWinGravity;
 	wm_hints.input = True;
 	wm_hints.initial_state = NormalState;
 	wm_hints.flags = InputHint | StateHint;
