@@ -521,10 +521,6 @@ cmd_lookup_client(const char *name)
 		c = ARRAY_ITEM(&clients, i);
 		if (c == NULL || c->session == NULL)
 			continue;
-#ifdef XTMUX
-		if (c->tty.xtmux)
-			continue;
-#endif
 		path = c->tty.path;
 
 		/* Check for exact matches. */
