@@ -32,10 +32,16 @@ int	cmd_paste_buffer_exec(struct cmd *, struct cmd_ctx *);
 void	cmd_paste_buffer_filter(
 	    struct window_pane *, const char *, size_t, const char *);
 
+#ifdef XTMUX
+#define X_OPT	"x"
+#else
+#define X_OPT
+#endif
+
 const struct cmd_entry cmd_paste_buffer_entry = {
 	"paste-buffer", "pasteb",
-	"db:rs:t:", 0, 0,
-	"[-dr] [-s separator] [-b buffer-index] [-t target-pane]",
+	"db:rs:t:" X_OPT, 0, 0,
+	"[-dr" X_OPT "] [-s separator] [-b buffer-index] [-t target-pane]",
 	0,
 	NULL,
 	NULL,
@@ -55,6 +61,26 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 
 	if (cmd_find_pane(ctx, args_get(args, 't'), &s, &wp) == NULL)
 		return (-1);
+
+	sepstr = args_get(args, 's');
+	if (sepstr == NULL) {
+		if (args_has(args, 'r'))
+			sepstr = "\n";
+		else
+			sepstr = "\r";
+	}
+
+#ifdef XTMUX
+	if (args_has(args, 'x'))
+	{
+		if (!(ctx->curclient && ctx->curclient->tty.xtmux))
+		{
+			ctx->error(ctx, "not xtmux");
+			return (-1);
+		}
+		return xtmux_paste(&ctx->curclient->tty, wp, args_get(args, 'b'), sepstr);
+	}
+#endif
 
 	if (!args_has(args, 'b'))
 		buffer = -1;
@@ -78,13 +104,6 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 	}
 
 	if (pb != NULL) {
-		sepstr = args_get(args, 's');
-		if (sepstr == NULL) {
-			if (args_has(args, 'r'))
-				sepstr = "\n";
-			else
-				sepstr = "\r";
-		}
 		cmd_paste_buffer_filter(wp, pb->data, pb->size, sepstr);
 	}
 

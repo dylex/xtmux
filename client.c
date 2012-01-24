@@ -213,6 +213,9 @@ client_send_identify(int flags)
 {
 	struct msg_identify_data	data;
 	char			       *term;
+#ifdef XTMUX
+	struct msg_xdisplay_data	xdata;
+#endif
 	int				fd;
 
 	data.flags = flags;
@@ -239,6 +242,11 @@ client_send_identify(int flags)
 		fatal("dup failed");
 	imsg_compose(&client_ibuf,
 	    MSG_STDERR, PROTOCOL_VERSION, -1, fd, NULL, 0);
+
+#ifdef XTMUX
+	if (xdisplay && strlcpy(xdata.display, xdisplay, sizeof xdata.display) < sizeof xdata.display)
+		client_write_server(MSG_XDISPLAY, &xdata, sizeof xdata);
+#endif
 }
 
 /* Forward entire environment to server. */
@@ -301,6 +309,11 @@ client_signal(int sig, unused short events, unused void *data)
 			client_exitval = 1;
 			client_write_server(MSG_EXITING, NULL, 0);
 			break;
+		case SIGINT:
+			client_exitmsg = "interrupt";
+			client_exitval = 1;
+			client_write_server(MSG_EXITING, NULL, 0);
+			break;
 		case SIGTERM:
 			client_exitmsg = "terminated";
 			client_exitval = 1;
@@ -310,12 +323,15 @@ client_signal(int sig, unused short events, unused void *data)
 			client_write_server(MSG_RESIZE, NULL, 0);
 			break;
 		case SIGCONT:
+			if (!xdisplay)
+			{
 			memset(&sigact, 0, sizeof sigact);
 			sigemptyset(&sigact.sa_mask);
 			sigact.sa_flags = SA_RESTART;
 			sigact.sa_handler = SIG_IGN;
 			if (sigaction(SIGTSTP, &sigact, NULL) != 0)
 				fatal("sigaction failed");
+			}
 			client_write_server(MSG_WAKEUP, NULL, 0);
 			break;
 		}

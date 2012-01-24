@@ -31,8 +31,8 @@ int	cmd_show_options_exec(struct cmd *, struct cmd_ctx *);
 
 const struct cmd_entry cmd_show_options_entry = {
 	"show-options", "show",
-	"gst:w", 0, 0,
-	"[-gsw] [-t target-session|target-window]",
+	"cgst:w", 0, 0,
+	"[-cgsw] [-t target-session|target-window|target-client]",
 	0,
 	NULL,
 	NULL,
@@ -56,6 +56,7 @@ cmd_show_options_exec(struct cmd *self, struct cmd_ctx *ctx)
 	const struct options_table_entry	*table, *oe;
 	struct session				*s;
 	struct winlink				*wl;
+	struct client				*c;
 	struct options				*oo;
 	struct options_entry			*o;
 	const char				*optval;
@@ -73,6 +74,16 @@ cmd_show_options_exec(struct cmd *self, struct cmd_ctx *ctx)
 			if (wl == NULL)
 				return (-1);
 			oo = &wl->window->options;
+		}
+	} else if (args_has(self->args, 'c')) {
+		table = client_options_table;
+		if (args_has(self->args, 'g'))
+			oo = &global_c_options;
+		else {
+			c = cmd_find_client(ctx, args_get(args, 't'));
+			if (c == NULL)
+				return (-1);
+			oo = &c->options;
 		}
 	} else {
 		table = session_options_table;

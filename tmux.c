@@ -36,6 +36,7 @@ extern char	*malloc_options;
 struct options	 global_options;	/* server options */
 struct options	 global_s_options;	/* session options */
 struct options	 global_w_options;	/* window options */
+struct options	 global_c_options;	/* client options */
 struct environ	 global_environ;
 
 struct event_base *ev_base;
@@ -49,6 +50,9 @@ int		 login_shell;
 char		*environ_path;
 pid_t		 environ_pid = -1;
 int		 environ_idx = -1;
+#ifdef XTMUX
+char		*xdisplay = NULL;
+#endif
 
 __dead void	 usage(void);
 void	 	 parseenvironment(void);
@@ -245,7 +249,11 @@ main(int argc, char **argv)
 	quiet = flags = 0;
 	label = path = NULL;
 	login_shell = (**argv == '-');
-	while ((opt = getopt(argc, argv, "28c:df:lL:qS:uUvV")) != -1) {
+	while ((opt = getopt(argc, argv, "28c:df:lL:qS:uUvV"
+#ifdef XTMUX
+					"x"
+#endif
+					)) != -1) {
 		switch (opt) {
 		case '2':
 			flags |= IDENTIFY_256COLOURS;
@@ -290,6 +298,13 @@ main(int argc, char **argv)
 		case 'v':
 			debug_level++;
 			break;
+#ifdef XTMUX
+		case 'x':
+			if (!optarg)
+				optarg = getenv("DISPLAY");
+			xdisplay = xstrdup(optarg);
+			break;
+#endif
 		default:
 			usage();
 		}
@@ -333,6 +348,9 @@ main(int argc, char **argv)
 
 	options_init(&global_w_options, NULL);
 	options_table_populate_tree(window_options_table, &global_w_options);
+
+	options_init(&global_c_options, NULL);
+	options_table_populate_tree(client_options_table, &global_c_options);
 
 	/* Enable UTF-8 if the first client is on UTF-8 terminal. */
 	if (flags & IDENTIFY_UTF8) {

@@ -381,7 +381,10 @@ enum msgtype {
 	MSG_SHELL,
 	MSG_STDERR,
 	MSG_STDOUT,
-	MSG_DETACHKILL
+	MSG_DETACHKILL,
+#ifdef XTMUX
+	MSG_XDISPLAY,
+#endif
 };
 
 /*
@@ -407,6 +410,12 @@ struct msg_identify_data {
 #define IDENTIFY_88COLOURS 0x4
 	int		flags;
 };
+
+#ifdef XTMUX
+struct msg_xdisplay_data {
+	char		display[MAXHOSTNAMELEN+16]; /* should be enough: host + port */
+};
+#endif
 
 struct msg_lock_data {
 	char		cmd[COMMAND_LENGTH];
@@ -1008,6 +1017,10 @@ struct tty_term {
 };
 LIST_HEAD(tty_terms, tty_term);
 
+#ifdef XTMUX
+struct xtmux;
+#endif
+
 struct tty {
 	char		*path;
 
@@ -1043,6 +1056,7 @@ struct tty {
 #define TTY_STARTED 0x10
 #define TTY_OPENED 0x20
 #define TTY_BACKOFF 0x40
+#define TTY_UNMAPPED 0x80
 	int		 flags;
 
 	int		 term_flags;
@@ -1051,6 +1065,10 @@ struct tty {
 	void		*key_data;
 	struct event	 key_timer;
 	struct tty_key	*key_tree;
+
+#ifdef XTMUX
+	struct xtmux 	*xtmux;
+#endif
 };
 
 /* TTY command context and function pointer. */
@@ -1099,6 +1117,7 @@ struct mouse_event {
 #define MOUSE_DRAG 32
 #define MOUSE_45 64
 #define MOUSE_RESIZE_PANE 128 /* marker for resizing */
+#define MOUSE_PREFIX 256 /* event is intended for tmux, not application */
 	u_int	x;
 	u_int	y;
 };
@@ -1190,6 +1209,8 @@ struct client {
 	struct session	*last_session;
 
 	struct mouse_event last_mouse;
+
+	struct options	 options;
 
 	int		 references;
 };
@@ -1329,6 +1350,7 @@ ARRAY_DECL(causelist, char *);
 extern struct options global_options;
 extern struct options global_s_options;
 extern struct options global_w_options;
+extern struct options global_c_options;
 extern struct environ global_environ;
 extern struct event_base *ev_base;
 extern char	*cfg_file;
@@ -1340,6 +1362,9 @@ extern int	 login_shell;
 extern char	*environ_path;
 extern pid_t	 environ_pid;
 extern int	 environ_idx;
+#ifdef XTMUX
+extern char	*xdisplay;
+#endif
 void		 logfile(const char *);
 const char	*getshell(void);
 int		 checkshell(const char *);
@@ -1407,6 +1432,7 @@ long long options_get_number(struct options *, const char *);
 extern const struct options_table_entry server_options_table[];
 extern const struct options_table_entry session_options_table[];
 extern const struct options_table_entry window_options_table[];
+extern const struct options_table_entry client_options_table[];
 void	options_table_populate_tree(
 	    const struct options_table_entry *, struct options *);
 const char *options_table_print_entry(
@@ -2095,5 +2121,37 @@ int printflike2	 xasprintf(char **, const char *, ...);
 int		 xvasprintf(char **, const char *, va_list);
 int printflike3	 xsnprintf(char *, size_t, const char *, ...);
 int		 xvsnprintf(char *, size_t, const char *, va_list);
+
+#ifdef XTMUX
+void	xtmux_init(struct client *, char *);
+int	xtmux_open(struct tty *, char **);
+int	xtmux_setup(struct tty *);
+void	xtmux_close(struct tty *);
+void	xtmux_free(struct tty *);
+void	xtmux_set_title(struct tty *, const char *);
+void	xtmux_attributes(struct tty *, const struct grid_cell *);
+void	xtmux_reset(struct tty *);
+void	xtmux_cursor(struct tty *, u_int, u_int);
+void 	xtmux_putc(struct tty *, u_char);
+void	xtmux_pututf8(struct tty *, const struct grid_utf8 *, size_t size);
+void	xtmux_force_cursor_colour(struct tty *, const char *);
+void	xtmux_update_mode(struct tty *, int, struct screen *);
+void	xtmux_draw_line(struct tty *, struct screen *, u_int, u_int, u_int);
+void	xtmux_cmd_insertcharacter(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_deletecharacter(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_insertline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_deleteline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearendofline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearstartofline(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_reverseindex(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_linefeed(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearendofscreen(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearstartofscreen(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_clearscreen(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_setselection(struct tty *, const struct tty_ctx *);
+void	xtmux_bell(struct tty *);
+int	xtmux_paste(struct tty *, struct window_pane *, const char *, const char *);
+#endif
 
 #endif /* TMUX_H */

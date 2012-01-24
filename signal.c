@@ -22,6 +22,9 @@
 
 #include "tmux.h"
 
+#ifdef XTMUX
+struct event	ev_sigint;
+#endif
 struct event	ev_sighup;
 struct event	ev_sigchld;
 struct event	ev_sigcont;
@@ -38,6 +41,23 @@ set_signals(void(*handler)(int, short, unused void *))
 	sigemptyset(&sigact.sa_mask);
 	sigact.sa_flags = SA_RESTART;
 	sigact.sa_handler = SIG_IGN;
+#ifdef XTMUX
+	if (xdisplay)
+	{
+		if (sigaction(SIGHUP, &sigact, NULL) != 0)
+			fatal("sigaction failed");
+
+		signal_set(&ev_sigint, SIGINT, handler, NULL);
+		signal_add(&ev_sigint, NULL);
+		signal_set(&ev_sigchld, SIGCHLD, handler, NULL);
+		signal_add(&ev_sigchld, NULL);
+		signal_set(&ev_sigcont, SIGCONT, handler, NULL);
+		signal_add(&ev_sigcont, NULL);
+		signal_set(&ev_sigterm, SIGTERM, handler, NULL);
+		signal_add(&ev_sigterm, NULL);
+		return;
+	}
+#endif
 	if (sigaction(SIGINT, &sigact, NULL) != 0)
 		fatal("sigaction failed");
 	if (sigaction(SIGPIPE, &sigact, NULL) != 0)
@@ -93,11 +113,26 @@ clear_signals(int after_fork)
 		if (sigaction(SIGWINCH, &sigact, NULL) != 0)
 			fatal("sigaction failed");
 	} else {
+#ifdef XTMUX
+		if (xdisplay)
+		{
+			event_del(&ev_sigint);
+			if (sigaction(SIGHUP, &sigact, NULL) != 0)
+				fatal("sigaction failed");
+		}
+		else
+#endif
 		event_del(&ev_sighup);
 		event_del(&ev_sigchld);
 		event_del(&ev_sigcont);
 		event_del(&ev_sigterm);
+#ifdef XTMUX
+		if (!xdisplay)
+#endif
 		event_del(&ev_sigusr1);
+#ifdef XTMUX
+		if (!xdisplay)
+#endif
 		event_del(&ev_sigwinch);
 	}
 }

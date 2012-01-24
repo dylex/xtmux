@@ -205,6 +205,11 @@ is the PID of the server or client process.
 Report the
 .Nm
 version.
+.It Fl x
+Attach to sessions in a new 
+.Ic xtmux
+window on
+.Ev DISPLAY .
 .It Ar command Op Ar flags
 This specifies one of a set of commands used to control
 .Nm ,
@@ -1696,11 +1701,12 @@ or for normal mode without.
 The appearance and behaviour of
 .Nm
 may be modified by changing the value of various options.
-There are three types of option:
+There are four types of option:
 .Em server options ,
-.Em session options
+.Em session options ,
+.Em window options ,
 and
-.Em window options .
+.Em client options .
 .Pp
 The
 .Nm
@@ -1727,8 +1733,8 @@ The available server and session options are listed under the
 .Ic set-option
 command.
 .Pp
-Similarly, a set of window options is attached to each window, and there is
-a set of global window options from which any unset options are inherited.
+Similarly, a set of options is attached to each window and client, and there is
+a set of global window and client options from which any unset options are inherited.
 Window options are altered with the
 .Ic set-window-option
 command and can be listed with the
@@ -1737,12 +1743,19 @@ command.
 All window options are documented with the
 .Ic set-window-option
 command.
+Client options can be altered and listed using
+.Ic set-option
+.Fl c
+and
+.Ic show-options
+.Fl c
+respectively.
 .Pp
 Commands which set options are as follows:
 .Bl -tag -width Ds
 .It Xo Ic set-option
-.Op Fl agsuw
-.Op Fl t Ar target-session | Ar target-window
+.Op Fl acgsuw
+.Op Fl t Ar target-session | Ar target-window | Ar target-client
 .Ar option Ar value
 .Xc
 .D1 (alias: Ic set )
@@ -1751,13 +1764,15 @@ Set a window option with
 (equivalent to the
 .Ic set-window-option
 command),
+a client option with
+.Fl c ,
 a server option with
 .Fl s ,
 otherwise a session option.
 .Pp
 If
 .Fl g
-is specified, the global session or window option is set.
+is specified, the global session, window, or client option is set.
 With
 .Fl a ,
 and if the option expects a string,
@@ -1816,6 +1831,12 @@ disallowedWindowOps: 20,21,SetXprop
 Or changing this property from the
 .Xr xterm 1
 interactive menu when required.
+.Pp
+This option is also on by default in 
+.Ic xtmux , 
+where it works as expected and populates the
+.Ic PRIMARY
+selection buffer.
 .El
 .Pp
 Available session options are:
@@ -2324,6 +2345,113 @@ separators, for the purposes of the next and previous word commands in
 copy mode.
 The default is
 .Ql \ -_@ .
+.El
+.Pp
+Available client options are:
+.Bl -tag -width Ds
+.It Ic xtmux-bg Ar xcolor
+.It Ic xtmux-fg Ar xcolor
+Default 
+.Ic xtmux 
+background and foreground color.
+In general,
+.Ar xcolor
+may be
+.Ic color0
+to
+.Ic color255
+to refer to a standard terminal color, or any color X11 recognizes (including hex strings).
+The defaults are
+.Ql color0
+(black) and
+.Ql color7
+(grey).
+.Pp
+.It Ic xtmux-colors Ar string
+Contains a comma- or space-dilimited list of terminal color overrides, each of the form
+.Ql Ar colour=xcolor .
+For example, if you want terminal red to actually be orange and dark grey to be a bit darker, you can specify
+.Bd -literal -offset indent
+"red=orange color8=#444444"
+.Ed
+.Pp
+The default set of colors are:
+.Bd -literal -offset indent
+color0=#000
+color1=#c00
+ ...
+color7=#ccc
+color8=#888888
+color9=#f00
+ ...
+color15=#fff
+.Ed
+.Pp
+followed by a linear color cube and grey ramp for 256-color mode (similar to 
+.Xr xterm 1 ) .
+.Pp
+.It Ic xtmux-font Ar font
+Set the font to use for 
+.Ic xtmux .
+This should be a fixed-width font.
+The default is
+.Ql fixed .
+.Pp
+.It Ic xtmux-bold-font Ar font
+.It Ic xtmux-italic-font Ar font
+The font to use for text with the 
+.Ic bright
+or
+.Ic italics
+attributes, respectively.
+These fonts must be exactly the same size as the standard font.
+If they are not specified, alternate rendering is used.
+.Pp
+.It Ic xtmux-pointer-fg Ar xcolor
+.It Ic xtmux-pointer-bg Ar xcolor
+The color of the mouse pointer icon, defaulting to white on black.
+.Pp
+.It Xo Ic xtmux-prefix
+.Op Ar key | modifier
+.Xc
+If set, the given key can act as an alternative 
+.Ic prefix 
+key in 
+.Ic xtmux .
+The specified
+.Ar key
+may be any keysym recognized by X11
+(see
+.Xr xmodmap 1 ) .
+.Pp
+Alternatively, if a
+.Ar modifier
+is specified, which may be one of
+.Ic mod0 
+through
+.Ic mod5 ,
+.Ic meta ,
+.Ic alt ,
+.Ic super ,
+.Ic hyper ,
+or
+.Ic ctrl
+(not recommended), or if the given keysym is mapped to a modifier, that modifier may be pressed along with another key to act as a prefix.
+For example, if set to
+.Ic alt
+and
+.Ic prefix
+is set to
+.Ql C-b ,
+then both
+.Ql C-b a
+and
+.Ql A-a
+do the same thing.
+.Pp
+In either case, the normal
+.Ic prefix
+key works as usual.
 .El
 .It Xo Ic set-window-option
 .Op Fl agu
@@ -3041,7 +3169,7 @@ List the global buffers.
 Load the contents of the specified paste buffer from
 .Ar path .
 .It Xo Ic paste-buffer
-.Op Fl dr
+.Op Fl drx
 .Op Fl b Ar buffer-index
 .Op Fl s Ar separator
 .Op Fl t Ar target-pane
@@ -3060,6 +3188,24 @@ flag.
 The
 .Fl r
 flag means to do no replacement (equivalent to a separator of LF).
+.Pp
+When
+.Fl x
+is specified from an 
+.Ic xtmux , 
+instead paste from the X selection buffer.
+In this case,
+.Ic buffer-index
+may be used to specify which selection buffer to paste from:
+.Ic PRIMARY
+(default),
+.Ic SECONDARY ,
+.Ic CLIPBOARD ,
+or
+.Ic 0
+through
+.Ic 7
+for one of the deprecated cut buffers.
 .It Xo Ic save-buffer
 .Op Fl a
 .Op Fl b Ar buffer-index

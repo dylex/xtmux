@@ -1,0 +1,44 @@
+tmux: X edition, under development
+
+This is a fork of tmux that has a built-in X-terminal (ala xterm, rxvt, etc.).
+See NOTES for more information on tmux itself.  Aside from the new features,
+xtmux is binary-compatible with tmux (i.e., a tmux client can talk to an xtmux
+server just fine), and building with --disable-xtmux should result in an
+exact, original tmux.
+
+The motivation for this is efficiency: normally when you run tmux (or screen)
+in an xterm, all the terminal control commands from programs are interpreted by
+tmux, kept in a screen buffer, translated and sent to the xterm, interpreted by
+the xterm, buffered again and rendered.  With xtmux, we can eliminate more that
+half of that processing and memory usage.  Additionally, a single tmux server
+will be able to manage multiple terminal windows, further saving memory.
+
+Documentation on new features can be found in the manpage.  Some highlights:
+
+  Option xtmux-prefix allows more flexible binding of the prefix key, including
+  modifier keys (e.g., "Alt-c" instead of "^B c").
+
+  Options xtmux-fg, xtmux-bg, xtmux-colors can fully configure the 256 colors
+  supported by the terminal.  Similarly, xtmux-font, xtmux-bold-font, and
+  xtmux-italic-font options are supported (font sizes must match).
+
+  OSC "^][12;color^G" sequence is supported to set the cursor color.
+  CSI_DECSTMB sequence is supported to set the cursor style, with some
+  extensions.  For example, to use this in VIM to change the insert cursor to a
+  bar (like gvim), do something like this:
+
+    if $TERM == 'screen'
+      set t_SI=^[[5\ q
+      set t_EI=^[[\ q
+    endif
+
+  Mouse support in copy mode is supported and improved to more closely match
+  xterm selection, allowing double-click for whole word selection.  Also,
+  set-clipboard option is supported to set primary X selection buffer to copied
+  selection.  Finally, paste -x option is added to paste from X clipboard.
+
+Usage: 
+  configure --enable-xtmux
+  tmux -x
+
+Dylan Simon <dylan-tmux@dylex.net>

@@ -93,6 +93,8 @@ server_client_create(int fd)
 
 	evtimer_set(&c->repeat_timer, server_client_repeat_timer, c);
 
+	options_init(&c->options, &global_c_options);
+
 	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
 		if (ARRAY_ITEM(&clients, i) == NULL) {
 			ARRAY_SET(&clients, i, c);
@@ -175,6 +177,8 @@ server_client_lost(struct client *c)
 	close(c->ibuf.fd);
 	imsg_clear(&c->ibuf);
 	event_del(&c->event);
+
+	options_free(&c->options);
 
 	for (i = 0; i < ARRAY_LENGTH(&dead_clients); i++) {
 		if (ARRAY_ITEM(&dead_clients, i) == NULL) {
@@ -326,8 +330,13 @@ server_client_handle_key(int key, struct mouse_event *mouse, void *data)
 			 * (click).
 			 */
 			window_set_active_at(w, mouse->x, mouse->y);
-			server_redraw_window_borders(w);
-			wp = w->active;
+			if (wp != w->active)
+			{
+				server_redraw_window_borders(w);
+				if ("mouse-select-pane-only")
+					return;
+				wp = w->active;
+			}
 		}
 		if (mouse->y + 1 == c->tty.sy &&
 		    options_get_number(oo, "mouse-select-window") &&
@@ -357,7 +366,9 @@ server_client_handle_key(int key, struct mouse_event *mouse, void *data)
 	}
 
 	/* Is this a prefix key? */
-	if (key == options_get_number(&c->session->options, "prefix"))
+	if (key == KEYC_PREFIX)
+		isprefix = 1;
+	else if (key == options_get_number(&c->session->options, "prefix"))
 		isprefix = 1;
 	else if (key == options_get_number(&c->session->options, "prefix2"))
 		isprefix = 1;
@@ -568,6 +579,9 @@ server_client_check_redraw(struct client *c)
 	struct window_pane	*wp;
 	int		 	 flags, redraw;
 
+	if (c->tty.flags & TTY_UNMAPPED)
+		return;
+
 	flags = c->tty.flags & TTY_FREEZE;
 	c->tty.flags &= ~TTY_FREEZE;
 
@@ -686,6 +700,9 @@ server_client_msg_dispatch(struct client *c)
 	struct imsg		 imsg;
 	struct msg_command_data	 commanddata;
 	struct msg_identify_data identifydata;
+#ifdef XTMUX
+	struct msg_xdisplay_data xdisplaydata;
+#endif
 	struct msg_environ_data	 environdata;
 	ssize_t			 n, datalen;
 
@@ -759,6 +776,17 @@ server_client_msg_dispatch(struct client *c)
 			setblocking(c->stderr_fd, 0);
 
 			break;
+#ifdef XTMUX
+		case MSG_XDISPLAY:
+			if (datalen != sizeof xdisplaydata)
+				fatalx("bad MSG_XDISPLAY size");
+			memcpy(&xdisplaydata, imsg.data, sizeof xdisplaydata);
+			xdisplaydata.display[(sizeof xdisplaydata.display)-1] = '\0';
+			xtmux_init(c, xdisplaydata.display);
+			c->tty.key_callback = server_client_handle_key;
+			c->tty.key_data = c;
+			break;
+#endif
 		case MSG_RESIZE:
 			if (datalen != 0)
 				fatalx("bad MSG_RESIZE size");

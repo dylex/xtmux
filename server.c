@@ -110,18 +110,22 @@ server_start(void)
 	char			*cause;
 	struct timeval		 tv;
 	u_int			 i;
+	pid_t			 child;
+	int			 childstat = -1;
 
 	/* The first client is special and gets a socketpair; create it. */
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, pair) != 0)
 		fatal("socketpair failed");
 
-	switch (fork()) {
+	switch ((child = fork())) {
 	case -1:
 		fatal("fork failed");
 	case 0:
 		break;
 	default:
 		close(pair[1]);
+		if ((waitpid(child, &childstat, 0) == -1) || childstat != 0)
+			log_fatal("daemonization failed (%d)", childstat);
 		return (pair[0]);
 	}
 	close(pair[0]);
@@ -152,6 +156,13 @@ server_start(void)
 	mode_key_init_trees();
 	key_bindings_init();
 	utf8_build();
+#ifdef XTMUX
+	if (xdisplay)
+	{
+		xfree(xdisplay);
+		xdisplay = NULL;
+	}
+#endif
 
 	start_time = time(NULL);
 	log_debug("socket path %s", socket_path);

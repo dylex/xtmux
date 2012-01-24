@@ -145,6 +145,11 @@ struct window_copy_mode_data {
 
 	enum window_copy_input_type jumptype;
 	char		jumpchar;
+
+	u_char		mouse_button;
+	u_int		mouse_x;
+	u_int		mouse_y;
+	u_char		mouse_click;
 };
 
 struct screen *
@@ -179,6 +184,8 @@ window_copy_init(struct window_pane *wp)
 
 	data->jumptype = WINDOW_COPY_OFF;
 	data->jumpchar = '\0';
+
+	data->mouse_click = 0;
 
 	s = &data->screen;
 	screen_init(s, screen_size_x(&wp->base), screen_size_y(&wp->base), 0);
@@ -815,6 +822,21 @@ window_copy_key_numeric_prefix(struct window_pane *wp, int key)
 	return 0;
 }
 
+static int
+window_copy_selection_direction(struct window_pane *wp)
+{
+	struct window_copy_mode_data	*data = wp->modedata;
+	struct screen			*s = &data->screen;
+	u_int cy;
+
+	if (!s->sel.flag)
+		return 0;
+	cy = screen_hsize(data->backing) + data->cy - data->oy;
+	if (cy < data->sely || (cy == data->sely && data->cx < data->selx))
+		return -1;
+	return 1;
+}
+
 /* ARGSUSED */
 void
 window_copy_mouse(
@@ -822,20 +844,27 @@ window_copy_mouse(
 {
 	struct window_copy_mode_data	*data = wp->modedata;
 	struct screen			*s = &data->screen;
-	u_int				 i, old_cy;
+	u_int				 i, old_cy = data->cy;
+	u_int				 button, moved;
+	struct screen_sel		 old_sel = s->sel;
 
 	if (m->x >= screen_size_x(s))
 		return;
 	if (m->y >= screen_size_y(s))
 		return;
 
+	button = m->b & MOUSE_BUTTON;
+
+	/* filter irrelevant MOUSE_ANY events */
+	if (m->b & MOUSE_DRAG && button == MOUSE_UP)
+		return;
+
 	/* If mouse wheel (buttons 4 and 5), scroll. */
 	if ((m->b & MOUSE_45)) {
-		if ((m->b & MOUSE_BUTTON) == MOUSE_1) {
+		if (button == MOUSE_1) {
 			for (i = 0; i < 5; i++)
 				window_copy_cursor_up(wp, 0);
-		} else if ((m->b & MOUSE_BUTTON) == MOUSE_2) {
-			old_cy = data->cy;
+		} else if (button == MOUSE_2) {
 			for (i = 0; i < 5; i++)
 				window_copy_cursor_down(wp, 0);
 			if (old_cy == data->cy)
@@ -844,28 +873,79 @@ window_copy_mouse(
 		return;
 	}
 
-	/*
-	 * If already reading motion, move the cursor while buttons are still
-	 * pressed, or stop the selection on their release.
-	 */
-	if (s->mode & MODE_MOUSE_BUTTON) {
-		if ((m->b & MOUSE_BUTTON) != MOUSE_UP) {
-			window_copy_update_cursor(wp, m->x, m->y);
-			if (window_copy_update_selection(wp))
-				window_copy_redraw_screen(wp);
-			return;
-		}
+	/* ideally would like to copy + paste, but for now just copy + stop */
+	if (button == MOUSE_2)
 		goto reset_mode;
+
+	moved = m->x != data->mouse_x || m->y != data->mouse_y;
+	window_copy_update_cursor(wp, m->x, m->y);
+
+	/* new button or click in new location */
+	if (data->mouse_click & 1 &&
+			(moved || button != data->mouse_button))
+		data->mouse_click = 0;
+
+	switch (data->mouse_click) {
+		case 1: /* words */
+			window_copy_cursor_previous_word(wp,
+					options_get_string(&wp->window->options, "word-separators"));
+			window_copy_start_selection(wp);
+			data->mouse_click ++;
+		case 2:
+			(window_copy_selection_direction(wp) < 0 ? 
+				window_copy_cursor_previous_word : 
+				window_copy_cursor_next_word_end)(wp,
+					 options_get_string(&wp->window->options, "word-separators"));
+			break;
+
+		case 3: /* lines */
+			window_copy_cursor_start_of_line(wp);
+			window_copy_start_selection(wp);
+			data->mouse_click ++;
+		case 4:
+			(window_copy_selection_direction(wp) < 0 ?
+				window_copy_cursor_start_of_line :
+				window_copy_cursor_end_of_line)(wp);
+			break;
+
+		default: /* reset */
+			data->mouse_click = 0;
 	}
 
-	/* Otherwise if other buttons pressed, start selection and motion. */
-	if ((m->b & MOUSE_BUTTON) != MOUSE_UP) {
+	if (button == MOUSE_UP) {
+		s->mode &= ~MODE_MOUSE_BUTTON;
+		s->mode |= MODE_MOUSE_STANDARD;
+
+		if (!moved)
+			data->mouse_click ++;
+		else if (data->mouse_button == MOUSE_1)
+			goto reset_mode;
+		else
+			data->mouse_click = 0;
+	} else if (m->b & MOUSE_DRAG) {
+	} else if (!(data->mouse_click & 1)) {
 		s->mode &= ~MODE_MOUSE_STANDARD;
 		s->mode |= MODE_MOUSE_BUTTON;
 
-		window_copy_update_cursor(wp, m->x, m->y);
-		window_copy_start_selection(wp);
-		window_copy_redraw_screen(wp);
+		if (!data->mouse_click) {
+			data->mouse_button = button;
+			data->mouse_x = m->x;
+			data->mouse_y = m->y;
+
+			if (button == MOUSE_1 || !s->sel.flag)
+				window_copy_start_selection(wp);
+		}
+	}
+
+	if (window_copy_update_selection(wp) && 
+			memcmp(&s->sel, &old_sel, sizeof(struct screen_sel)))
+	{
+		if (old_sel.sy != s->sel.sy)
+			window_copy_redraw_screen(wp);
+		else if (old_cy < data->cy)
+			window_copy_redraw_lines(wp, old_cy, data->cy-old_cy+1);
+		else
+			window_copy_redraw_lines(wp, data->cy, old_cy-data->cy+1);
 	}
 
 	return;

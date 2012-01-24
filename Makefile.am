@@ -7,7 +7,8 @@ dist_man1_MANS = tmux.1
 # Distribution tarball options.
 EXTRA_DIST = \
 	CHANGES FAQ NOTES TODO examples compat \
-	array.h compat.h tmux.h osdep-*.c
+	array.h compat.h tmux.h osdep-*.c \
+	README xtmux.c
 dist-hook:
 	grep "^#found_debug=" configure
 	find $(distdir) -name .svn -type d|xargs rm -Rf
@@ -224,6 +225,10 @@ nodist_tmux_SOURCES += compat/strtonum.c
 endif
 if NO_B64_NTOP
 nodist_tmux_SOURCES += compat/b64_ntop.c
+endif
+
+if XTMUX
+nodist_tmux_SOURCES += xtmux.c
 endif
 
 # Update SF web site.

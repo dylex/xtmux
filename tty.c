@@ -51,6 +51,13 @@ void	tty_cell(struct tty *,
 
 #define tty_use_acs(tty) \
 	(tty_term_has(tty->term, TTYC_ACSC) && !((tty)->flags & TTY_UTF8))
+#ifdef XTMUX
+#define tty_term_flags(tty) \
+	((tty)->xtmux ? TERM_256COLOURS : (tty)->term->flags)
+#else
+#define tty_term_flags(tty) \
+	((tty)->term->flags)
+#endif
 
 void
 tty_init(struct tty *tty, int fd, char *term)
@@ -129,6 +136,13 @@ tty_open(struct tty *tty, const char *overrides, char **cause)
 			fatal("fcntl failed");
 		tty->log_fd = fd;
 	}
+	else
+		tty->log_fd = -1;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_open(tty, cause);
+#endif
 
 	tty->term = tty_term_find(tty->termname, tty->fd, overrides, cause);
 	if (tty->term == NULL) {
@@ -170,6 +184,11 @@ void
 tty_start_tty(struct tty *tty)
 {
 	struct termios	 tio;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return;
+#endif
 
 	if (tty->fd == -1 || tcgetattr(tty->fd, &tty->tio) != 0)
 		return;
@@ -268,6 +287,11 @@ tty_close(struct tty *tty)
 		tty->log_fd = -1;
 	}
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		xtmux_close(tty);
+#endif
+
 	evtimer_del(&tty->key_timer);
 	tty_stop_tty(tty);
 
@@ -290,6 +314,9 @@ void
 tty_free(struct tty *tty)
 {
 	tty_close(tty);
+
+	if (tty->xtmux)
+		xtmux_free(tty);
 
 	xfree(tty->ccolour);
 	if (tty->path != NULL)
@@ -357,6 +384,11 @@ tty_putc(struct tty *tty, u_char ch)
 	const char	*acs;
 	u_int		 sx;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		xtmux_putc(tty, ch);
+	else
+#endif
 	if (tty->cell.attr & GRID_ATTR_CHARSET) {
 		acs = tty_acs_get(tty, ch);
 		if (acs != NULL)
@@ -368,7 +400,7 @@ tty_putc(struct tty *tty, u_char ch)
 
 	if (ch >= 0x20 && ch != 0x7f) {
 		sx = tty->sx;
-		if (tty->term->flags & TERM_EARLYWRAP)
+		if (tty_term_flags(tty) & TERM_EARLYWRAP)
 			sx--;
 
 		if (tty->cx >= sx) {
@@ -389,6 +421,11 @@ tty_pututf8(struct tty *tty, const struct grid_utf8 *gu)
 	size_t	size;
 
 	size = grid_utf8_size(gu);
+#ifdef XTMUX
+	if (tty->xtmux)
+		xtmux_pututf8(tty, gu, size);
+	else
+#endif
 	bufferevent_write(tty->event, gu->data, size);
 	if (tty->log_fd != -1)
 		write(tty->log_fd, gu->data, size);
@@ -398,6 +435,11 @@ tty_pututf8(struct tty *tty, const struct grid_utf8 *gu)
 void
 tty_set_title(struct tty *tty, const char *title)
 {
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_set_title(tty, title);
+#endif
+
 	if (!tty_term_has(tty->term, TTYC_TSL) ||
 	    !tty_term_has(tty->term, TTYC_FSL))
 		return;
@@ -410,6 +452,11 @@ tty_set_title(struct tty *tty, const char *title)
 void
 tty_force_cursor_colour(struct tty *tty, const char *ccolour)
 {
+#ifdef XTMUX
+	if (tty->xtmux)
+		xtmux_force_cursor_colour(tty, ccolour);
+	else
+#endif
 	if (*ccolour == '\0')
 		tty_putcode(tty, TTYC_CR);
 	else
@@ -429,6 +476,11 @@ tty_update_mode(struct tty *tty, int mode, struct screen *s)
 	if (tty->flags & TTY_NOCURSOR)
 		mode &= ~MODE_CURSOR;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_update_mode(tty, mode, s);
+#endif
+
 	changed = mode ^ tty->mode;
 	if (changed & MODE_CURSOR) {
 		if (mode & MODE_CURSOR)
@@ -436,7 +488,7 @@ tty_update_mode(struct tty *tty, int mode, struct screen *s)
 		else
 			tty_putcode(tty, TTYC_CIVIS);
 	}
-	if (tty->cstyle != s->cstyle) {
+	if (tty->cstyle != s->cstyle && s->cstyle <= 4) {
 		if (tty_term_has(tty->term, TTYC_CS1)) {
 			if (s->cstyle == 0 &&
 			    tty_term_has(tty->term, TTYC_CSR1))
@@ -529,6 +581,11 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 	const struct grid_utf8	*gu;
 	u_int			 i, sx;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_draw_line(tty, s, py, ox, oy);
+#endif
+
 	tty_update_mode(tty, tty->mode & ~MODE_CURSOR, s);
 
 	sx = screen_size_x(s);
@@ -609,9 +666,13 @@ tty_write(void (*cmdfn)(
 			continue;
 
 		if (c->session->curw->window == wp->window) {
-			if (c->tty.term == NULL)
+			if (c->tty.term == NULL
+#ifdef XTMUX
+					&& c->tty.xtmux == NULL
+#endif
+					)
 				continue;
-			if (c->tty.flags & (TTY_FREEZE|TTY_BACKOFF))
+			if (c->tty.flags & (TTY_FREEZE|TTY_BACKOFF|TTY_UNMAPPED))
 				continue;
 			cmdfn(&c->tty, ctx);
 		}
@@ -624,6 +685,11 @@ tty_cmd_insertcharacter(struct tty *tty, const struct tty_ctx *ctx)
 	struct window_pane	*wp = ctx->wp;
 	struct screen		*s = wp->screen;
 	u_int			 i;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_insertcharacter(tty, ctx);
+#endif
 
 	if (wp->xoff != 0 || screen_size_x(s) < tty->sx) {
 		tty_draw_line(tty, wp->screen, ctx->ocy, wp->xoff, wp->yoff);
@@ -653,6 +719,11 @@ tty_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 	struct window_pane	*wp = ctx->wp;
 	struct screen		*s = wp->screen;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_deletecharacter(tty, ctx);
+#endif
+
 	if (wp->xoff != 0 || screen_size_x(s) < tty->sx ||
 	    (!tty_term_has(tty->term, TTYC_DCH) &&
 	    !tty_term_has(tty->term, TTYC_DCH1))) {
@@ -675,6 +746,11 @@ tty_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 	struct window_pane	*wp = ctx->wp;
 	struct screen		*s = wp->screen;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_insertline(tty, ctx);
+#endif
+
 	if (wp->xoff != 0 || screen_size_x(s) < tty->sx ||
 	    !tty_term_has(tty->term, TTYC_CSR) ||
 	    !tty_term_has(tty->term, TTYC_IL1)) {
@@ -695,6 +771,11 @@ tty_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct window_pane	*wp = ctx->wp;
 	struct screen		*s = wp->screen;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_deleteline(tty, ctx);
+#endif
 
 	if (wp->xoff != 0 || screen_size_x(s) < tty->sx ||
 	    !tty_term_has(tty->term, TTYC_CSR) ||
@@ -718,6 +799,11 @@ tty_cmd_clearline(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = wp->screen;
 	u_int		 	 i;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_clearline(tty, ctx);
+#endif
+
 	tty_reset(tty);
 
 	tty_cursor_pane(tty, ctx, 0, ctx->ocy);
@@ -738,6 +824,11 @@ tty_cmd_clearendofline(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = wp->screen;
 	u_int		 	 i;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_clearendofline(tty, ctx);
+#endif
+
 	tty_reset(tty);
 
 	tty_cursor_pane(tty, ctx, ctx->ocx, ctx->ocy);
@@ -756,6 +847,11 @@ tty_cmd_clearstartofline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct window_pane	*wp = ctx->wp;
 	u_int		 	 i;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_clearstartofline(tty, ctx);
+#endif
 
 	tty_reset(tty);
 
@@ -777,6 +873,11 @@ tty_cmd_reverseindex(struct tty *tty, const struct tty_ctx *ctx)
 
 	if (ctx->ocy != ctx->orupper)
 		return;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_reverseindex(tty, ctx);
+#endif
 
 	if (wp->xoff != 0 || screen_size_x(s) < tty->sx ||
 	    !tty_term_has(tty->term, TTYC_CSR) ||
@@ -801,6 +902,11 @@ tty_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 
 	if (ctx->ocy != ctx->orlower)
 		return;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_linefeed(tty, ctx);
+#endif
 
 	if (wp->xoff != 0 || screen_size_x(s) < tty->sx ||
 	    !tty_term_has(tty->term, TTYC_CSR)) {
@@ -830,6 +936,11 @@ tty_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct window_pane	*wp = ctx->wp;
 	struct screen		*s = wp->screen;
 	u_int		 	 i, j;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_clearendofscreen(tty, ctx);
+#endif
 
 	tty_reset(tty);
 
@@ -867,6 +978,11 @@ tty_cmd_clearstartofscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = wp->screen;
 	u_int		 	 i, j;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_clearstartofscreen(tty, ctx);
+#endif
+
 	tty_reset(tty);
 
 	tty_region_pane(tty, ctx, 0, screen_size_y(s) - 1);
@@ -896,6 +1012,11 @@ tty_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 	struct window_pane	*wp = ctx->wp;
 	struct screen		*s = wp->screen;
 	u_int		 	 i, j;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_clearscreen(tty, ctx);
+#endif
 
 	tty_reset(tty);
 
@@ -1000,6 +1121,11 @@ tty_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 	char	*buf;
 	size_t	 off;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cmd_setselection(tty, ctx);
+#endif
+
 	if (!tty_term_has(tty->term, TTYC_MS))
 		return;
 
@@ -1029,7 +1155,7 @@ tty_cell(
 	u_int	i;
 
 	/* Skip last character if terminal is stupid. */
-	if (tty->term->flags & TERM_EARLYWRAP &&
+	if (tty_term_flags(tty) & TERM_EARLYWRAP &&
 	    tty->cy == tty->sy - 1 && tty->cx == tty->sx - 1)
 		return;
 
@@ -1064,6 +1190,11 @@ tty_reset(struct tty *tty)
 {
 	struct grid_cell	*gc = &tty->cell;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_reset(tty);
+#endif
+
 	if (memcmp(gc, &grid_default_cell, sizeof *gc) == 0)
 		return;
 
@@ -1087,13 +1218,22 @@ tty_region_pane(
 void
 tty_region(struct tty *tty, u_int rupper, u_int rlower)
 {
+
 	if (tty->rlower == rlower && tty->rupper == rupper)
 		return;
+#ifdef XTMUX
+	if (!tty->xtmux)
+#endif
 	if (!tty_term_has(tty->term, TTYC_CSR))
 		return;
 
 	tty->rupper = rupper;
 	tty->rlower = rlower;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return;
+#endif
 
 	/*
 	 * Some terminals (such as PuTTY) do not correctly reset the cursor to
@@ -1134,6 +1274,11 @@ tty_cursor(struct tty *tty, u_int cx, u_int cy)
 	/* No change. */
 	if (cx == thisx && cy == thisy)
 		return;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_cursor(tty, cx, cy);
+#endif
 
 	/* Very end of the line, just use absolute movement. */
 	if (thisx > tty->sx - 1)
@@ -1249,6 +1394,11 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc)
 {
 	struct grid_cell	*tc = &tty->cell, gc2;
 	u_char			 changed;
+
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_attributes(tty, gc);
+#endif
 
 	memcpy(&gc2, gc, sizeof gc2);
 
@@ -1553,5 +1703,9 @@ tty_try_88(struct tty *tty, u_char colour, const char *type)
 void
 tty_bell(struct tty *tty)
 {
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_bell(tty);
+#endif
 	tty_putcode(tty, TTYC_BEL);
 }

@@ -667,6 +667,64 @@ const struct options_table_entry window_options_table[] = {
 	{ .name = NULL }
 };
 
+/* Session options. */
+const struct options_table_entry client_options_table[] = {
+#ifdef XTMUX
+	{ .name = "xtmux-bg",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "color0"
+	},
+
+	{ .name = "xtmux-bold-font",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
+	},
+
+	{ .name = "xtmux-bold-italic-font",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
+	},
+
+	{ .name = "xtmux-colors",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
+	},
+
+	{ .name = "xtmux-fg",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "color7"
+	},
+
+	{ .name = "xtmux-font",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "fixed"
+	},
+
+	{ .name = "xtmux-italic-font",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
+	},
+
+	{ .name = "xtmux-pointer-bg",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "black"
+	},
+
+	{ .name = "xtmux-pointer-fg",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "white"
+	},
+
+	{ .name = "xtmux-prefix",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = ""
+	},
+
+#endif
+
+	{ .name = NULL }
+};
+
 /* Populate an options tree from a table. */
 void
 options_table_populate_tree(
