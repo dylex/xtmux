@@ -372,6 +372,19 @@ tty_puts(struct tty *tty, const char *s)
 {
 	if (*s == '\0')
 		return;
+#ifdef XTMUX
+	if (tty->xtmux)
+	{
+#ifdef DEBUG
+		if (*s < 0x20)
+			fatalx("tty_puts code to xtmux");
+#endif
+		/* this could be optimized but is rarely used (only screen_redraw_draw_number) */
+		do tty_putc(tty, *s);
+		while (*++s);
+		return;
+	}
+#endif
 	bufferevent_write(tty->event, s, strlen(s));
 
 	if (tty->log_fd != -1)
