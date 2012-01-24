@@ -888,14 +888,14 @@ window_copy_mouse(
 	switch (data->mouse_click) {
 		case 1: /* words */
 			window_copy_cursor_previous_word(wp,
-					options_get_string(&wp->window->options, "word-separators"));
+					options_get_string(&sess->options, "word-separators"));
 			window_copy_start_selection(wp);
 			data->mouse_click ++;
 		case 2:
 			(window_copy_selection_direction(wp) < 0 ? 
 				window_copy_cursor_previous_word : 
 				window_copy_cursor_next_word_end)(wp,
-					 options_get_string(&wp->window->options, "word-separators"));
+					 options_get_string(&sess->options, "word-separators"));
 			break;
 
 		case 3: /* lines */
