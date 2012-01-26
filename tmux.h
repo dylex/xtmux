@@ -597,6 +597,13 @@ struct utf8_data {
 	u_int	width;
 };
 
+/* An RGB colour. */
+struct colour_rgb {
+	u_char	r;
+	u_char	g;
+	u_char	b;
+};
+
 /* Grid output. */
 #if defined(DEBUG) && \
     ((defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L) || \
@@ -1783,6 +1790,7 @@ const char *colour_tostring(int);
 int	 colour_fromstring(const char *);
 u_char	 colour_256to16(u_char);
 u_char	 colour_256to88(u_char);
+const struct colour_rgb *colour_rgb_lookup(int);
 
 /* attributes.c */
 const char *attributes_tostring(u_char);
