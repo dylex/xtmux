@@ -42,7 +42,7 @@ static void xt_expose(struct xtmux *, XExposeEvent *);
 
 #define XTMUX_NUM_COLORS 256
 
-static const unsigned char xtmux_colors[16][3] = {
+static const struct colour_rgb xtmux_colors[16] = {
 	{0x00,0x00,0x00}, /* 0 black */
 	{0xCC,0x00,0x00}, /* 1 red */
 	{0x00,0xCC,0x00}, /* 2 green */
@@ -372,12 +372,12 @@ xt_parse_color(struct xtmux *x, const char *s, unsigned long def)
 }
 
 static void
-xt_fill_color(struct xtmux *x, u_int i, u_char r, u_char g, u_char b)
+xt_fill_color(struct xtmux *x, u_int i, const struct colour_rgb *rgb)
 {
 	XColor c;
-	c.red   = r << 8 | r;
-	c.green = g << 8 | g;
-	c.blue  = b << 8 | b;
+	c.red   = rgb->r << 8 | rgb->r;
+	c.green = rgb->g << 8 | rgb->g;
+	c.blue  = rgb->b << 8 | rgb->b;
 	if (!XAllocColor(x->display, XCOLORMAP, &c))
 		c.pixel = (i & 1) ? WhitePixel(x->display, XSCREEN) : BlackPixel(x->display, XSCREEN);
 	x->colors[i] = c.pixel;
@@ -386,25 +386,14 @@ xt_fill_color(struct xtmux *x, u_int i, u_char r, u_char g, u_char b)
 static void
 xt_fill_colors(struct xtmux *x, const char *colors)
 {
-	u_int c, i;
-	u_char r, g, b;
+	u_int c;
 	char *s, *cs, *cn;
 
-	/* hard-coded */
 	for (c = 0; c < 16; c ++)
-		xt_fill_color(x, c, xtmux_colors[c][0], xtmux_colors[c][1], xtmux_colors[c][2]);
+		xt_fill_color(x, c, &xtmux_colors[c]);
 
-	/* TODO: this could use colour.c:colour_rgb_256 instead (which are, unfortunately a bit different) */
-
-	/* 6x6x6 cube */
-	for (r = 0; r < 6; r ++)
-		for (g = 0; g < 6; g ++)
-			for (b = 0; b < 6; b ++)
-				xt_fill_color(x, c ++, 51*r, 51*g, 51*b);
-
-	/* gray ramp */
-	for (i = 1; i < 25; i ++)
-		xt_fill_color(x, c ++, (51*i+3)/5, (51*i+3)/5, (51*i+3)/5);
+	for (; c < 256; c ++)
+		xt_fill_color(x, c, colour_rgb_lookup(c));
 
 	cn = s = xstrdup(colors);
 	while ((cs = strsep(&cn, ";, ")))

@@ -29,13 +29,6 @@
  * of the 256 colour palette.
  */
 
-/* An RGB colour. */
-struct colour_rgb {
-	u_char	r;
-	u_char	g;
-	u_char	b;
-};
-
 /* 256 colour RGB table, generated on first use. */
 struct colour_rgb *colour_rgb_256;
 
@@ -87,6 +80,17 @@ colour_rgb_generate256(void)
 		rgb->g = 8 + (24 - i) * 10;
 		rgb->b = 8 + (24 - i) * 10;
 	}
+}
+
+const struct colour_rgb *colour_rgb_lookup(int c)
+{
+	if (colour_rgb_256 == NULL)
+		colour_rgb_generate256();
+
+	if (c >= 16 && c < 256)
+		return &colour_rgb_256[c-16];
+
+	return NULL;
 }
 
 /* Get colour RGB distance. */
