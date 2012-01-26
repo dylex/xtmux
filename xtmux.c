@@ -73,7 +73,7 @@ static const unsigned short xtmux_acs[128] = {
 	['f'] = 0x00B0, /* DEGREE */
 	['g'] = 0x00B1, /* PLMINUS */
 	['h'] = 0x259A, /* ? BOARD */
-	['i'] = 0x240B, /* ? LANTERN (snowman??) */
+	['i'] = 0x2603, /* ? LANTERN (snowman) */
 	['j'] = 0x2518, /* LRCORNER */
 	['k'] = 0x2510, /* URCORNER */
 	['l'] = 0x250C, /* ULCORNER */
@@ -94,7 +94,7 @@ static const unsigned short xtmux_acs[128] = {
 	['{'] = 0x03C0, /* PI */
 	['|'] = 0x2260, /* NEQUAL */
 	['}'] = 0x00A3, /* STERLING */
-	['~'] = 0x2022, /* BULLET */
+	['~'] = 0x00B7, /* BULLET */
 };
 
 typedef u_short wchar;
