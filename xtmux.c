@@ -1023,7 +1023,7 @@ xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 
 	if (b->n && WITHIN(b->x, b->y, b->n, 1, px, py, w, h))
 		b->n = 0;
-	if (s->n && WITHIN(s->x, s->y, s->w, s->h, px, px, w, h))
+	if (s->n && WITHIN(s->x, s->y, s->w, s->h, px, py, w, h))
 		s->n = 0;
 	r = xt_touch(x, px, py, w, h);
 	if (r && INSIDE(x->cx, x->cy, px, py, w, h))
