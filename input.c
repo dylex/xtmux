@@ -907,7 +907,7 @@ input_c0_dispatch(struct input_ctx *ictx)
 	struct window_pane	*wp = ictx->wp;
 	struct screen		*s = sctx->s;
 
-	log_debug("%s: '%c", __func__, ictx->ch);
+	log_debug("%s: '%c'", __func__, ictx->ch);
 
 	switch (ictx->ch) {
 	case '\000':	/* NUL */
