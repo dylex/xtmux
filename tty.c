@@ -315,8 +315,10 @@ tty_free(struct tty *tty)
 {
 	tty_close(tty);
 
+#ifdef XTMUX
 	if (tty->xtmux)
 		xtmux_free(tty);
+#endif
 
 	xfree(tty->ccolour);
 	if (tty->path != NULL)

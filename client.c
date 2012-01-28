@@ -323,7 +323,9 @@ client_signal(int sig, unused short events, unused void *data)
 			client_write_server(MSG_RESIZE, NULL, 0);
 			break;
 		case SIGCONT:
+#ifdef XTMUX
 			if (!xdisplay)
+#endif
 			{
 			memset(&sigact, 0, sizeof sigact);
 			sigemptyset(&sigact.sa_mask);
