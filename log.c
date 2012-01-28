@@ -40,7 +40,9 @@ FILE   *log_file;
 int	log_level;
 
 void		 log_vwrite(int, const char *, va_list);
+void		 log_write(int, const char *, ...);
 __dead void	 log_vfatal(const char *, va_list);
+void 		 log_event(int, const char *);
 
 /* Open logging to tty. */
 void
@@ -53,6 +55,10 @@ log_open_tty(int level)
 	setlinebuf(stdout);
 
 	tzset();
+
+	if (level > 1)
+		event_enable_debug_mode();
+	event_set_log_callback(&log_event);
 }
 
 /* Open logging to file. */
@@ -104,6 +110,16 @@ log_vwrite(int pri, const char *msg, va_list ap)
 		free(fmt);
 		break;
 	}
+}
+
+void
+log_write(int pri, const char *msg, ...)
+{
+	va_list	ap;
+
+	va_start(ap, msg);
+	log_vwrite(pri, msg, ap);
+	va_end(ap);
 }
 
 /* Log a warning with error string. */
@@ -210,4 +226,19 @@ log_fatalx(const char *msg, ...)
 	errno = 0;
 	va_start(ap, msg);
 	log_vfatal(msg, ap);
+}
+
+/* Callback for libevent logging */
+void log_event(int severity, const char *msg)
+{
+	int thresh = 0, level = LOG_NOTICE;
+	switch (severity) {
+		case _EVENT_LOG_DEBUG: thresh = 1;  level = LOG_DEBUG;   break;
+		case _EVENT_LOG_MSG:   thresh = 0;  level = LOG_INFO;    break;
+		case _EVENT_LOG_WARN:  thresh = -1; level = LOG_WARNING; break;
+		case _EVENT_LOG_ERR:   thresh = -2; level = LOG_ERR;     break;
+	}
+
+	if (log_level > thresh)
+		log_write(level, "libevent: %s", msg);
 }
