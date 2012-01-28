@@ -719,7 +719,6 @@ const struct options_table_entry client_options_table[] = {
 	  .type = OPTIONS_TABLE_STRING,
 	  .default_str = ""
 	},
-
 #endif
 
 	{ .name = NULL }
