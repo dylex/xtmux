@@ -56,8 +56,10 @@ log_open_tty(int level)
 
 	tzset();
 
+#if LIBEVENT_VERSION_NUMBER >= 0x02000400
 	if (level > 1)
 		event_enable_debug_mode();
+#endif
 	event_set_log_callback(&log_event);
 }
 
