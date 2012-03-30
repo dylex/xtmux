@@ -140,6 +140,7 @@ struct scroll {
 };
 
 struct xtmux {
+	char		*display_name;
 	Display		*display;
 	struct event	event;
 	Window		window;
@@ -222,14 +223,30 @@ static jmp_buf xdisplay_recover;
 void
 xtmux_init(struct client *c, char *display)
 {
+	u_int i;
+	size_t dl;
+	char *path;
+
 	c->tty.xtmux = xcalloc(1, sizeof *c->tty.xtmux);
+	c->tty.xtmux->display_name = xstrdup(display);
 
 	if (c->tty.termname)
 		xfree(c->tty.termname);
 	c->tty.termname = xstrdup("xtmux");
+
+	/* find a unique number to identify this client on this display, up to 999 */
+	dl = strlen(display);
+	path = xmalloc(dl+5);
+	strcpy(path, display);
+	path[dl++] = '/';
+	for (i = 0; i < 999; i ++) {
+		sprintf(&path[dl], "%u", i);
+		if (!cmd_lookup_client(path))
+			break;
+	}
 	if (c->tty.path)
 		xfree(c->tty.path);
-	c->tty.path = xstrdup(display);
+	c->tty.path = path;
 
 	if (!c->tty.ccolour)
 		c->tty.ccolour = xstrdup("");
@@ -752,7 +769,7 @@ xtmux_open(struct tty *tty, char **cause)
 	XSetIOErrorHandler(xdisplay_ioerror);
 
 	XENTRY_CATCH {
-		xasprintf(cause, "fatal error opening X display: %s", tty->path);
+		xasprintf(cause, "fatal error opening X display: %s", x->display_name);
 		return -1;
 	}
 
@@ -761,16 +778,16 @@ xtmux_open(struct tty *tty, char **cause)
 		XRETURN(-1); \
 	})
 
-	x->display = XOpenDisplay(tty->path);
+	x->display = XOpenDisplay(x->display_name);
 	if (!x->display)
-		FAIL("could not open X display: %s", tty->path);
+		FAIL("could not open X display: %s", x->display_name);
 
 	event_set(&x->event, ConnectionNumber(x->display), EV_READ|EV_PERSIST, xdisplay_callback, tty);
 	if (event_add(&x->event, NULL) < 0)
 		fatal("failed to add X display event");
 
 	if (!XAddConnectionWatch(x->display, &xdisplay_connection_watch, (XPointer)tty))
-		FAIL("could not get X display connection: %s", tty->path);
+		FAIL("could not get X display connection: %s", x->display_name);
 
 	if (xtmux_setup(tty))
 		FAIL("failed to setup X display");
@@ -919,6 +936,7 @@ xtmux_close(struct tty *tty)
 void 
 xtmux_free(struct tty *tty)
 {
+	xfree(tty->xtmux->display_name);
 	xfree(tty->xtmux);
 }
 
