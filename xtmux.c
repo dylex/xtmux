@@ -1660,10 +1660,10 @@ xtmux_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 					screen_size_x(s) - ctx->ocx, 1);
 		y ++;
 	}
-	if (y <= ctx->orlower)
+	if (y < screen_size_y(s))
 		xt_clear(x,
 				PANE_X(0), PANE_Y(y),
-				screen_size_x(s), ctx->orlower + 1 - y);
+				screen_size_x(s), screen_size_y(s) - y);
 
 	XUPDATE();
 	XRETURN();
@@ -1684,9 +1684,9 @@ xtmux_cmd_clearstartofscreen(struct tty *tty, const struct tty_ctx *ctx)
 				ctx->ocx + 1, 1);
 	else
 		y ++;
-	if (y > ctx->orupper)
+	if (y > 0)
 		xt_clear(x,
-				PANE_X(0), PANE_Y(ctx->orupper),
+				PANE_X(0), PANE_Y(0),
 				screen_size_x(s), y);
 
 	XUPDATE();
@@ -1702,8 +1702,8 @@ xtmux_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 	XENTRY();
 
 	xt_clear(x,
-			PANE_X(0), PANE_Y(ctx->orupper),
-			screen_size_x(s), ctx->orlower + 1 - ctx->orupper);
+			PANE_X(0), PANE_Y(0),
+			screen_size_x(s), screen_size_y(s));
 
 	XUPDATE();
 	XRETURN();
@@ -2354,4 +2354,3 @@ xtmux_main(struct tty *tty)
 		}
 	}
 }
-
