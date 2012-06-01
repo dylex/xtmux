@@ -234,6 +234,10 @@ xtmux_init(struct client *c, char *display)
 		xfree(c->tty.termname);
 	c->tty.termname = xstrdup("xtmux");
 
+	/* update client environment to reflect current DISPLAY */
+	environ_set(&c->environ, "DISPLAY", display);
+	environ_unset(&c->environ, "WINDOWID"); /* will be set later when we know it */
+
 	/* find a unique number to identify this client on this display, up to 999 */
 	dl = strlen(display);
 	path = xmalloc(dl+5);
@@ -764,6 +768,7 @@ xtmux_open(struct tty *tty, char **cause)
 	XClassHint class_hints;
 	XSizeHints size_hints;
 	XGCValues gc_values;
+	char windowid[16];
 
 	XSetErrorHandler(xdisplay_error);
 	XSetIOErrorHandler(xdisplay_ioerror);
@@ -805,6 +810,9 @@ xtmux_open(struct tty *tty, char **cause)
 			0, 0, x->bg);
 	if (x->window == None)
 		FAIL("could not create X window");
+
+	snprintf(windowid, sizeof(windowid), "%u", (unsigned)x->window);
+	environ_set(&x->client->environ, "WINDOWID", windowid);
 
 	x->xim = XOpenIM(x->display, NULL, NULL, NULL);
 	if (x->xim)
