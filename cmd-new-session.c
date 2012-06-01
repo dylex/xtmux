@@ -119,7 +119,14 @@ cmd_new_session_exec(struct cmd *self, struct cmd_ctx *ctx)
 	 * before opening the terminal as that calls tcsetattr() to prepare for
 	 * tmux taking over.
 	 */
-	if (ctx->cmdclient != NULL && ctx->cmdclient->tty.fd != -1) {
+	if (ctx->cmdclient != NULL && ctx->cmdclient->tty.fd != -1
+#ifdef XTMUX
+			/* in xtmux, we don't want to use the parent terminal's
+			 * settings, as we may be backgrounded, in which case
+			 * they won't be appropriate. */
+			&& !ctx->cmdclient->tty.xtmux
+#endif
+	   ) {
 		if (tcgetattr(ctx->cmdclient->tty.fd, &tio) != 0)
 			fatal("tcgetattr failed");
 		tiop = &tio;
