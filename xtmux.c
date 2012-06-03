@@ -1041,27 +1041,30 @@ xt_touch(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 
 /* indicate an intention to completely overwrite a region */
 static int
-xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
+xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h, int c)
 {
 	struct putc *b = &x->putc_buf;
 	struct scroll *s = &x->scroll_buf;
-	int r;
 
 	if (b->n && WITHIN(b->x, b->y, b->n, 1, px, py, w, h))
 		b->n = 0;
 	if (s->n && WITHIN(s->x, s->y, s->w, s->h, px, py, w, h))
 		s->n = 0;
-	r = xt_touch(x, px, py, w, h);
-	if (r && INSIDE(x->cx, x->cy, px, py, w, h))
-		x->cx = x->cy = -1;
-
-	return r;
+	if (!xt_touch(x, px, py, w, h))
+		return 0;
+	if (!INSIDE(x->cx, x->cy, px, py, w, h))
+		return 1;
+	/* the cursor is a special, as it may be drawn before exposure events */
+	if (c)
+		XClearArea(x->display, x->window, C2X(x->cx), C2Y(x->cy), C2W(1), C2H(1), False);
+	x->cx = x->cy = -1;
+	return 2;
 }
 
 static int
 xt_clear(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 {
-	if (!xt_write(x, cx, cy, w, h))
+	if (!xt_write(x, cx, cy, w, h, 0))
 		return 0;
 	XClearArea(x->display, x->window, C2X(cx), C2Y(cy), C2W(w), C2H(h), False);
 	return 1;
@@ -1281,10 +1284,10 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 	if (gc->flags & GRID_FLAG_PADDING)
 		return;
 
-	if (INSIDE(x->cx, x->cy, cx, cy, n, 1))
-		cleared = 0;
-	if (!xt_write(x, cx, cy, n, 1))
-		return;
+	switch (xt_write(x, cx, cy, n, 1, 0)) {
+		case 0: return;
+		case 2: cleared = 0;
+	}
 
 	if (fgc >= 90 && fgc <= 97 && !(gc->flags & GRID_FLAG_FG256))
 		fgc -= 90 - 8;
@@ -2235,9 +2238,10 @@ xt_expose(struct xtmux *x, XExposeEvent *xev)
 	if (xev->type == GraphicsExpose && !xev->count && x->copy_active)
 		x->copy_active --;
 
-	if (!xt_write(x, cx1, cy1, cx2-cx1, cy2-cy1))
+	if (!xt_write(x, cx1, cy1, cx2-cx1, cy2-cy1, 1))
 		return;
 
+	/* extend exposed area out to character borders so we can redraw */
 	#define CLEAR(X1, X2, Y1, Y2) \
 		XClearArea(x->display, x->window, X1, Y1, (X2)-(X1), (Y2)-(Y1), False)
 	if  	     (C2X(cx1) < px1)
