@@ -163,14 +163,15 @@ struct xtmux {
 	GC		cursor_gc;
 	Pixmap		cursor;
 
-	int		cx, cy; /* last drawn cursor location, or -1 if none/hidden */
+	unsigned	focus_out : 1;
+	unsigned	cd : 1; /* 1 if cursor is drawn */
+	u_int		cx, cy; /* last drawn cursor location */
 	u_int		mx, my; /* last known mouse location */
 
 	struct putc	putc_buf;
 	struct scroll   scroll_buf;
 
 	u_short		copy_active; /* outstanding XCopyArea; should be <= 1 */
-	u_short		focus_out;
 
 	struct paste_ctx paste; /* one outstanding paste request at a time is enough */
 
@@ -857,7 +858,6 @@ xtmux_open(struct tty *tty, char **cause)
 	XMapWindow(x->display, x->window);
 
 	tty->flags |= TTY_OPENED | TTY_UTF8;
-	x->cx = x->cy = -1;
 
 #undef FAIL
 	XUPDATE();
@@ -1054,10 +1054,10 @@ xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h, int c)
 		return 0;
 	if (!INSIDE(x->cx, x->cy, px, py, w, h))
 		return 1;
-	/* the cursor is a special, as it may be drawn before exposure events */
+	/* the cursor is a special, as it may be drawn/erased before exposure events */
 	if (c)
 		XClearArea(x->display, x->window, C2X(x->cx), C2Y(x->cy), C2W(1), C2H(1), False);
-	x->cx = x->cy = -1;
+	x->cd = 0;
 	return 2;
 }
 
@@ -1078,9 +1078,9 @@ xt_redraw(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 }
 
 static inline int
-xt_draw_cursor(struct xtmux *x)
+xt_put_cursor(struct xtmux *x)
 {
-	if (x->cx < 0 || x->cy < 0)
+	if (!x->cd)
 		return 0;
 
 	XCopyPlane(x->display, x->cursor, x->window, x->cursor_gc, 0, 0, x->cw, x->ch, C2X(x->cx), C2Y(x->cy), 1);
@@ -1088,19 +1088,34 @@ xt_draw_cursor(struct xtmux *x)
 }
 
 static int
-xt_move_cursor(struct xtmux *x, int cx, int cy)
+xt_clear_cursor(struct xtmux *x)
 {
 	int r = 0;
 
-	if (xt_redraw_pending(x, cx, cy))
-		cx = cy = -1;
-	if (x->cx == cx && x->cy == cy)
+	if (!x->cd)
 		return 0;
 
-	r |= xt_draw_cursor(x);
-	xt_touch(x, cx, cy, 1, 1);
+	r |= xt_put_cursor(x);
+	x->cd = 0;
+	return r;
+}
+
+static int
+xt_move_cursor(struct xtmux *x, u_int cx, u_int cy)
+{
+	int p = 0, r = 0;
+
+	p = xt_redraw_pending(x, cx, cy);
+	if (!p && x->cd && x->cx == cx && x->cy == cy)
+		return r;
+	r |= xt_clear_cursor(x);
+	if (p)
+		return r;
+
+	xt_flush(x, cx, cx, 1, 1);
 	x->cx = cx; x->cy = cy;
-	r |= xt_draw_cursor(x);
+	x->cd = 1;
+	r |= xt_put_cursor(x);
 	return r;
 }
 
@@ -1136,10 +1151,13 @@ xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int 
 		}
 	}
 
-	if (INSIDE(x->cx, x->cy, x1, y1, w, h))
-		xt_move_cursor(x, -1, -1);
-	else if (INSIDE(x->cx, x->cy, x2, y2, w, h))
-		x->cx = x->cy = -1;
+	if (x->cd)
+	{
+		if (INSIDE(x->cx, x->cy, x1, y1, w, h))
+			xt_clear_cursor(x);
+		else if (INSIDE(x->cx, x->cy, x2, y2, w, h))
+			x->cd = 0;
+	}
 	x->copy_active ++;
 	XCopyArea(x->display, x->window, x->window, x->gc,
 			C2X(x1), C2Y(y1), C2W(w), C2H(h), C2X(x2), C2Y(y2));
@@ -1218,7 +1236,7 @@ xtmux_force_cursor_colour(struct tty *tty, const char *ccolour)
 	c = WhitePixel(x->display, XSCREEN);
 	c = xt_parse_color(x, ccolour, x->bg ^ c);
 	log_debug("setting cursor color to %s = %lx", ccolour, c);
-	xt_move_cursor(x, -1, -1);
+	xt_clear_cursor(x);
 	XSetForeground(x->display, x->cursor_gc, x->bg ^ c);
 	XRETURN_();
 }
@@ -1233,7 +1251,7 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 
 	if (tty->cstyle != s->cstyle)
 	{
-		xt_move_cursor(x, -1, -1);
+		xt_clear_cursor(x);
 		tty->cstyle = s->cstyle;
 		xt_fill_cursor(x, tty->cstyle);
 	}
@@ -1241,7 +1259,7 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	if (mode & MODE_CURSOR)
 		up = xt_move_cursor(x, tty->cx, tty->cy);
 	else if (!(s->mode & MODE_CURSOR))
-		up = xt_move_cursor(x, -1, -1);
+		up = xt_clear_cursor(x);
 
 	if ((tty->mode ^ mode) & ALL_MOUSE_MODES)
 	{
@@ -1424,7 +1442,7 @@ xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, c
 	for (i = 0; i < n; i ++)
 		c[i] = grid_char(&gc[i], &gu[i]);
 
-	xt_draw_chars(x, cx, cy, c, n, ga, !INSIDE(x->cx, x->cy, cx, cy, n, 1));
+	xt_draw_chars(x, cx, cy, c, n, ga, !(x->cd && INSIDE(x->cx, x->cy, cx, cy, n, 1)));
 }
 
 static void
@@ -2264,7 +2282,7 @@ xtmux_focus(struct tty *tty, int focus)
 	if (x->focus_out == !focus)
 		return;
 
-	xt_move_cursor(x, -1, -1);
+	xt_clear_cursor(x);
 	x->focus_out = !focus;
 	xt_fill_cursor(x, tty->cstyle);
 
