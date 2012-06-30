@@ -1009,7 +1009,7 @@ xt_redraw_pending(struct xtmux *x, u_int cx, u_int cy)
 	struct scroll *s = &x->scroll_buf;
 
 	return s->n && INSIDE(cx, cy, s->x, s->y, s->w, s->h) &&
-		(s->n < 0 ? cy >= s->y+s->h+s->n : cy < s->y+s->n);
+		(s->n < 0 ? (int)cy >= (int)(s->y+s->h)+s->n : cy < s->y+s->n);
 }
 
 static inline void
@@ -1029,7 +1029,7 @@ xt_touch(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 
 	if (s->n && OVERLAPS(px, py, w, h, s->x, s->y, s->w, s->h))
 	{
-		if (s->n < 0 ? py < s->y+s->h+s->n : py+h > s->y+s->n)
+		if (s->n < 0 ? (int)py < (int)(s->y+s->h)+s->n : py+h > s->y+s->n)
 			xt_scroll_flush(x); /* includes copy region */
 		else if (WITHIN(px, py, w, h, s->x, s->y, s->w, s->h))
 			return 0; /* within invalidated region */
