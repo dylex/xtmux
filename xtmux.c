@@ -668,7 +668,8 @@ xtmux_setup(struct tty *tty)
 	XENTRY(-1);
 
 	font = options_get_string(o, "xtmux-font");
-	if (xt_load_font(x, 0, font) > 0)
+	if (xt_load_font(x, 0, font) > 0 || 
+			(!x->font->fid && xt_load_font(x, 0, "fixed") > 0))
 	{
 		if (x->window)
 		{
