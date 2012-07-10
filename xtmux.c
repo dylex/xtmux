@@ -538,18 +538,18 @@ xt_load_font(struct xtmux *x, enum font_type type, const char *name)
 	unsigned i, n;
 
 	if (!name)
-		return 0;
+		return -1;
 	fs = XLoadQueryFont(x->display, name);
 	if (!fs)
 	{
 		log_warnx("font not found: %s", name);
-		return 0;
+		return -1;
 	}
 	if (fs->fid == font->fid)
 	{
 		/* no change */
 		XFreeFont(x->display, fs);
-		return 1;
+		return 0;
 	}
 	if (font->fid)
 	{
@@ -706,7 +706,7 @@ xtmux_setup(struct tty *tty)
 
 	if (*(font = options_get_string(o, "xtmux-italic-font")))
 		xt_load_font(x, FONT_TYPE_ITALIC, font);
-	else if (xt_load_font(x, FONT_TYPE_ITALIC, font_name_set(x->font->name, 4, "o")) == 0)
+	else if (xt_load_font(x, FONT_TYPE_ITALIC, font_name_set(x->font->name, 4, "o")) < 0)
 		xt_load_font(x, FONT_TYPE_ITALIC, font_name_set(x->font->name, 4, "i"));
 
 	if (*(font = options_get_string(o, "xtmux-bold-italic-font")))
