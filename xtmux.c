@@ -798,7 +798,7 @@ xtmux_open(struct tty *tty, char **cause)
 	if (xtmux_setup(tty))
 		FAIL("failed to setup X display");
 
-	if (!x->font)
+	if (!x->font->fid)
 		FAIL("could not load X font");
 
 	if (!tty->sx)
