@@ -164,15 +164,21 @@ parseenvironment(void)
 char *
 makesocketpath(const char *label)
 {
-	char		base[MAXPATHLEN], *path, *s;
+	char		base[MAXPATHLEN], *path;
+	const char	*s;
+	size_t		l;
 	struct stat	sb;
 	u_int		uid;
 
 	uid = getuid();
 	if ((s = getenv("TMPDIR")) == NULL || *s == '\0')
-		xsnprintf(base, sizeof base, "%s/tmux-%u", _PATH_TMP, uid);
-	else
-		xsnprintf(base, sizeof base, "%s/tmux-%u", s, uid);
+		s = _PATH_TMP;
+	if (realpath(s, base) == NULL)
+		strlcpy(base, s, sizeof base);
+	l = strlen(base);
+	while (l > 0 && base[l-1] == '/')
+		l--;
+	xsnprintf(&base[l], sizeof base - l, "/tmux-%u", uid);
 
 	if (mkdir(base, S_IRWXU) != 0 && errno != EEXIST)
 		return (NULL);
