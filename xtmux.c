@@ -1127,11 +1127,8 @@ xtmux_update_cursor(struct tty *tty)
 }
 
 static void
-xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int h)
+xt_do_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int h)
 {
-	if (!xt_touch(x, x1, y1, w, h))
-		return;
-
 	while (x->copy_active)
 	{
 		XEvent xev;
@@ -1178,7 +1175,7 @@ xt_scroll_flush(struct xtmux *x)
 	{	/* up */
 		n = -n;
 		if (s->h > (u_int)n)
-			xt_copy(x, s->x, s->y+n, s->x, s->y, s->w, s->h-n);
+			xt_do_copy(x, s->x, s->y+n, s->x, s->y, s->w, s->h-n);
 		else
 			n = s->h;
 		xt_redraw(x, s->x, s->y+s->h-n, s->w, n);
@@ -1186,7 +1183,7 @@ xt_scroll_flush(struct xtmux *x)
 	else
 	{ 	/* down */
 		if (s->h > (u_int)n)
-			xt_copy(x, s->x, s->y, s->x, s->y+n, s->w, s->h-n);
+			xt_do_copy(x, s->x, s->y, s->x, s->y+n, s->w, s->h-n);
 		else
 			n = s->h;
 		xt_redraw(x, s->x, s->y, s->w, n);
@@ -1200,6 +1197,8 @@ xt_scroll(struct xtmux *x, u_int sx, u_int sy, u_int w, u_int h, int n)
 {
 	struct scroll *s = &x->scroll_buf;
 
+	log_debug2("xt_scroll %u,%u %ux%u %d", sx, sy, w, h, n);
+
 	if (s->n && (s->x != sx || s->y != sy || s->w != w || s->h != h || (s->n ^ n) < 0))
 		xt_scroll_flush(x);
 
@@ -1210,6 +1209,15 @@ xt_scroll(struct xtmux *x, u_int sx, u_int sy, u_int w, u_int h, int n)
 	s->w = w;
 	s->h = h;
 	s->n += n;
+}
+
+static void
+xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int h)
+{
+	if (!xt_touch(x, x1, y1, w, h))
+		return;
+
+	return xt_do_copy(x, x1, y1, x2, y2, w, h);
 }
 
 void
