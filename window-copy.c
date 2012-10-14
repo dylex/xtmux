@@ -247,17 +247,16 @@ window_copy_free(struct window_pane *wp)
 	if (wp->fd != -1)
 		bufferevent_enable(wp->event, EV_READ|EV_WRITE);
 
-	if (data->searchstr != NULL)
-		xfree(data->searchstr);
-	xfree(data->inputstr);
+	free(data->searchstr);
+	free(data->inputstr);
 
 	if (data->backing != &wp->base) {
 		screen_free(data->backing);
-		xfree(data->backing);
+		free(data->backing);
 	}
 	screen_free(&data->screen);
 
-	xfree(data);
+	free(data);
 }
 
 void
@@ -812,14 +811,14 @@ window_copy_key_numeric_prefix(struct window_pane *wp, int key)
 
 	key &= KEYC_MASK_KEY;
 	if (key < '0' || key > '9')
-		return 1;
+		return (1);
 
 	if (data->numprefix >= 100) 	/* no more than three digits */
-		return 0;
+		return (0);
 	data->numprefix = data->numprefix * 10 + key - '0';
 
 	window_copy_redraw_lines(wp, screen_size_y(s) - 1, 1);
-	return 0;
+	return (0);
 }
 
 static int
@@ -867,7 +866,7 @@ window_copy_mouse(
 		} else if (button == MOUSE_2) {
 			for (i = 0; i < 5; i++)
 				window_copy_cursor_down(wp, 0);
-			if (old_cy == data->cy)
+			if (data->oy == 0)
 				goto reset_mode;
 		}
 		return;
@@ -1064,11 +1063,12 @@ window_copy_search_up(struct window_pane *wp, const char *searchstr)
 	struct grid_cell	 	 gc;
 	size_t				 searchlen;
 	u_int				 i, last, fx, fy, px;
-	int				 utf8flag, n, wrapped;
+	int				 utf8flag, n, wrapped, wrapflag;
 
 	if (*searchstr == '\0')
 		return;
 	utf8flag = options_get_number(&wp->window->options, "utf8");
+	wrapflag = options_get_number(&wp->window->options, "wrap-search");
 	searchlen = screen_write_strlen(utf8flag, "%s", searchstr);
 
 	screen_init(&ss, searchlen, 1, 0);
@@ -1101,7 +1101,7 @@ retry:
 			break;
 		}
 	}
-	if (!n && !wrapped) {
+	if (wrapflag && !n && !wrapped) {
 		fx = gd->sx - 1;
 		fy = gd->hsize + gd->sy - 1;
 		wrapped = 1;
@@ -1121,11 +1121,12 @@ window_copy_search_down(struct window_pane *wp, const char *searchstr)
 	struct grid_cell	 	 gc;
 	size_t				 searchlen;
 	u_int				 i, first, fx, fy, px;
-	int				 utf8flag, n, wrapped;
+	int				 utf8flag, n, wrapped, wrapflag;
 
 	if (*searchstr == '\0')
 		return;
 	utf8flag = options_get_number(&wp->window->options, "utf8");
+	wrapflag = options_get_number(&wp->window->options, "wrap-search");
 	searchlen = screen_write_strlen(utf8flag, "%s", searchstr);
 
 	screen_init(&ss, searchlen, 1, 0);
@@ -1148,7 +1149,7 @@ window_copy_search_down(struct window_pane *wp, const char *searchstr)
 
 retry:
 	sgd = ss.grid;
-	for (i = fy + 1; i < gd->hsize + gd->sy; i++) {
+	for (i = fy + 1; i < gd->hsize + gd->sy + 1; i++) {
 		first = 0;
 		if (i == fy + 1)
 			first = fx;
@@ -1158,7 +1159,7 @@ retry:
 			break;
 		}
 	}
-	if (!n && !wrapped) {
+	if (wrapflag && !n && !wrapped) {
 		fx = 0;
 		fy = 0;
 		wrapped = 1;
@@ -1195,10 +1196,7 @@ window_copy_write_line(
 	char				 hdr[32];
 	size_t	 			 last, xoff = 0, size = 0;
 
-	memcpy(&gc, &grid_default_cell, sizeof gc);
-	colour_set_fg(&gc, options_get_number(oo, "mode-fg"));
-	colour_set_bg(&gc, options_get_number(oo, "mode-bg"));
-	gc.attr |= options_get_number(oo, "mode-attr");
+	window_mode_attrs(&gc, oo);
 
 	last = screen_size_y(s) - 1;
 	if (py == 0) {
@@ -1312,10 +1310,7 @@ window_copy_update_selection(struct window_pane *wp)
 		return (0);
 
 	/* Set colours. */
-	memcpy(&gc, &grid_default_cell, sizeof gc);
-	colour_set_fg(&gc, options_get_number(oo, "mode-fg"));
-	colour_set_bg(&gc, options_get_number(oo, "mode-bg"));
-	gc.attr |= options_get_number(oo, "mode-attr");
+	window_mode_attrs(&gc, oo);
 
 	/* Find top of screen. */
 	ty = screen_hsize(data->backing) - data->oy;
@@ -1458,7 +1453,7 @@ window_copy_copy_selection(struct window_pane *wp, int idx)
 
 	/* Don't bother if no data. */
 	if (off == 0) {
-		xfree(buf);
+		free(buf);
 		return;
 	}
 	off--;	/* remove final \n */
@@ -1709,7 +1704,7 @@ window_copy_cursor_up(struct window_pane *wp, int scroll_only)
 
 	oy = screen_hsize(data->backing) + data->cy - data->oy;
 	ox = window_copy_find_length(wp, oy);
-	if (ox != 0) {
+	if (data->cx != ox) {
 		data->lastcx = data->cx;
 		data->lastsx = ox;
 	}
@@ -1751,7 +1746,7 @@ window_copy_cursor_down(struct window_pane *wp, int scroll_only)
 
 	oy = screen_hsize(data->backing) + data->cy - data->oy;
 	ox = window_copy_find_length(wp, oy);
-	if (ox != 0) {
+	if (data->cx != ox) {
 		data->lastcx = data->cx;
 		data->lastsx = ox;
 	}

@@ -90,7 +90,7 @@ key_bindings_clean(void)
 		bd = RB_ROOT(&dead_key_bindings);
 		RB_REMOVE(key_bindings, &dead_key_bindings, bd);
 		cmd_list_free(bd->cmdlist);
-		xfree(bd);
+		free(bd);
 	}
 }
 
@@ -130,6 +130,7 @@ key_bindings_init(void)
 		{ '?', 			  0, &cmd_list_keys_entry },
 		{ 'D',			  0, &cmd_choose_client_entry },
 		{ 'L',			  0, &cmd_switch_client_entry },
+		{ 'U',			  1, &cmd_select_layout_entry },
 		{ '[', 			  0, &cmd_copy_mode_entry },
 		{ '\'',			  0, &cmd_command_prompt_entry },
 		{ '\002', /* C-b */	  0, &cmd_send_prefix_entry },
@@ -146,8 +147,9 @@ key_bindings_init(void)
 		{ 'p', 			  0, &cmd_previous_window_entry },
 		{ 'q',			  0, &cmd_display_panes_entry },
 		{ 'r', 			  0, &cmd_refresh_client_entry },
-		{ 's', 			  0, &cmd_choose_session_entry },
+		{ 's', 			  0, &cmd_choose_tree_entry },
 		{ 't', 			  0, &cmd_clock_mode_entry },
+		{ 'u',			  1, &cmd_select_layout_entry },
 		{ 'w', 			  0, &cmd_choose_window_entry },
 		{ 'x', 			  0, &cmd_confirm_before_entry },
 		{ '{',			  0, &cmd_swap_pane_entry },
@@ -205,21 +207,28 @@ key_bindings_error(struct cmd_ctx *ctx, const char *fmt, ...)
 	va_list	ap;
 	char   *msg;
 
+	if (ctx->curclient->session == NULL)
+		return;
+
 	va_start(ap, fmt);
 	xvasprintf(&msg, fmt, ap);
 	va_end(ap);
 
 	*msg = toupper((u_char) *msg);
 	status_message_set(ctx->curclient, "%s", msg);
-	xfree(msg);
+	free(msg);
 }
 
 void printflike2
 key_bindings_print(struct cmd_ctx *ctx, const char *fmt, ...)
 {
-	struct winlink	*wl = ctx->curclient->session->curw;
+	struct winlink	*wl;
 	va_list		 ap;
 
+	if (ctx->curclient->session == NULL)
+		return;
+
+	wl = ctx->curclient->session->curw;
 	if (wl->window->active->mode != &window_copy_mode) {
 		window_pane_reset_mode(wl->window->active);
 		window_pane_set_mode(wl->window->active, &window_copy_mode);
@@ -237,6 +246,9 @@ key_bindings_info(struct cmd_ctx *ctx, const char *fmt, ...)
 	va_list	ap;
 	char   *msg;
 
+	if (ctx->curclient->session == NULL)
+		return;
+
 	if (options_get_number(&global_options, "quiet"))
 		return;
 
@@ -246,7 +258,7 @@ key_bindings_info(struct cmd_ctx *ctx, const char *fmt, ...)
 
 	*msg = toupper((u_char) *msg);
 	status_message_set(ctx->curclient, "%s", msg);
-	xfree(msg);
+	free(msg);
 }
 
 void

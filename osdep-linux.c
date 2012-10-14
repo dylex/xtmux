@@ -40,10 +40,10 @@ osdep_get_name(int fd, unused char *tty)
 
 	xasprintf(&path, "/proc/%lld/cmdline", (long long) pgrp);
 	if ((f = fopen(path, "r")) == NULL) {
-		xfree(path);
+		free(path);
 		return (NULL);
 	}
-	xfree(path);
+	free(path);
 
 	len = 0;
 	buf = NULL;
@@ -61,15 +61,19 @@ osdep_get_name(int fd, unused char *tty)
 }
 
 char *
-osdep_get_cwd(pid_t pid)
+osdep_get_cwd(int fd)
 {
 	static char	 target[MAXPATHLEN + 1];
 	char		*path;
+	pid_t		 pgrp;
 	ssize_t		 n;
 
-	xasprintf(&path, "/proc/%d/cwd", pid);
+	if ((pgrp = tcgetpgrp(fd)) == -1)
+		return (NULL);
+
+	xasprintf(&path, "/proc/%lld/cwd", (long long) pgrp);
 	n = readlink(path, target, MAXPATHLEN);
-	xfree(path);
+	free(path);
 	if (n > 0) {
 		target[n] = '\0';
 		return (target);

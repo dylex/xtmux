@@ -18,13 +18,15 @@
 
 #include <sys/types.h>
 
+#include <stdlib.h>
+
 #include "tmux.h"
 
 /*
  * Attach existing session to the current terminal.
  */
 
-int	cmd_attach_session_exec(struct cmd *, struct cmd_ctx *);
+enum cmd_retval	cmd_attach_session_exec(struct cmd *, struct cmd_ctx *);
 
 const struct cmd_entry cmd_attach_session_entry = {
 	"attach-session", "attach",
@@ -36,26 +38,26 @@ const struct cmd_entry cmd_attach_session_entry = {
 	cmd_attach_session_exec
 };
 
-int
+enum cmd_retval
 cmd_attach_session_exec(struct cmd *self, struct cmd_ctx *ctx)
 {
 	struct args	*args = self->args;
 	struct session	*s;
 	struct client	*c;
 	const char	*update;
-	char		*overrides, *cause;
+	char		*cause;
 	u_int		 i;
 
 	if (RB_EMPTY(&sessions)) {
 		ctx->error(ctx, "no sessions");
-		return (-1);
+		return (CMD_RETURN_ERROR);
 	}
 
 	if ((s = cmd_find_session(ctx, args_get(args, 't'), 1)) == NULL)
-		return (-1);
+		return (CMD_RETURN_ERROR);
 
 	if (ctx->cmdclient == NULL && ctx->curclient == NULL)
-		return (0);
+		return (CMD_RETURN_NORMAL);
 
 	if (ctx->cmdclient == NULL) {
 		if (args_has(self->args, 'd')) {
@@ -74,21 +76,15 @@ cmd_attach_session_exec(struct cmd *self, struct cmd_ctx *ctx)
 		}
 
 		ctx->curclient->session = s;
+		notify_attached_session_changed(ctx->curclient);
 		session_update_activity(s);
 		server_redraw_client(ctx->curclient);
 		s->curw->flags &= ~WINLINK_ALERTFLAGS;
 	} else {
-		if (!(ctx->cmdclient->flags & CLIENT_TERMINAL)) {
-			ctx->error(ctx, "not a terminal");
-			return (-1);
-		}
-
-		overrides =
-		    options_get_string(&s->options, "terminal-overrides");
-		if (tty_open(&ctx->cmdclient->tty, overrides, &cause) != 0) {
-			ctx->error(ctx, "terminal open failed: %s", cause);
-			xfree(cause);
-			return (-1);
+		if (server_client_open(ctx->cmdclient, s, &cause) != 0) {
+			ctx->error(ctx, "open terminal failed: %s", cause);
+			free(cause);
+			return (CMD_RETURN_ERROR);
 		}
 
 		if (args_has(self->args, 'r'))
@@ -98,8 +94,9 @@ cmd_attach_session_exec(struct cmd *self, struct cmd_ctx *ctx)
 			server_write_session(s, MSG_DETACH, NULL, 0);
 
 		ctx->cmdclient->session = s;
+		notify_attached_session_changed(ctx->cmdclient);
 		session_update_activity(s);
-		server_write_client(ctx->cmdclient, MSG_READY, NULL, 0);
+		server_write_ready(ctx->cmdclient);
 
 		update = options_get_string(&s->options, "update-environment");
 		environ_update(update, &ctx->cmdclient->environ, &s->environ);
@@ -110,5 +107,5 @@ cmd_attach_session_exec(struct cmd *self, struct cmd_ctx *ctx)
 	recalculate_sizes();
 	server_update_socket();
 
-	return (1);	/* 1 means don't tell command client to exit */
+	return (CMD_RETURN_ATTACH);
 }

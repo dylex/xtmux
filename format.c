@@ -20,6 +20,7 @@
 
 #include <netdb.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -102,12 +103,12 @@ format_free(struct format_tree *ft)
 		fe_next = RB_NEXT(format_tree, ft, fe);
 
 		RB_REMOVE(format_tree, ft, fe);
-		xfree(fe->value);
-		xfree(fe->key);
-		xfree(fe);
+		free(fe->value);
+		free(fe->key);
+		free(fe);
 	}
 
-	xfree (ft);
+	free (ft);
 }
 
 /* Add a key-value pair. */
@@ -195,11 +196,11 @@ format_replace(struct format_tree *ft,
 	memcpy(*buf + *off, value, valuelen);
 	*off += valuelen;
 
-	xfree(copy);
+	free(copy);
 	return (0);
 
 fail:
-	xfree(copy);
+	free(copy);
 	return (-1);
 }
 
@@ -303,8 +304,8 @@ format_client(struct format_tree *ft, struct client *c)
 	time_t	 t;
 
 	format_add(ft, "client_cwd", "%s", c->cwd);
-	format_add(ft, "client_height", "%u", c->tty.sx);
-	format_add(ft, "client_width", "%u", c->tty.sy);
+	format_add(ft, "client_height", "%u", c->tty.sy);
+	format_add(ft, "client_width", "%u", c->tty.sx);
 	format_add(ft, "client_tty", "%s", c->tty.path);
 	format_add(ft, "client_termname", "%s", c->tty.termname);
 
@@ -341,6 +342,7 @@ format_winlink(struct format_tree *ft, struct session *s, struct winlink *wl)
 	layout = layout_dump(w);
 	flags = window_printable_flags(s, wl);
 
+	format_add(ft, "window_id", "@%u", w->id);
 	format_add(ft, "window_index", "%d", wl->idx);
 	format_add(ft, "window_name", "%s", w->name);
 	format_add(ft, "window_width", "%u", w->sx);
@@ -348,9 +350,10 @@ format_winlink(struct format_tree *ft, struct session *s, struct winlink *wl)
 	format_add(ft, "window_flags", "%s", flags);
 	format_add(ft, "window_layout", "%s", layout);
 	format_add(ft, "window_active", "%d", wl == s->curw);
+	format_add(ft, "window_panes", "%u", window_count_panes(w));
 
-	xfree(flags);
-	xfree(layout);
+	free(flags);
+	free(layout);
 }
 
 /* Set default format keys for a window pane. */
@@ -388,6 +391,18 @@ format_window_pane(struct format_tree *ft, struct window_pane *wp)
 		format_add(ft, "pane_start_command", "%s", wp->cmd);
 	if (wp->cwd != NULL)
 		format_add(ft, "pane_start_path", "%s", wp->cwd);
+	format_add(ft, "pane_current_path", "%s", osdep_get_cwd(wp->fd));
 	format_add(ft, "pane_pid", "%ld", (long) wp->pid);
 	format_add(ft, "pane_tty", "%s", wp->tty);
+}
+
+void
+format_paste_buffer(struct format_tree *ft, struct paste_buffer *pb)
+{
+	char	*pb_print = paste_print(pb, 50);
+
+	format_add(ft, "buffer_size", "%zu", pb->size);
+	format_add(ft, "buffer_sample", "%s", pb_print);
+
+	free(pb_print);
 }

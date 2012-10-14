@@ -60,6 +60,20 @@ status_out_cmp(struct status_out *so1, struct status_out *so2)
 	return (strcmp(so1->cmd, so2->cmd));
 }
 
+/* Get screen line of status line. -1 means off. */
+int
+status_at_line(struct client *c)
+{
+	struct session	*s = c->session;
+
+	if (!options_get_number(&s->options, "status"))
+		return (-1);
+
+	if (options_get_number(&s->options, "status-position") == 0)
+		return (0);
+	return (c->tty.sy - 1);
+}
+
 /* Retrieve options for left string. */
 char *
 status_redraw_get_left(struct client *c,
@@ -67,7 +81,7 @@ status_redraw_get_left(struct client *c,
 {
 	struct session	*s = c->session;
 	char		*left;
-	u_char		 fg, bg, attr;
+	int		 fg, bg, attr;
 	size_t		 leftlen;
 
 	fg = options_get_number(&s->options, "status-left-fg");
@@ -97,7 +111,7 @@ status_redraw_get_right(struct client *c,
 {
 	struct session	*s = c->session;
 	char		*right;
-	u_char		 fg, bg, attr;
+	int		 fg, bg, attr;
 	size_t		 rightlen;
 
 	fg = options_get_number(&s->options, "status-right-fg");
@@ -127,7 +141,7 @@ status_set_window_at(struct client *c, u_int x)
 	struct session	*s = c->session;
 	struct winlink	*wl;
 
-	x += s->wlmouse;
+	x += c->wlmouse;
 	RB_FOREACH(wl, winlinks, &s->windows) {
 		if (x < wl->status_width &&
 			session_select(s, wl->idx) == 0) {
@@ -146,11 +160,12 @@ status_redraw(struct client *c)
 	struct winlink	       *wl;
 	struct screen		old_status, window_list;
 	struct grid_cell	stdgc, lgc, rgc, gc;
+	struct options	       *oo;
 	time_t			t;
-	char		       *left, *right;
+	char		       *left, *right, *sep;
 	u_int			offset, needed;
 	u_int			wlstart, wlwidth, wlavailable, wloffset, wlsize;
-	size_t			llen, rlen;
+	size_t			llen, rlen, seplen;
 	int			larrow, rarrow, utf8flag;
 
 	/* No status line? */
@@ -207,8 +222,7 @@ status_redraw(struct client *c)
 	/* Calculate the total size needed for the window list. */
 	wlstart = wloffset = wlwidth = 0;
 	RB_FOREACH(wl, winlinks, &s->windows) {
-		if (wl->status_text != NULL)
-			xfree(wl->status_text);
+		free(wl->status_text);
 		memcpy(&wl->status_cell, &stdgc, sizeof wl->status_cell);
 		wl->status_text = status_print(c, wl, t, &wl->status_cell);
 		wl->status_width =
@@ -216,7 +230,11 @@ status_redraw(struct client *c)
 
 		if (wl == s->curw)
 			wloffset = wlwidth;
-		wlwidth += wl->status_width + 1;
+
+		oo = &wl->window->options;
+		sep = options_get_string(oo, "window-status-separator");
+		seplen = screen_write_strlen(utf8flag, "%s", sep);
+		wlwidth += wl->status_width + seplen;
 	}
 
 	/* Create a new screen for the window list. */
@@ -227,7 +245,10 @@ status_redraw(struct client *c)
 	RB_FOREACH(wl, winlinks, &s->windows) {
 		screen_write_cnputs(&ctx,
 		    -1, &wl->status_cell, utf8flag, "%s", wl->status_text);
-		screen_write_putc(&ctx, &stdgc, ' ');
+
+		oo = &wl->window->options;
+		sep = options_get_string(oo, "window-status-separator");
+		screen_write_nputs(&ctx, -1, &stdgc, utf8flag, "%s", sep);
 	}
 	screen_write_stop(&ctx);
 
@@ -342,7 +363,7 @@ draw:
 		wloffset++;
 
 	/* Copy the window list. */
-	s->wlmouse = -wloffset + wlstart;
+	c->wlmouse = -wloffset + wlstart;
 	screen_write_cursormove(&ctx, wloffset, 0);
 	screen_write_copy(&ctx, &window_list, wlstart, 0, wlwidth, 1);
 	screen_free(&window_list);
@@ -350,10 +371,8 @@ draw:
 	screen_write_stop(&ctx);
 
 out:
-	if (left != NULL)
-		xfree(left);
-	if (right != NULL)
-		xfree(right);
+	free(left);
+	free(right);
 
 	if (grid_compare(c->status.grid, old_status.grid) == 0) {
 		screen_free(&old_status);
@@ -462,14 +481,14 @@ do_replace:
 		ptrlen = limit;
 
 	if (*optr + ptrlen >= out + outsize - 1)
-		return;
+		goto out;
 	while (ptrlen > 0 && *ptr != '\0') {
 		*(*optr)++ = *ptr++;
 		ptrlen--;
 	}
 
-	if (freeptr != NULL)
-		xfree(freeptr);
+out:
+	free(freeptr);
 	return;
 
 skip_to:
@@ -490,9 +509,13 @@ status_replace(struct client *c, struct session *s, struct winlink *wl,
 {
 	static char	out[BUFSIZ];
 	char		in[BUFSIZ], ch, *iptr, *optr;
+	size_t		len;
 
-	strftime(in, sizeof in, fmt, localtime(&t));
-	in[(sizeof in) - 1] = '\0';
+	if (fmt == NULL)
+		return (xstrdup(""));
+
+	len = strftime(in, sizeof in, fmt, localtime(&t));
+	in[len] = '\0';
 
 	iptr = in;
 	optr = out;
@@ -545,7 +568,7 @@ status_find_job(struct client *c, char **iptr)
 		cmd[len++] = **iptr;
 	}
 	if (**iptr == '\0')		/* no terminating ) */ {
-		xfree(cmd);
+		free(cmd);
 		return (NULL);
 	}
 	(*iptr)++;			/* skip final ) */
@@ -555,7 +578,7 @@ status_find_job(struct client *c, char **iptr)
 	so_find.cmd = cmd;
 	so = RB_FIND(status_out_tree, &c->status_new, &so_find);
 	if (so != NULL && so->out != NULL) {
-		xfree(cmd);
+		free(cmd);
 		return (so->out);
 	}
 
@@ -573,7 +596,7 @@ status_find_job(struct client *c, char **iptr)
 	/* Lookup in the old tree. */
 	so_find.cmd = cmd;
 	so = RB_FIND(status_out_tree, &c->status_old, &so_find);
-	xfree(cmd);
+	free(cmd);
 	if (so != NULL)
 		return (so->out);
 	return (NULL);
@@ -591,10 +614,9 @@ status_free_jobs(struct status_out_tree *sotree)
 		so_next = RB_NEXT(status_out_tree, sotree, so);
 
 		RB_REMOVE(status_out_tree, sotree, so);
-		if (so->out != NULL)
-			xfree(so->out);
-		xfree(so->cmd);
-		xfree(so);
+		free(so->out);
+		free(so->cmd);
+		free(so);
 	}
 }
 
@@ -659,7 +681,7 @@ status_print(
 	struct session	*s = c->session;
 	const char	*fmt;
 	char   		*text;
-	u_char		 fg, bg, attr;
+	int		 fg, bg, attr;
 
 	fg = options_get_number(oo, "window-status-fg");
 	if (fg != 8)
@@ -751,7 +773,7 @@ status_message_set(struct client *c, const char *fmt, ...)
 		limit = ARRAY_LENGTH(&c->message_log) - limit;
 		for (i = 0; i < limit; i++) {
 			msg = &ARRAY_FIRST(&c->message_log);
-			xfree(msg->msg);
+			free(msg->msg);
 			ARRAY_REMOVE(&c->message_log, 0);
 		}
 	}
@@ -760,7 +782,8 @@ status_message_set(struct client *c, const char *fmt, ...)
 	tv.tv_sec = delay / 1000;
 	tv.tv_usec = (delay % 1000) * 1000L;
 
-	evtimer_del(&c->message_timer);
+	if (event_initialized (&c->message_timer))
+		evtimer_del(&c->message_timer);
 	evtimer_set(&c->message_timer, status_message_callback, c);
 	evtimer_add(&c->message_timer, &tv);
 
@@ -775,7 +798,7 @@ status_message_clear(struct client *c)
 	if (c->message_string == NULL)
 		return;
 
-	xfree(c->message_string);
+	free(c->message_string);
 	c->message_string = NULL;
 
 	c->tty.flags &= ~(TTY_NOCURSOR|TTY_FREEZE);
@@ -852,8 +875,6 @@ status_prompt_set(struct client *c, const char *msg, const char *input,
 	c->prompt_string = status_replace(c, NULL, NULL, NULL, msg,
 	    time(NULL), 0);
 
-	if (input == NULL)
-		input = "";
 	c->prompt_buffer = status_replace(c, NULL, NULL, NULL, input,
 	    time(NULL), 0);
 	c->prompt_index = strlen(c->prompt_buffer);
@@ -886,10 +907,10 @@ status_prompt_clear(struct client *c)
 	if (c->prompt_freefn != NULL && c->prompt_data != NULL)
 		c->prompt_freefn(c->prompt_data);
 
-	xfree(c->prompt_string);
+	free(c->prompt_string);
 	c->prompt_string = NULL;
 
-	xfree(c->prompt_buffer);
+	free(c->prompt_buffer);
 	c->prompt_buffer = NULL;
 
 	c->tty.flags &= ~(TTY_NOCURSOR|TTY_FREEZE);
@@ -902,13 +923,11 @@ status_prompt_clear(struct client *c)
 void
 status_prompt_update(struct client *c, const char *msg, const char *input)
 {
-	xfree(c->prompt_string);
+	free(c->prompt_string);
 	c->prompt_string = status_replace(c, NULL, NULL, NULL, msg,
 	    time(NULL), 0);
 
-	xfree(c->prompt_buffer);
-	if (input == NULL)
-		input = "";
+	free(c->prompt_buffer);
 	c->prompt_buffer = status_replace(c, NULL, NULL, NULL, input,
 	    time(NULL), 0);
 	c->prompt_index = strlen(c->prompt_buffer);
@@ -1022,12 +1041,18 @@ status_prompt_key(struct client *c, int key)
 			c->flags |= CLIENT_STATUS;
 		}
 		break;
+	case MODEKEYEDIT_SWITCHMODEBEGINLINE:
+		c->flags |= CLIENT_STATUS;
+		/* FALLTHROUGH */
 	case MODEKEYEDIT_STARTOFLINE:
 		if (c->prompt_index != 0) {
 			c->prompt_index = 0;
 			c->flags |= CLIENT_STATUS;
 		}
 		break;
+	case MODEKEYEDIT_SWITCHMODEAPPENDLINE:
+		c->flags |= CLIENT_STATUS;
+		/* FALLTHROUGH */
 	case MODEKEYEDIT_ENDOFLINE:
 		if (c->prompt_index != size) {
 			c->prompt_index = size;
@@ -1079,7 +1104,7 @@ status_prompt_key(struct client *c, int key)
 		memcpy(first, s, strlen(s));
 
 		c->prompt_index = (first - c->prompt_buffer) + strlen(s);
-		xfree(s);
+		free(s);
 
 		c->flags |= CLIENT_STATUS;
 		break;
@@ -1220,7 +1245,7 @@ status_prompt_key(struct client *c, int key)
 		histstr = status_prompt_up_history(&c->prompt_hindex);
 		if (histstr == NULL)
 			break;
-		xfree(c->prompt_buffer);
+		free(c->prompt_buffer);
 		c->prompt_buffer = xstrdup(histstr);
 		c->prompt_index = strlen(c->prompt_buffer);
 		c->flags |= CLIENT_STATUS;
@@ -1229,7 +1254,7 @@ status_prompt_key(struct client *c, int key)
 		histstr = status_prompt_down_history(&c->prompt_hindex);
 		if (histstr == NULL)
 			break;
-		xfree(c->prompt_buffer);
+		free(c->prompt_buffer);
 		c->prompt_buffer = xstrdup(histstr);
 		c->prompt_index = strlen(c->prompt_buffer);
 		c->flags |= CLIENT_STATUS;
@@ -1353,7 +1378,7 @@ status_prompt_add_history(const char *line)
 		return;
 
 	if (size == PROMPT_HISTORY) {
-		xfree(ARRAY_FIRST(&status_prompt_history));
+		free(ARRAY_FIRST(&status_prompt_history));
 		ARRAY_REMOVE(&status_prompt_history, 0);
 	}
 

@@ -20,22 +20,20 @@
 
 #include <event.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "tmux.h"
 
-void	server_client_handle_key(int, struct mouse_event *, void *);
+void	server_client_check_mouse(struct client *, struct window_pane *,
+	    struct mouse_event *);
 void	server_client_repeat_timer(int, short, void *);
 void	server_client_check_exit(struct client *);
-void	server_client_check_backoff(struct client *);
 void	server_client_check_redraw(struct client *);
 void	server_client_set_title(struct client *);
 void	server_client_reset_state(struct client *);
-void	server_client_in_callback(struct bufferevent *, short, void *);
-void	server_client_out_callback(struct bufferevent *, short, void *);
-void	server_client_err_callback(struct bufferevent *, short, void *);
 
 int	server_client_msg_dispatch(struct client *);
 void	server_client_msg_command(struct client *, struct msg_command_data *);
@@ -65,9 +63,9 @@ server_client_create(int fd)
 		fatal("gettimeofday failed");
 	memcpy(&c->activity_time, &c->creation_time, sizeof c->activity_time);
 
-	c->stdin_event = NULL;
-	c->stdout_event = NULL;
-	c->stderr_event = NULL;
+	c->stdin_data = evbuffer_new ();
+	c->stdout_data = evbuffer_new ();
+	c->stderr_data = evbuffer_new ();
 
 	c->tty.fd = -1;
 	c->title = NULL;
@@ -105,6 +103,28 @@ server_client_create(int fd)
 	log_debug("new client %d", fd);
 }
 
+/* Open client terminal if needed. */
+int
+server_client_open(struct client *c, struct session *s, char **cause)
+{
+	struct options	*oo = s != NULL ? &s->options : &global_s_options;
+	char		*overrides;
+
+	if (c->flags & CLIENT_CONTROL)
+		return (0);
+
+	if (!(c->flags & CLIENT_TERMINAL)) {
+		*cause = xstrdup ("not a terminal");
+		return (-1);
+	}
+
+	overrides = options_get_string(oo, "terminal-overrides");
+	if (tty_open(&c->tty, overrides, cause) != 0)
+		return (-1);
+
+	return (0);
+}
+
 /* Lost a client. */
 void
 server_client_lost(struct client *c)
@@ -125,58 +145,40 @@ server_client_lost(struct client *c)
 	if (c->flags & CLIENT_TERMINAL)
 		tty_free(&c->tty);
 
-	if (c->stdin_event != NULL)
-		bufferevent_free(c->stdin_event);
-	if (c->stdin_fd != -1) {
-		setblocking(c->stdin_fd, 1);
-		close(c->stdin_fd);
-	}
-	if (c->stdout_event != NULL)
-		bufferevent_free(c->stdout_event);
-	if (c->stdout_fd != -1) {
-		setblocking(c->stdout_fd, 1);
-		close(c->stdout_fd);
-	}
-	if (c->stderr_event != NULL)
-		bufferevent_free(c->stderr_event);
-	if (c->stderr_fd != -1) {
-		setblocking(c->stderr_fd, 1);
-		close(c->stderr_fd);
-	}
+	evbuffer_free (c->stdin_data);
+	evbuffer_free (c->stdout_data);
+	evbuffer_free (c->stderr_data);
 
 	status_free_jobs(&c->status_new);
 	status_free_jobs(&c->status_old);
 	screen_free(&c->status);
 
-	if (c->title != NULL)
-		xfree(c->title);
+	free(c->title);
 
 	evtimer_del(&c->repeat_timer);
 
-	evtimer_del(&c->identify_timer);
+	if (event_initialized(&c->identify_timer))
+		evtimer_del(&c->identify_timer);
 
-	if (c->message_string != NULL)
-		xfree(c->message_string);
-	evtimer_del(&c->message_timer);
+	free(c->message_string);
+	if (event_initialized (&c->message_timer))
+		evtimer_del(&c->message_timer);
 	for (i = 0; i < ARRAY_LENGTH(&c->message_log); i++) {
 		msg = &ARRAY_ITEM(&c->message_log, i);
-		xfree(msg->msg);
+		free(msg->msg);
 	}
 	ARRAY_FREE(&c->message_log);
 
-	if (c->prompt_string != NULL)
-		xfree(c->prompt_string);
-	if (c->prompt_buffer != NULL)
-		xfree(c->prompt_buffer);
-
-	if (c->cwd != NULL)
-		xfree(c->cwd);
+	free(c->prompt_string);
+	free(c->prompt_buffer);
+	free(c->cwd);
 
 	environ_free(&c->environ);
 
 	close(c->ibuf.fd);
 	imsg_clear(&c->ibuf);
-	event_del(&c->event);
+	if (event_initialized(&c->event))
+		event_del(&c->event);
 
 	options_free(&c->options);
 
@@ -189,6 +191,8 @@ server_client_lost(struct client *c)
 	if (i == ARRAY_LENGTH(&dead_clients))
 		ARRAY_ADD(&dead_clients, c);
 	c->flags |= CLIENT_DEAD;
+
+	server_add_accept(0); /* may be more file descriptors now */
 
 	recalculate_sizes();
 	server_check_unattached();
@@ -217,6 +221,9 @@ server_client_callback(int fd, short events, void *data)
 		if (events & EV_READ && server_client_msg_dispatch(c) != 0)
 			goto client_lost;
 	}
+
+	server_push_stdout(c);
+	server_push_stderr(c);
 
 	server_update_event(c);
 	return;
@@ -265,15 +272,82 @@ server_client_status_timer(void)
 	}
 }
 
+/* Check for mouse keys. */
+void
+server_client_check_mouse(
+    struct client *c, struct window_pane *wp, struct mouse_event *mouse)
+{
+	struct session	*s = c->session;
+	struct options	*oo = &s->options;
+	int		 statusat;
+
+	statusat = status_at_line(c);
+
+	/* Is this a window selection click on the status line? */
+	if (statusat != -1 && mouse->y == (u_int)statusat &&
+	    options_get_number(oo, "mouse-select-window")) {
+		if (mouse->b == MOUSE_UP && c->last_mouse.b != MOUSE_UP) {
+			status_set_window_at(c, mouse->x);
+			recalculate_sizes();
+			return;
+		}
+		if (mouse->b & MOUSE_45) {
+			if ((mouse->b & MOUSE_BUTTON) == MOUSE_1) {
+				session_previous(c->session, 0);
+				server_redraw_session(s);
+				recalculate_sizes();
+			}
+			if ((mouse->b & MOUSE_BUTTON) == MOUSE_2) {
+				session_next(c->session, 0);
+				server_redraw_session(s);
+				recalculate_sizes();
+			}
+			return;
+		}
+		memcpy(&c->last_mouse, mouse, sizeof c->last_mouse);
+		return;
+	}
+
+	/*
+	 * Not on status line - adjust mouse position if status line is at the
+	 * top and limit if at the bottom. From here on a struct mouse
+	 * represents the offset onto the window itself.
+	 */
+	if (statusat == 0 &&mouse->y > 0)
+		mouse->y--;
+	else if (statusat > 0 && mouse->y >= (u_int)statusat)
+		mouse->y = statusat - 1;
+
+	/* Is this a pane selection? Allow down only in copy mode. */
+	if (options_get_number(oo, "mouse-select-pane") &&
+	    ((!(mouse->b & MOUSE_DRAG) && mouse->b != MOUSE_UP) ||
+	    wp->mode != &window_copy_mode)) {
+		window_set_active_at(wp->window, mouse->x, mouse->y);
+		if (wp != wp->window->active)
+		{
+			server_redraw_window_borders(wp->window);
+			if ("mouse-select-pane-only")
+				return;
+			wp = wp->window->active; /* may have changed */
+		}
+	}
+
+	/* Check if trying to resize pane. */
+	if (options_get_number(oo, "mouse-resize-pane"))
+		layout_resize_pane_mouse(c, mouse);
+
+	/* Update last and pass through to client. */
+	memcpy(&c->last_mouse, mouse, sizeof c->last_mouse);
+	window_pane_mouse(wp, c->session, mouse);
+}
+
 /* Handle data key input from client. */
 void
-server_client_handle_key(int key, struct mouse_event *mouse, void *data)
+server_client_handle_key(struct client *c, int key)
 {
-	struct client		*c = data;
 	struct session		*s;
 	struct window		*w;
 	struct window_pane	*wp;
-	struct options		*oo;
 	struct timeval		 tv;
 	struct key_binding	*bd;
 	int		      	 xtimeout, isprefix;
@@ -292,7 +366,6 @@ server_client_handle_key(int key, struct mouse_event *mouse, void *data)
 
 	w = c->session->curw->window;
 	wp = w->active;
-	oo = &c->session->options;
 
 	/* Special case: number keys jump to pane in identify mode. */
 	if (c->flags & CLIENT_IDENTIFY && key >= '0' && key <= '9') {
@@ -320,48 +393,7 @@ server_client_handle_key(int key, struct mouse_event *mouse, void *data)
 	if (key == KEYC_MOUSE) {
 		if (c->flags & CLIENT_READONLY)
 			return;
-		if (options_get_number(oo, "mouse-select-pane") &&
-		    (!(options_get_number(oo, "status") &&
-		       mouse->y + 1 == c->tty.sy)) &&
-		    ((!(mouse->b & MOUSE_DRAG) && mouse->b != MOUSE_UP) ||
-		    wp->mode != &window_copy_mode)) {
-			/*
-			 * Allow pane switching in copy mode only by mouse down
-			 * (click).
-			 */
-			window_set_active_at(w, mouse->x, mouse->y);
-			if (wp != w->active)
-			{
-				server_redraw_window_borders(w);
-				if ("mouse-select-pane-only")
-					return;
-				wp = w->active;
-			}
-		}
-		if (mouse->y + 1 == c->tty.sy &&
-		    options_get_number(oo, "mouse-select-window") &&
-		    options_get_number(oo, "status")) {
-			if (mouse->b == MOUSE_UP &&
-			    c->last_mouse.b != MOUSE_UP) {
-				status_set_window_at(c, mouse->x);
-				return;
-			}
-			if (mouse->b & MOUSE_45) {
-				if ((mouse->b & MOUSE_BUTTON) == MOUSE_1) {
-					session_previous(c->session, 0);
-					server_redraw_session(s);
-				}
-				if ((mouse->b & MOUSE_BUTTON) == MOUSE_2) {
-					session_next(c->session, 0);
-					server_redraw_session(s);
-				}
-				return;
-			}
-		}
-		if (options_get_number(oo, "mouse-resize-pane"))
-			layout_resize_pane_mouse(c, mouse);
-		memcpy(&c->last_mouse, mouse, sizeof c->last_mouse);
-		window_pane_mouse(wp, c->session, mouse);
+		server_client_check_mouse(c, wp, &c->tty.mouse);
 		return;
 	}
 
@@ -480,7 +512,7 @@ server_client_reset_state(struct client *c)
 	struct screen		*s = wp->screen;
 	struct options		*oo = &c->session->options;
 	struct options		*wo = &w->options;
-	int			 status, mode;
+	int			 status, mode, o;
 
 	if (c->flags & CLIENT_SUSPENDED)
 		return;
@@ -490,8 +522,10 @@ server_client_reset_state(struct client *c)
 	status = options_get_number(oo, "status");
 	if (!window_pane_visible(wp) || wp->yoff + s->cy >= c->tty.sy - status)
 		tty_cursor(&c->tty, 0, 0);
-	else
-		tty_cursor(&c->tty, wp->xoff + s->cx, wp->yoff + s->cy);
+	else {
+		o = status && options_get_number (oo, "status-position") == 0;
+		tty_cursor(&c->tty, wp->xoff + s->cx, o + wp->yoff + s->cy);
+	}
 
 	/*
 	 * Resizing panes with the mouse requires at least button mode to give
@@ -556,11 +590,11 @@ server_client_check_exit(struct client *c)
 	if (!(c->flags & CLIENT_EXIT))
 		return;
 
-	if (c->stdout_fd != -1 && c->stdout_event != NULL &&
-	    EVBUFFER_LENGTH(c->stdout_event->output) != 0)
+	if (EVBUFFER_LENGTH(c->stdin_data) != 0)
 		return;
-	if (c->stderr_fd != -1 && c->stderr_event != NULL &&
-	    EVBUFFER_LENGTH(c->stderr_event->output) != 0)
+	if (EVBUFFER_LENGTH(c->stdout_data) != 0)
+		return;
+	if (EVBUFFER_LENGTH(c->stderr_data) != 0)
 		return;
 
 	exitdata.retcode = c->retcode;
@@ -576,6 +610,9 @@ server_client_check_redraw(struct client *c)
 	struct session		*s = c->session;
 	struct window_pane	*wp;
 	int		 	 flags, redraw;
+
+	if (c->flags & CLIENT_SUSPENDED)
+		return;
 
 	flags = c->tty.flags & TTY_FREEZE;
 	c->tty.flags &= ~TTY_FREEZE;
@@ -631,61 +668,11 @@ server_client_set_title(struct client *c)
 
 	title = status_replace(c, NULL, NULL, NULL, template, time(NULL), 1);
 	if (c->title == NULL || strcmp(title, c->title) != 0) {
-		if (c->title != NULL)
-			xfree(c->title);
+		free(c->title);
 		c->title = xstrdup(title);
 		tty_set_title(&c->tty, c->title);
 	}
-	xfree(title);
-}
-
-/*
- * Error callback for client stdin. Caller must increase reference count when
- * enabling event!
- */
-void
-server_client_in_callback(
-    unused struct bufferevent *bufev, unused short what, void *data)
-{
-	struct client	*c = data;
-
-	c->references--;
-	if (c->flags & CLIENT_DEAD)
-		return;
-
-	bufferevent_disable(c->stdin_event, EV_READ|EV_WRITE);
-	setblocking(c->stdin_fd, 1);
-	close(c->stdin_fd);
-	c->stdin_fd = -1;
-
-	if (c->stdin_callback != NULL)
-		c->stdin_callback(c, c->stdin_data);
-}
-
-/* Error callback for client stdout. */
-void
-server_client_out_callback(
-    unused struct bufferevent *bufev, unused short what, unused void *data)
-{
-	struct client	*c = data;
-
-	bufferevent_disable(c->stdout_event, EV_READ|EV_WRITE);
-	setblocking(c->stdout_fd, 1);
-	close(c->stdout_fd);
-	c->stdout_fd = -1;
-}
-
-/* Error callback for client stderr. */
-void
-server_client_err_callback(
-    unused struct bufferevent *bufev, unused short what, unused void *data)
-{
-	struct client	*c = data;
-
-	bufferevent_disable(c->stderr_event, EV_READ|EV_WRITE);
-	setblocking(c->stderr_fd, 1);
-	close(c->stderr_fd);
-	c->stderr_fd = -1;
+	free(title);
 }
 
 /* Dispatch message from client. */
@@ -696,6 +683,7 @@ server_client_msg_dispatch(struct client *c)
 	struct msg_command_data	 commanddata;
 	struct msg_identify_data identifydata;
 	struct msg_environ_data	 environdata;
+	struct msg_stdin_data	 stdindata;
 	ssize_t			 n, datalen;
 
 	if ((n = imsg_read(&c->ibuf)) == -1 || n == 0)
@@ -731,42 +719,23 @@ server_client_msg_dispatch(struct client *c)
 				fatalx("MSG_IDENTIFY missing fd");
 			memcpy(&identifydata, imsg.data, sizeof identifydata);
 
-			c->stdin_fd = imsg.fd;
-			c->stdin_event = bufferevent_new(c->stdin_fd,
-			    NULL, NULL, server_client_in_callback, c);
-			if (c->stdin_event == NULL)
-				fatalx("failed to create stdin event");
-			setblocking(c->stdin_fd, 0);
-
 			server_client_msg_identify(c, &identifydata, imsg.fd);
 			break;
-		case MSG_STDOUT:
-			if (datalen != 0)
-				fatalx("bad MSG_STDOUT size");
-			if (imsg.fd == -1)
-				fatalx("MSG_STDOUT missing fd");
+		case MSG_STDIN:
+			if (datalen != sizeof stdindata)
+				fatalx("bad MSG_STDIN size");
+			memcpy(&stdindata, imsg.data, sizeof stdindata);
 
-			c->stdout_fd = imsg.fd;
-			c->stdout_event = bufferevent_new(c->stdout_fd,
-			    NULL, NULL, server_client_out_callback, c);
-			if (c->stdout_event == NULL)
-				fatalx("failed to create stdout event");
-			setblocking(c->stdout_fd, 0);
-
-			break;
-		case MSG_STDERR:
-			if (datalen != 0)
-				fatalx("bad MSG_STDERR size");
-			if (imsg.fd == -1)
-				fatalx("MSG_STDERR missing fd");
-
-			c->stderr_fd = imsg.fd;
-			c->stderr_event = bufferevent_new(c->stderr_fd,
-			    NULL, NULL, server_client_err_callback, c);
-			if (c->stderr_event == NULL)
-				fatalx("failed to create stderr event");
-			setblocking(c->stderr_fd, 0);
-
+			if (c->stdin_callback == NULL)
+				break;
+			if (stdindata.size <= 0)
+				c->stdin_closed = 1;
+			else {
+				evbuffer_add(c->stdin_data, stdindata.data,
+				    stdindata.size);
+			}
+			c->stdin_callback(c, c->stdin_closed,
+			    c->stdin_callback_data);
 			break;
 		case MSG_RESIZE:
 			if (datalen != 0)
@@ -833,10 +802,11 @@ server_client_msg_error(struct cmd_ctx *ctx, const char *fmt, ...)
 	va_list	ap;
 
 	va_start(ap, fmt);
-	evbuffer_add_vprintf(ctx->cmdclient->stderr_event->output, fmt, ap);
+	evbuffer_add_vprintf(ctx->cmdclient->stderr_data, fmt, ap);
 	va_end(ap);
 
-	bufferevent_write(ctx->cmdclient->stderr_event, "\n", 1);
+	evbuffer_add(ctx->cmdclient->stderr_data, "\n", 1);
+	server_push_stderr(ctx->cmdclient);
 	ctx->cmdclient->retcode = 1;
 }
 
@@ -847,10 +817,11 @@ server_client_msg_print(struct cmd_ctx *ctx, const char *fmt, ...)
 	va_list	ap;
 
 	va_start(ap, fmt);
-	evbuffer_add_vprintf(ctx->cmdclient->stdout_event->output, fmt, ap);
+	evbuffer_add_vprintf(ctx->cmdclient->stdout_data, fmt, ap);
 	va_end(ap);
 
-	bufferevent_write(ctx->cmdclient->stdout_event, "\n", 1);
+	evbuffer_add(ctx->cmdclient->stdout_data, "\n", 1);
+	server_push_stdout(ctx->cmdclient);
 }
 
 /* Callback to send print message to client, if not quiet. */
@@ -863,10 +834,11 @@ server_client_msg_info(struct cmd_ctx *ctx, const char *fmt, ...)
 		return;
 
 	va_start(ap, fmt);
-	evbuffer_add_vprintf(ctx->cmdclient->stdout_event->output, fmt, ap);
+	evbuffer_add_vprintf(ctx->cmdclient->stdout_data, fmt, ap);
 	va_end(ap);
 
-	bufferevent_write(ctx->cmdclient->stdout_event, "\n", 1);
+	evbuffer_add(ctx->cmdclient->stdout_data, "\n", 1);
+	server_push_stdout(ctx->cmdclient);
 }
 
 /* Handle command message. */
@@ -907,8 +879,16 @@ server_client_msg_command(struct client *c, struct msg_command_data *data)
 	}
 	cmd_free_argv(argc, argv);
 
-	if (cmd_list_exec(cmdlist, &ctx) != 1)
+	switch (cmd_list_exec(cmdlist, &ctx))
+	{
+	case CMD_RETURN_ERROR:
+	case CMD_RETURN_NORMAL:
 		c->flags |= CLIENT_EXIT;
+		break;
+	case CMD_RETURN_ATTACH:
+	case CMD_RETURN_YIELD:
+		break;
+	}
 	cmd_list_free(cmdlist);
 	return;
 
@@ -923,27 +903,35 @@ void
 server_client_msg_identify(
     struct client *c, struct msg_identify_data *data, int fd)
 {
-	int	tty_fd;
-
 	c->cwd = NULL;
 	data->cwd[(sizeof data->cwd) - 1] = '\0';
 	if (*data->cwd != '\0')
 		c->cwd = xstrdup(data->cwd);
 
-	if (!isatty(fd))
-	    return;
-	if ((tty_fd = dup(fd)) == -1)
-		fatal("dup failed");
+	if (data->flags & IDENTIFY_CONTROL) {
+		c->stdin_callback = control_callback;
+		c->flags |= (CLIENT_CONTROL|CLIENT_SUSPENDED);
+		server_write_client(c, MSG_STDIN, NULL, 0);
+
+		c->tty.fd = -1;
+		c->tty.log_fd = -1;
+
+		close(fd);
+		return;
+	}
+
+	if (!isatty(fd)) {
+		close(fd);
+		return;
+	}
 	data->term[(sizeof data->term) - 1] = '\0';
-	tty_init(&c->tty, tty_fd, data->term);
+	tty_init(&c->tty, c, fd, data->term);
 	if (data->flags & IDENTIFY_UTF8)
 		c->tty.flags |= TTY_UTF8;
 	if (data->flags & IDENTIFY_256COLOURS)
 		c->tty.term_flags |= TERM_256COLOURS;
 	else if (data->flags & IDENTIFY_88COLOURS)
 		c->tty.term_flags |= TERM_88COLOURS;
-	c->tty.key_callback = server_client_handle_key;
-	c->tty.key_data = c;
 
 	tty_resize(&c->tty);
 

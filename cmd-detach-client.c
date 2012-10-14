@@ -24,23 +24,23 @@
  * Detach a client.
  */
 
-int	cmd_detach_client_exec(struct cmd *, struct cmd_ctx *);
+enum cmd_retval	 cmd_detach_client_exec(struct cmd *, struct cmd_ctx *);
 
 const struct cmd_entry cmd_detach_client_entry = {
 	"detach-client", "detach",
-	"s:t:P", 0, 0,
-	"[-P] [-s target-session] " CMD_TARGET_CLIENT_USAGE,
+	"as:t:P", 0, 0,
+	"[-P] [-a] [-s target-session] " CMD_TARGET_CLIENT_USAGE,
 	CMD_READONLY,
 	NULL,
 	NULL,
 	cmd_detach_client_exec
 };
 
-int
+enum cmd_retval
 cmd_detach_client_exec(struct cmd *self, struct cmd_ctx *ctx)
 {
 	struct args	*args = self->args;
-	struct client	*c;
+	struct client	*c, *c2;
 	struct session 	*s;
 	enum msgtype     msgtype;
 	u_int 		 i;
@@ -53,7 +53,7 @@ cmd_detach_client_exec(struct cmd *self, struct cmd_ctx *ctx)
 	if (args_has(args, 's')) {
 		s = cmd_find_session(ctx, args_get(args, 's'), 0);
 		if (s == NULL)
-			return (-1);
+			return (CMD_RETURN_ERROR);
 
 		for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
 			c = ARRAY_ITEM(&clients, i);
@@ -63,10 +63,18 @@ cmd_detach_client_exec(struct cmd *self, struct cmd_ctx *ctx)
 	} else {
 		c = cmd_find_client(ctx, args_get(args, 't'));
 		if (c == NULL)
-			return (-1);
+			return (CMD_RETURN_ERROR);
 
-		server_write_client(c, msgtype, NULL, 0);
+		if (args_has(args, 'a')) {
+			for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
+				c2 = ARRAY_ITEM(&clients, i);
+				if (c2 == NULL || c == c2)
+					continue;
+				server_write_client(c2, msgtype, NULL, 0);
+			}
+		} else
+			server_write_client(c, msgtype, NULL, 0);
 	}
 
-	return (0);
+	return (CMD_RETURN_NORMAL);
 }

@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tmux.h"
@@ -28,19 +29,19 @@
  * Saves a paste buffer to a file.
  */
 
-int	cmd_save_buffer_exec(struct cmd *, struct cmd_ctx *);
+enum cmd_retval	 cmd_save_buffer_exec(struct cmd *, struct cmd_ctx *);
 
 const struct cmd_entry cmd_save_buffer_entry = {
 	"save-buffer", "saveb",
 	"ab:", 1, 1,
-	"[-a] " CMD_BUFFER_USAGE,
+	"[-a] " CMD_BUFFER_USAGE " path",
 	0,
 	NULL,
 	NULL,
 	cmd_save_buffer_exec
 };
 
-int
+enum cmd_retval
 cmd_save_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 {
 	struct args		*args = self->args;
@@ -56,20 +57,20 @@ cmd_save_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 	if (!args_has(args, 'b')) {
 		if ((pb = paste_get_top(&global_buffers)) == NULL) {
 			ctx->error(ctx, "no buffers");
-			return (-1);
+			return (CMD_RETURN_ERROR);
 		}
 	} else {
 		buffer = args_strtonum(args, 'b', 0, INT_MAX, &cause);
 		if (cause != NULL) {
 			ctx->error(ctx, "buffer %s", cause);
-			xfree(cause);
-			return (-1);
+			free(cause);
+			return (CMD_RETURN_ERROR);
 		}
 
 		pb = paste_get_index(&global_buffers, buffer);
 		if (pb == NULL) {
 			ctx->error(ctx, "no buffer %d", buffer);
-			return (-1);
+			return (CMD_RETURN_ERROR);
 		}
 	}
 
@@ -77,9 +78,10 @@ cmd_save_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 	if (strcmp(path, "-") == 0) {
 		if (c == NULL) {
 			ctx->error(ctx, "%s: can't write to stdout", path);
-			return (-1);
+			return (CMD_RETURN_ERROR);
 		}
-		bufferevent_write(c->stdout_event, pb->data, pb->size);
+		evbuffer_add(c->stdout_data, pb->data, pb->size);
+		server_push_stdout(c);
 	} else {
 		if (c != NULL)
 			wd = c->cwd;
@@ -103,15 +105,15 @@ cmd_save_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 		umask(mask);
 		if (f == NULL) {
 			ctx->error(ctx, "%s: %s", path, strerror(errno));
-			return (-1);
+			return (CMD_RETURN_ERROR);
 		}
 		if (fwrite(pb->data, 1, pb->size, f) != pb->size) {
 			ctx->error(ctx, "%s: fwrite error", path);
 			fclose(f);
-			return (-1);
+			return (CMD_RETURN_ERROR);
 		}
 		fclose(f);
 	}
 
-	return (0);
+	return (CMD_RETURN_NORMAL);
 }
