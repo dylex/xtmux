@@ -103,7 +103,7 @@ server_create_socket(void)
 
 /* Fork new server. */
 int
-server_start(void)
+server_start(int lockfd, char *lockfile)
 {
 	struct window_pane	*wp;
 	int	 		 pair[2];
@@ -157,11 +157,8 @@ server_start(void)
 	key_bindings_init();
 	utf8_build();
 #ifdef XTMUX
-	if (xdisplay)
-	{
-		xfree(xdisplay);
-		xdisplay = NULL;
-	}
+	free(xdisplay);
+	xdisplay = NULL;
 #endif
 
 	start_time = time(NULL);
@@ -172,6 +169,10 @@ server_start(void)
 
 	server_fd = server_create_socket();
 	server_client_create(pair[1]);
+
+	unlink(lockfile);
+	free(lockfile);
+	close(lockfd);
 
 	if (access(SYSTEM_CFG, R_OK) == 0)
 		load_cfg(SYSTEM_CFG, NULL, &cfg_causes);
@@ -193,15 +194,13 @@ server_start(void)
 		for (i = 0; i < ARRAY_LENGTH(&cfg_causes); i++) {
 			cause = ARRAY_ITEM(&cfg_causes, i);
 			window_copy_add(wp, "%s", cause);
-			xfree(cause);
+			free(cause);
 		}
 		ARRAY_FREE(&cfg_causes);
 	}
 	cfg_finished = 1;
 
-	event_set(&server_ev_accept,
-	    server_fd, EV_READ|EV_PERSIST, server_accept_callback, NULL);
-	event_add(&server_ev_accept, NULL);
+	server_add_accept(0);
 
 	memset(&tv, 0, sizeof tv);
 	tv.tv_sec = 1;
@@ -285,8 +284,8 @@ server_clean_dead(void)
 		next_s = RB_NEXT(sessions, &dead_sessions, s);
 		if (s->references == 0) {
 			RB_REMOVE(sessions, &dead_sessions, s);
-			xfree(s->name);
-			xfree(s);
+			free(s->name);
+			free(s);
 		}
 		s = next_s;
 	}
@@ -296,7 +295,7 @@ server_clean_dead(void)
 		if (c == NULL || c->references != 0)
 			continue;
 		ARRAY_SET(&dead_clients, i, NULL);
-		xfree(c);
+		free(c);
 	}
 }
 
@@ -345,6 +344,7 @@ server_accept_callback(int fd, short events, unused void *data)
 	socklen_t		slen = sizeof sa;
 	int			newfd;
 
+	server_add_accept(0);
 	if (!(events & EV_READ))
 		return;
 
@@ -352,6 +352,11 @@ server_accept_callback(int fd, short events, unused void *data)
 	if (newfd == -1) {
 		if (errno == EAGAIN || errno == EINTR || errno == ECONNABORTED)
 			return;
+		if (errno == ENFILE || errno == EMFILE) {
+			/* Delete and don't try again for 1 second. */
+			server_add_accept(1);
+			return;
+		}
 		fatal("accept failed");
 	}
 	if (server_shutdown) {
@@ -359,6 +364,29 @@ server_accept_callback(int fd, short events, unused void *data)
 		return;
 	}
 	server_client_create(newfd);
+}
+
+/*
+ * Add accept event. If timeout is nonzero, add as a timeout instead of a read
+ * event - used to backoff when running out of file descriptors.
+ */
+void
+server_add_accept(int timeout)
+{
+	struct timeval tv = { timeout, 0 };
+
+	if (event_initialized(&server_ev_accept))
+		event_del(&server_ev_accept);
+
+	if (timeout == 0) {
+		event_set(&server_ev_accept,
+		    server_fd, EV_READ, server_accept_callback, NULL);
+		event_add(&server_ev_accept, NULL);
+	} else {
+		event_set(&server_ev_accept,
+		    server_fd, EV_TIMEOUT, server_accept_callback, NULL);
+		event_add(&server_ev_accept, &tv);
+	}
 }
 
 /* Signal handler. */
@@ -378,9 +406,7 @@ server_signal_callback(int sig, unused short events, unused void *data)
 		event_del(&server_ev_accept);
 		close(server_fd);
 		server_fd = server_create_socket();
-		event_set(&server_ev_accept, server_fd,
-		    EV_READ|EV_PERSIST, server_accept_callback, NULL);
-		event_add(&server_ev_accept, NULL);
+		server_add_accept(0);
 		break;
 	}
 }

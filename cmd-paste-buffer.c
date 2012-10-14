@@ -27,10 +27,10 @@
  * Paste paste buffer if present.
  */
 
-int	cmd_paste_buffer_exec(struct cmd *, struct cmd_ctx *);
+enum cmd_retval	 cmd_paste_buffer_exec(struct cmd *, struct cmd_ctx *);
 
-void	cmd_paste_buffer_filter(
-	    struct window_pane *, const char *, size_t, const char *);
+void	cmd_paste_buffer_filter(struct window_pane *,
+	    const char *, size_t, const char *, int bracket);
 
 #ifdef XTMUX
 #define X_OPT	"x"
@@ -40,15 +40,15 @@ void	cmd_paste_buffer_filter(
 
 const struct cmd_entry cmd_paste_buffer_entry = {
 	"paste-buffer", "pasteb",
-	"db:rs:t:" X_OPT, 0, 0,
-	"[-dr" X_OPT "] [-s separator] [-b buffer-index] [-t target-pane]",
+	"db:prs:t:" X_OPT, 0, 0,
+	"[-dpr" X_OPT "] [-s separator] [-b buffer-index] [-t target-pane]",
 	0,
 	NULL,
 	NULL,
 	cmd_paste_buffer_exec
 };
 
-int
+enum cmd_retval
 cmd_paste_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 {
 	struct args		*args = self->args;
@@ -58,9 +58,10 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 	const char		*sepstr;
 	char			*cause;
 	int			 buffer;
+	int			 pflag;
 
 	if (cmd_find_pane(ctx, args_get(args, 't'), &s, &wp) == NULL)
-		return (-1);
+		return (CMD_RETURN_ERROR);
 
 	sepstr = args_get(args, 's');
 	if (sepstr == NULL) {
@@ -88,8 +89,8 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 		buffer = args_strtonum(args, 'b', 0, INT_MAX, &cause);
 		if (cause != NULL) {
 			ctx->error(ctx, "buffer %s", cause);
-			xfree(cause);
-			return (-1);
+			free(cause);
+			return (CMD_RETURN_ERROR);
 		}
 	}
 
@@ -99,12 +100,14 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 		pb = paste_get_index(&global_buffers, buffer);
 		if (pb == NULL) {
 			ctx->error(ctx, "no buffer %d", buffer);
-			return (-1);
+			return (CMD_RETURN_ERROR);
 		}
 	}
 
 	if (pb != NULL) {
-		cmd_paste_buffer_filter(wp, pb->data, pb->size, sepstr);
+		pflag = args_has(args, 'p') &&
+		    (wp->screen->mode & MODE_BRACKETPASTE);
+		cmd_paste_buffer_filter(wp, pb->data, pb->size, sepstr, pflag);
 	}
 
 	/* Delete the buffer if -d. */
@@ -115,17 +118,20 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_ctx *ctx)
 			paste_free_index(&global_buffers, buffer);
 	}
 
-	return (0);
+	return (CMD_RETURN_NORMAL);
 }
 
 /* Add bytes to a buffer and filter '\n' according to separator. */
 void
-cmd_paste_buffer_filter(
-    struct window_pane *wp, const char *data, size_t size, const char *sep)
+cmd_paste_buffer_filter(struct window_pane *wp,
+    const char *data, size_t size, const char *sep, int bracket)
 {
 	const char	*end = data + size;
 	const char	*lf;
 	size_t		 seplen;
+
+	if (bracket)
+		bufferevent_write(wp->event, "\033[200~", 6);
 
 	seplen = strlen(sep);
 	while ((lf = memchr(data, '\n', end - data)) != NULL) {
@@ -137,4 +143,7 @@ cmd_paste_buffer_filter(
 
 	if (end != data)
 		bufferevent_write(wp->event, data, end - data);
+
+	if (bracket)
+		bufferevent_write(wp->event, "\033[201~", 6);
 }

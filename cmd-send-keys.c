@@ -27,19 +27,19 @@
  * Send keys to client.
  */
 
-int	cmd_send_keys_exec(struct cmd *, struct cmd_ctx *);
+enum cmd_retval	 cmd_send_keys_exec(struct cmd *, struct cmd_ctx *);
 
 const struct cmd_entry cmd_send_keys_entry = {
 	"send-keys", "send",
-	"Rt:", 0, -1,
-	"[-R] [-t target-pane] key ...",
+	"lRt:", 0, -1,
+	"[-lR] [-t target-pane] key ...",
 	0,
 	NULL,
 	NULL,
 	cmd_send_keys_exec
 };
 
-int
+enum cmd_retval
 cmd_send_keys_exec(struct cmd *self, struct cmd_ctx *ctx)
 {
 	struct args		*args = self->args;
@@ -50,7 +50,7 @@ cmd_send_keys_exec(struct cmd *self, struct cmd_ctx *ctx)
 	int			 i, key;
 
 	if (cmd_find_pane(ctx, args_get(args, 't'), &s, &wp) == NULL)
-		return (-1);
+		return (CMD_RETURN_ERROR);
 
 	if (args_has(args, 'R')) {
 		ictx = &wp->ictx;
@@ -71,7 +71,8 @@ cmd_send_keys_exec(struct cmd *self, struct cmd_ctx *ctx)
 	for (i = 0; i < args->argc; i++) {
 		str = args->argv[i];
 
-		if ((key = key_string_lookup_string(str)) != KEYC_NONE) {
+		if (!args_has(args, 'l') &&
+		    (key = key_string_lookup_string(str)) != KEYC_NONE) {
 			    window_pane_key(wp, s, key);
 		} else {
 			for (; *str != '\0'; str++)
@@ -79,5 +80,5 @@ cmd_send_keys_exec(struct cmd *self, struct cmd_ctx *ctx)
 		}
 	}
 
-	return (0);
+	return (CMD_RETURN_NORMAL);
 }

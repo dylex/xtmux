@@ -55,8 +55,10 @@ struct windows windows;
 
 /* Global panes tree. */
 struct window_pane_tree all_window_panes;
-u_int	next_window_pane;
+u_int	next_window_pane_id;
+u_int	next_window_id;
 
+void	window_pane_timer_callback(int, short, void *);
 void	window_pane_read_callback(struct bufferevent *, void *);
 void	window_pane_error_callback(struct bufferevent *, short, void *);
 
@@ -99,6 +101,18 @@ winlink_find_by_index(struct winlinks *wwl, int idx)
 
 	wl.idx = idx;
 	return (RB_FIND(winlinks, wwl, &wl));
+}
+
+struct winlink *
+winlink_find_by_window_id(struct winlinks *wwl, u_int id)
+{
+	struct winlink *wl;
+
+	RB_FOREACH(wl, winlinks, wwl) {
+		if (wl->window->id == id)
+			return (wl);
+	}
+	return (NULL);
 }
 
 int
@@ -162,17 +176,11 @@ winlink_remove(struct winlinks *wwl, struct winlink *wl)
 	struct window	*w = wl->window;
 
 	RB_REMOVE(winlinks, wwl, wl);
-	if (wl->status_text != NULL)
-		xfree(wl->status_text);
-	xfree(wl);
+	free(wl->status_text);
+	free(wl);
 
-	if (w != NULL) {
-		if (w->references == 0)
-			fatal("bad reference count");
-		w->references--;
-		if (w->references == 0)
-			window_destroy(w);
-	}
+	if (w != NULL)
+		window_remove_ref(w);
 }
 
 struct winlink *
@@ -246,12 +254,27 @@ window_index(struct window *s, u_int *i)
 }
 
 struct window *
+window_find_by_id(u_int id)
+{
+	struct window	*w;
+	u_int		 i;
+
+	for (i = 0; i < ARRAY_LENGTH(&windows); i++) {
+		w = ARRAY_ITEM(&windows, i);
+		if (w->id == id)
+			return (w);
+	}
+	return (NULL);
+}
+
+struct window *
 window_create1(u_int sx, u_int sy)
 {
 	struct window	*w;
 	u_int		 i;
 
 	w = xcalloc(1, sizeof *w);
+	w->id = next_window_id++;
 	w->name = NULL;
 	w->flags = 0;
 
@@ -260,13 +283,14 @@ window_create1(u_int sx, u_int sy)
 
 	w->lastlayout = -1;
 	w->layout_root = NULL;
+	TAILQ_INIT(&w->layout_list);
 
 	w->sx = sx;
 	w->sy = sy;
 
-	queue_window_name(w);
-
 	options_init(&w->options, &global_w_options);
+	if (options_get_number(&w->options, "automatic-rename"))
+		queue_window_name(w);
 
 	for (i = 0; i < ARRAY_LENGTH(&windows); i++) {
 		if (ARRAY_ITEM(&windows, i) == NULL) {
@@ -319,15 +343,33 @@ window_destroy(struct window *w)
 	if (w->layout_root != NULL)
 		layout_free(w);
 
-	evtimer_del(&w->name_timer);
+	if (event_initialized(&w->name_timer))
+		evtimer_del(&w->name_timer);
 
 	options_free(&w->options);
 
 	window_destroy_panes(w);
 
-	if (w->name != NULL)
-		xfree(w->name);
-	xfree(w);
+	free(w->name);
+	free(w);
+}
+
+void
+window_remove_ref(struct window *w)
+{
+	if (w->references == 0)
+		fatal("bad reference count");
+	w->references--;
+	if (w->references == 0)
+		window_destroy(w);
+}
+
+void
+window_set_name(struct window *w, const char *new_name)
+{
+	free(w->name);
+	w->name = xstrdup(new_name);
+	notify_window_renamed(w);
 }
 
 void
@@ -568,7 +610,7 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
 	wp = xcalloc(1, sizeof *wp);
 	wp->window = w;
 
-	wp->id = next_window_pane++;
+	wp->id = next_window_pane_id++;
 	RB_INSERT(window_pane_tree, &all_window_panes, wp);
 
 	wp->cmd = NULL;
@@ -607,6 +649,9 @@ window_pane_destroy(struct window_pane *wp)
 {
 	window_pane_reset_mode(wp);
 
+	if (event_initialized(&wp->changes_timer))
+		evtimer_del(&wp->changes_timer);
+
 	if (wp->fd != -1) {
 		bufferevent_free(wp->event);
 		close(wp->fd);
@@ -625,13 +670,10 @@ window_pane_destroy(struct window_pane *wp)
 
 	RB_REMOVE(window_pane_tree, &all_window_panes, wp);
 
-	if (wp->cwd != NULL)
-		xfree(wp->cwd);
-	if (wp->shell != NULL)
-		xfree(wp->shell);
-	if (wp->cmd != NULL)
-		xfree(wp->cmd);
-	xfree(wp);
+	free(wp->cwd);
+	free(wp->shell);
+	free(wp->cmd);
+	free(wp);
 }
 
 int
@@ -648,18 +690,15 @@ window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
 		close(wp->fd);
 	}
 	if (cmd != NULL) {
-		if (wp->cmd != NULL)
-			xfree(wp->cmd);
+		free(wp->cmd);
 		wp->cmd = xstrdup(cmd);
 	}
 	if (shell != NULL) {
-		if (wp->shell != NULL)
-			xfree(wp->shell);
+		free(wp->shell);
 		wp->shell = xstrdup(shell);
 	}
 	if (cwd != NULL) {
-		if (wp->cwd != NULL)
-			xfree(wp->cwd);
+		free(wp->cwd);
 		wp->cwd = xstrdup(cwd);
 	}
 
@@ -697,23 +736,24 @@ window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
 		clear_signals(1);
 		log_close();
 
-		if (*wp->cmd != '\0') {
-			/* Set SHELL but only if it is currently not useful. */
-			shell = getenv("SHELL");
-			if (checkshell(shell))
-				setenv("SHELL", wp->shell, 1);
+		setenv("SHELL", wp->shell, 1);
+		ptr = strrchr(wp->shell, '/');
 
-			execl(_PATH_BSHELL, "sh", "-c", wp->cmd, (char *) NULL);
+		if (*wp->cmd != '\0') {
+			/* Use the command. */
+			if (ptr != NULL && *(ptr + 1) != '\0')
+				xasprintf(&argv0, "%s", ptr + 1);
+			else
+				xasprintf(&argv0, "%s", wp->shell);
+			execl(wp->shell, argv0, "-c", wp->cmd, (char *) NULL);
 			fatal("execl failed");
 		}
 
 		/* No command; fork a login shell. */
-		ptr = strrchr(wp->shell, '/');
 		if (ptr != NULL && *(ptr + 1) != '\0')
 			xasprintf(&argv0, "-%s", ptr + 1);
 		else
 			xasprintf(&argv0, "-%s", wp->shell);
-		setenv("SHELL", wp->shell, 1);
 		execl(wp->shell, argv0, (char *) NULL);
 		fatal("execl failed");
 	}
@@ -725,6 +765,43 @@ window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
 	bufferevent_enable(wp->event, EV_READ|EV_WRITE);
 
 	return (0);
+}
+
+void
+window_pane_timer_start(struct window_pane *wp)
+{
+	struct timeval	tv;
+
+	tv.tv_sec = 0;
+	tv.tv_usec = 1000;
+
+	evtimer_del(&wp->changes_timer);
+	evtimer_set(&wp->changes_timer, window_pane_timer_callback, wp);
+	evtimer_add(&wp->changes_timer, &tv);
+}
+
+void
+window_pane_timer_callback(unused int fd, unused short events, void *data)
+{
+	struct window_pane	*wp = data;
+	struct window		*w = wp->window;
+	u_int			 interval, trigger;
+
+	interval = options_get_number(&w->options, "c0-change-interval");
+	trigger = options_get_number(&w->options, "c0-change-trigger");
+
+	if (wp->changes_redraw++ == interval) {
+		wp->flags |= PANE_REDRAW;
+		wp->changes_redraw = 0;
+
+	}
+
+	if (trigger == 0 || wp->changes < trigger) {
+		wp->flags |= PANE_REDRAW;
+		wp->flags &= ~PANE_DROP;
+	} else
+		window_pane_timer_start(wp);
+	wp->changes = 0;
 }
 
 /* ARGSUSED */
@@ -977,10 +1054,10 @@ window_pane_search(struct window_pane *wp, const char *searchstr, u_int *lineno)
 				*lineno = i;
 			break;
 		}
-		xfree(line);
+		free(line);
 	}
 
-	xfree(newsearchstr);
+	free(newsearchstr);
 	return (msg);
 }
 
@@ -1092,4 +1169,42 @@ window_pane_find_right(struct window_pane *wp)
 			return (wp2);
 	}
 	return (NULL);
+}
+
+/* Clear alert flags for a winlink */
+void
+winlink_clear_flags(struct winlink *wl)
+{
+	struct winlink	*wm;
+	struct session	*s;
+	struct window	*w;
+	u_int		 i;
+
+	for (i = 0; i < ARRAY_LENGTH(&windows); i++) {
+		if ((w = ARRAY_ITEM(&windows, i)) == NULL)
+			continue;
+
+		RB_FOREACH(s, sessions, &sessions) {
+			if ((wm = session_has(s, w)) == NULL)
+				continue;
+
+			if (wm->window != wl->window)
+				continue;
+			if ((wm->flags & WINLINK_ALERTFLAGS) == 0)
+				continue;
+
+			wm->flags &= ~WINLINK_ALERTFLAGS;
+			server_status_session(s);
+		}
+	}
+}
+
+/* Set the grid_cell with fg/bg/attr information when window is in a mode. */
+void
+window_mode_attrs(struct grid_cell *gc, struct options *oo)
+{
+	memcpy(gc, &grid_default_cell, sizeof gc);
+	colour_set_fg(gc, options_get_number(oo, "mode-fg"));
+	colour_set_bg(gc, options_get_number(oo, "mode-bg"));
+	gc->attr |= options_get_number(oo, "mode-attr");
 }

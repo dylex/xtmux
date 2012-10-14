@@ -49,7 +49,7 @@ osdep_get_name(int fd, char *tty)
 
 	xasprintf(&path, "/proc/%u/psinfo", (u_int) pgrp);
 	f = open(path, O_RDONLY);
-	xfree(path);
+	free(path);
 	if (f < 0)
 		return (NULL);
 
@@ -65,15 +65,19 @@ osdep_get_name(int fd, char *tty)
 }
 
 char *
-osdep_get_cwd(pid_t pid)
+osdep_get_cwd(int fd)
 {
 	static char	 target[MAXPATHLEN + 1];
 	char		*path;
 	ssize_t		 n;
+	pid_t		 pgrp;
 
-	xasprintf(&path, "/proc/%u/path/cwd", (u_int) pid);
+	if ((pgrp = tcgetpgrp(fd)) == -1)
+		return (NULL);
+
+	xasprintf(&path, "/proc/%u/path/cwd", (u_int) pgrp);
 	n = readlink(path, target, MAXPATHLEN);
-	xfree(path);
+	free(path);
 	if (n > 0) {
 		target[n] = '\0';
 		return (target);

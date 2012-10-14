@@ -27,10 +27,7 @@
  * Set an option.
  */
 
-int	cmd_set_option_exec(struct cmd *, struct cmd_ctx *);
-
-int	cmd_set_option_find(const char *, const struct options_table_entry **,
-	    const struct options_table_entry **);
+enum cmd_retval	 cmd_set_option_exec(struct cmd *, struct cmd_ctx *);
 
 int	cmd_set_option_unset(struct cmd *, struct cmd_ctx *,
 	    const struct options_table_entry *, struct options *,
@@ -63,8 +60,8 @@ struct options_entry *cmd_set_option_choice(struct cmd *, struct cmd_ctx *,
 
 const struct cmd_entry cmd_set_option_entry = {
 	"set-option", "set",
-	"acgst:uw", 1, 2,
-	"[-acgsuw] [-t target-session|target-window|target-client] option [value]",
+	"acgqst:uw", 1, 2,
+	"[-acgsquw] [-t target-session|target-window|target-client] option [value]",
 	0,
 	NULL,
 	NULL,
@@ -73,49 +70,15 @@ const struct cmd_entry cmd_set_option_entry = {
 
 const struct cmd_entry cmd_set_window_option_entry = {
 	"set-window-option", "setw",
-	"agt:u", 1, 2,
-	"[-agu] " CMD_TARGET_WINDOW_USAGE " option [value]",
+	"agqt:u", 1, 2,
+	"[-agqu] " CMD_TARGET_WINDOW_USAGE " option [value]",
 	0,
 	NULL,
 	NULL,
 	cmd_set_option_exec
 };
 
-/* Look for an option in all three tables. */
-int
-cmd_set_option_find(
-    const char *optstr, const struct options_table_entry **table,
-    const struct options_table_entry **oe)
-{
-	static const struct options_table_entry	*tables[] = {
-		server_options_table,
-		window_options_table,
-		session_options_table,
-		client_options_table
-	};
-	const struct options_table_entry	*oe_loop;
-	u_int					 i;
-
-	for (i = 0; i < nitems(tables); i++) {
-		for (oe_loop = tables[i]; oe_loop->name != NULL; oe_loop++) {
-			if (strncmp(oe_loop->name, optstr, strlen(optstr)) != 0)
-				continue;
-
-			/* If already found, ambiguous. */
-			if (*oe != NULL)
-				return (-1);
-			*oe = oe_loop;
-			*table = tables[i];
-
-			/* Bail now if an exact match. */
-			if (strcmp((*oe)->name, optstr) == 0)
-				break;
-		}
-	}
-	return (0);
-}
-
-int
+enum cmd_retval
 cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 {
 	struct args				*args = self->args;
@@ -124,6 +87,7 @@ cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 	struct winlink				*wl;
 	struct client				*c;
 	struct options				*oo;
+	struct window				*w;
 	const char				*optstr, *valstr;
 	u_int					 i;
 
@@ -131,7 +95,7 @@ cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 	optstr = args->argv[0];
 	if (*optstr == '\0') {
 		ctx->error(ctx, "invalid option");
-		return (-1);
+		return (CMD_RETURN_ERROR);
 	}
 	if (args->argc < 2)
 		valstr = NULL;
@@ -140,13 +104,13 @@ cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 
 	/* Find the option entry, try each table. */
 	table = oe = NULL;
-	if (cmd_set_option_find(optstr, &table, &oe) != 0) {
+	if (options_table_find(optstr, &table, &oe) != 0) {
 		ctx->error(ctx, "ambiguous option: %s", optstr);
-		return (-1);
+		return (CMD_RETURN_ERROR);
 	}
 	if (oe == NULL) {
 		ctx->error(ctx, "unknown option: %s", optstr);
-		return (-1);
+		return (CMD_RETURN_ERROR);
 	}
 
 	/* Work out the tree from the table. */
@@ -158,7 +122,7 @@ cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 		else {
 			wl = cmd_find_window(ctx, args_get(args, 't'), NULL);
 			if (wl == NULL)
-				return (-1);
+				return (CMD_RETURN_ERROR);
 			oo = &wl->window->options;
 		}
 	} else if (table == session_options_table) {
@@ -167,7 +131,7 @@ cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 		else {
 			s = cmd_find_session(ctx, args_get(args, 't'), 0);
 			if (s == NULL)
-				return (-1);
+				return (CMD_RETURN_ERROR);
 			oo = &s->options;
 		}
 	} else if (table == client_options_table) {
@@ -181,16 +145,28 @@ cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 		}
 	} else {
 		ctx->error(ctx, "unknown table");
-		return (-1);
+		return (CMD_RETURN_ERROR);
 	}
 
 	/* Unset or set the option. */
 	if (args_has(args, 'u')) {
 		if (cmd_set_option_unset(self, ctx, oe, oo, valstr) != 0)
-			return (-1);
+			return (CMD_RETURN_ERROR);
 	} else {
 		if (cmd_set_option_set(self, ctx, oe, oo, valstr) != 0)
-			return (-1);
+			return (CMD_RETURN_ERROR);
+	}
+
+	/* Start or stop timers when automatic-rename changed. */
+	if (strcmp (oe->name, "automatic-rename") == 0) {
+		for (i = 0; i < ARRAY_LENGTH(&windows); i++) {
+			if ((w = ARRAY_ITEM(&windows, i)) == NULL)
+				continue;
+			if (options_get_number(&w->options, "automatic-rename"))
+				queue_window_name(w);
+			else if (event_initialized(&w->name_timer))
+				evtimer_del(&w->name_timer);
+		}
 	}
 
 	/* Update sizes and redraw. May not need it but meh. */
@@ -206,7 +182,7 @@ cmd_set_option_exec(struct cmd *self, struct cmd_ctx *ctx)
 		}
 	}
 
-	return (0);
+	return (CMD_RETURN_NORMAL);
 }
 
 /* Unset an option. */
@@ -226,7 +202,8 @@ cmd_set_option_unset(struct cmd *self, struct cmd_ctx *ctx,
 	}
 
 	options_remove(oo, oe->name);
-	ctx->info(ctx, "unset option: %s", oe->name);
+	if (!args_has(args, 'q'))
+		ctx->info(ctx, "unset option: %s", oe->name);
 	return (0);
 }
 
@@ -235,6 +212,7 @@ int
 cmd_set_option_set(struct cmd *self, struct cmd_ctx *ctx,
     const struct options_table_entry *oe, struct options *oo, const char *value)
 {
+	struct args		*args = self->args;
 	struct options_entry	*o;
 	const char		*s;
 
@@ -271,7 +249,8 @@ cmd_set_option_set(struct cmd *self, struct cmd_ctx *ctx,
 		return (-1);
 
 	s = options_table_print_entry(oe, o);
-	ctx->info(ctx, "set option: %s -> %s", oe->name, s);
+	if (!args_has(args, 'q'))
+		ctx->info(ctx, "set option: %s -> %s", oe->name, s);
 	return (0);
 }
 
@@ -280,7 +259,7 @@ struct options_entry *
 cmd_set_option_string(struct cmd *self, unused struct cmd_ctx *ctx,
     const struct options_table_entry *oe, struct options *oo, const char *value)
 {
-	struct args	*args = self->args;
+	struct args		*args = self->args;
 	struct options_entry	*o;
 	char			*oldval, *newval;
 
@@ -292,7 +271,7 @@ cmd_set_option_string(struct cmd *self, unused struct cmd_ctx *ctx,
 
 	o = options_set_string(oo, oe->name, "%s", newval);
 
-	xfree(newval);
+	free(newval);
 	return (o);
 }
 

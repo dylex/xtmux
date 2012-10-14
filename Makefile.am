@@ -67,8 +67,8 @@ dist_tmux_SOURCES = \
 	cmd-capture-pane.c \
 	cmd-choose-buffer.c \
 	cmd-choose-client.c \
-	cmd-choose-session.c \
-	cmd-choose-window.c \
+	cmd-choose-list.c \
+	cmd-choose-tree.c \
 	cmd-clear-history.c \
 	cmd-clock-mode.c \
 	cmd-command-prompt.c \
@@ -136,6 +136,8 @@ dist_tmux_SOURCES = \
 	cmd-unlink-window.c \
 	cmd.c \
 	colour.c \
+	control.c \
+	control-notify.c \
 	environ.c \
 	format.c \
 	grid-utf8.c \
@@ -152,6 +154,7 @@ dist_tmux_SOURCES = \
 	log.c \
 	mode-key.c \
 	names.c \
+	notify.c \
 	options-table.c \
 	options.c \
 	paste.c \

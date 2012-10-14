@@ -18,6 +18,7 @@
 
 #include <sys/types.h>
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "tmux.h"
@@ -36,6 +37,7 @@
 
 /* Default grid cell data. */
 const struct grid_cell grid_default_cell = { 0, 0, 8, 8, ' ' };
+const struct grid_cell grid_marker_cell = { 0, 0, 8, 8, '_' };
 
 #define grid_put_cell(gd, px, py, gc) do {			\
 	memcpy(&gd->linedata[py].celldata[px], 			\
@@ -97,15 +99,13 @@ grid_destroy(struct grid *gd)
 
 	for (yy = 0; yy < gd->hsize + gd->sy; yy++) {
 		gl = &gd->linedata[yy];
-		if (gl->celldata != NULL)
-			xfree(gl->celldata);
-		if (gl->utf8data != NULL)
-			xfree(gl->utf8data);
+		free(gl->celldata);
+		free(gl->utf8data);
 	}
 
-	xfree(gd->linedata);
+	free(gd->linedata);
 
-	xfree(gd);
+	free(gd);
 }
 
 /* Compare grids. */
@@ -372,10 +372,8 @@ grid_clear_lines(struct grid *gd, u_int py, u_int ny)
 
 	for (yy = py; yy < py + ny; yy++) {
 		gl = &gd->linedata[yy];
-		if (gl->celldata != NULL)
-			xfree(gl->celldata);
-		if (gl->utf8data != NULL)
-			xfree(gl->utf8data);
+		free(gl->celldata);
+		free(gl->utf8data);
 		memset(gl, 0, sizeof *gl);
 	}
 }

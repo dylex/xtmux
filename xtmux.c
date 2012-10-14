@@ -231,8 +231,7 @@ xtmux_init(struct client *c, char *display)
 	c->tty.xtmux = xcalloc(1, sizeof *c->tty.xtmux);
 	c->tty.xtmux->display_name = xstrdup(display);
 
-	if (c->tty.termname)
-		xfree(c->tty.termname);
+	free(c->tty.termname);
 	c->tty.termname = xstrdup("xtmux");
 
 	/* update client environment to reflect current DISPLAY */
@@ -249,8 +248,7 @@ xtmux_init(struct client *c, char *display)
 		if (!cmd_lookup_client(path))
 			break;
 	}
-	if (c->tty.path)
-		xfree(c->tty.path);
+	free(c->tty.path);
 	c->tty.path = path;
 
 	if (!c->tty.ccolour)
@@ -336,7 +334,7 @@ xdisplay_connection_watch(unused Display *display, XPointer data, int fd, Bool o
 	{
 		ev = (struct event *)*watch_data;
 		event_del(ev);
-		xfree(ev);
+		free(ev);
 	}
 }
 
@@ -430,7 +428,7 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 			continue;
 		x->colors[ci & 0xff] = xt_parse_color(x, es, x->colors[ci]);
 	}
-	xfree(s);
+	free(s);
 }
 
 static void
@@ -555,7 +553,7 @@ xt_load_font(struct xtmux *x, enum font_type type, const char *name)
 	{
 		XUnloadFont(x->display, font->fid);
 		font->fid = None;
-		xfree(font->name);
+		free(font->name);
 		font->name = NULL;
 		font->char_max = 0;
 	}
@@ -618,17 +616,11 @@ xt_free_font(struct xtmux *x, enum font_type type)
 	if (!x->ioerror && font->fid)
 		XUnloadFont(x->display, font->fid);
 	font->fid = None;
-	if (font->name)
-	{
-		xfree(font->name);
-		font->name = NULL;
-	}
+	free(font->name);
+	font->name = NULL;
 	font->char_max = 0;
-	if (font->char_mask)
-	{
-		xfree(font->char_mask);
-		font->char_mask = NULL;
-	}
+	free(font->char_mask);
+	font->char_mask = NULL;
 }
 
 static inline int
@@ -892,7 +884,7 @@ xtmux_close(struct tty *tty)
 
 	if (x->paste.sep)
 	{
-		xfree(x->paste.sep);
+		free(x->paste.sep);
 		x->paste.sep = NULL;
 	}
 
@@ -945,8 +937,8 @@ xtmux_close(struct tty *tty)
 void 
 xtmux_free(struct tty *tty)
 {
-	xfree(tty->xtmux->display_name);
-	xfree(tty->xtmux);
+	free(tty->xtmux->display_name);
+	free(tty->xtmux);
 }
 
 void
@@ -1846,11 +1838,8 @@ xt_paste_property(struct xtmux *x, Window w, Atom p)
 
 	x->paste.time = 0;
 	x->paste.wp = NULL;
-	if (x->paste.sep)
-	{
-		xfree(x->paste.sep);
-		x->paste.sep = NULL;
-	}
+	free(x->paste.sep);
+	x->paste.sep = NULL;
 	XFree(t.value);
 
 	return 0;
@@ -1883,8 +1872,7 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 
 	x->paste.time = x->last_time;
 	x->paste.wp = wp;
-	if (x->paste.sep)
-		xfree(x->paste.sep);
+	free(x->paste.sep);
 	if (sep)
 		x->paste.sep = xstrdup(sep);
 	else
@@ -2155,29 +2143,29 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 		key |= KEYC_PREFIX;
 
 	if (r < 0)
-		tty->key_callback(key, NULL, tty->key_data);
+		server_client_handle_key(tty->client, key);
 	else for (i = 0; i < r; i ++)
-		tty->key_callback(key | buf[i], NULL, tty->key_data);
+		server_client_handle_key(tty->client, key | buf[i]);
 }
 
 static void
 xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
-	struct mouse_event m;
+	struct mouse_event *m = &tty->mouse;
 
-	m.x = xev->x / x->cw;
-	m.y = xev->y / x->ch;
+	m->x = xev->x / x->cw;
+	m->y = xev->y / x->ch;
 
 	switch (xev->type) {
 		case ButtonPress:
 			switch (xev->button)
 			{
-				case Button1: m.b = MOUSE_1; break;
-				case Button2: m.b = MOUSE_2; break;
-				case Button3: m.b = MOUSE_3; break;
-				case Button4: m.b = MOUSE_1 | MOUSE_45; break;
-				case Button5: m.b = MOUSE_2 | MOUSE_45; break;
+				case Button1: m->b = MOUSE_1; break;
+				case Button2: m->b = MOUSE_2; break;
+				case Button3: m->b = MOUSE_3; break;
+				case Button4: m->b = MOUSE_1 | MOUSE_45; break;
+				case Button5: m->b = MOUSE_2 | MOUSE_45; break;
 				default: return;
 			}
 			if (!(tty->mode & ALL_MOUSE_MODES) || 
@@ -2191,47 +2179,47 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 			}
 			break;
 		case ButtonRelease:
-			m.b = MOUSE_UP;
+			m->b = MOUSE_UP;
 			break;
 		case MotionNotify:
 			if (!(tty->mode & (MODE_MOUSE_BUTTON | MODE_MOUSE_ANY)))
 				return;
-			if (m.x == x->mx && m.y == x->my)
+			if (m->x == x->mx && m->y == x->my)
 				return;
 			if (xev->state & Button1Mask)
-				m.b = MOUSE_1;
+				m->b = MOUSE_1;
 			else if (xev->state & Button2Mask)
-				m.b = MOUSE_2;
+				m->b = MOUSE_2;
 			else if (xev->state & Button3Mask)
-				m.b = MOUSE_3;
+				m->b = MOUSE_3;
 			else if (xev->state & Button4Mask)
-				m.b = MOUSE_1 | MOUSE_45;
+				m->b = MOUSE_1 | MOUSE_45;
 			else if (xev->state & Button5Mask)
-				m.b = MOUSE_2 | MOUSE_45;
+				m->b = MOUSE_2 | MOUSE_45;
 			else
 			{
 				if (!(tty->mode & MODE_MOUSE_ANY))
 					return;
-				m.b = MOUSE_UP;
+				m->b = MOUSE_UP;
 			}
-			m.b |= MOUSE_DRAG;
+			m->b |= MOUSE_DRAG;
 			break;
 	}
 
 	if (xev->state & ShiftMask)
-		m.b |= 4;
+		m->b |= 4;
 	if (xev->state & Mod4Mask) /* META */
-		m.b |= 8;
+		m->b |= 8;
 	if (xev->state & ControlMask)
-		m.b |= 16;
+		m->b |= 16;
 
 	if (xev->state & (x->prefix_mod >= 0 ? 1<<x->prefix_mod : ShiftMask))
-		m.b |= MOUSE_PREFIX;
+		m->b |= MOUSE_PREFIX;
 
-	x->mx = m.x;
-	x->my = m.y;
+	x->mx = m->x;
+	x->my = m->y;
 
-	tty->key_callback(KEYC_MOUSE, &m, tty->key_data);
+	server_client_handle_key(tty->client, KEYC_MOUSE);
 }
 
 static void 

@@ -163,7 +163,7 @@ input_key(struct window_pane *wp, int key)
 	if (options_get_number(&wp->window->options, "xterm-keys")) {
 		if ((out = xterm_keys_lookup(key)) != NULL) {
 			bufferevent_write(wp->event, out, strlen(out));
-			xfree(out);
+			free(out);
 			return;
 		}
 	}
@@ -219,18 +219,19 @@ input_mouse(struct window_pane *wp, struct mouse_event *m)
 			buf[len++] = m->y + 33;
 		}
 		bufferevent_write(wp->event, buf, len);
+		return;
 	}
-	else if (options_get_number(&wp->window->options, "mode-mouse") == 1) {
-		if ((m->b & MOUSE_BUTTON) != MOUSE_UP) {
-			if ((m->b & MOUSE_BUTTON) == MOUSE_2) {
-				/* TODO: paste or some more generic binding; 
-				 * unfortunately we don't have client here */
-			}
-			else if (window_pane_set_mode(wp, &window_copy_mode) == 0) {
-				window_copy_init_from_pane(wp);
-				if (wp->mode->mouse != NULL)
-					wp->mode->mouse(wp, NULL, m);
-			}
+
+	if (options_get_number(&wp->window->options, "mode-mouse") == 1 &&
+			(m->b & MOUSE_BUTTON) != MOUSE_UP) {
+		if ((m->b & MOUSE_BUTTON) == MOUSE_2) {
+			/* TODO: paste or some more generic binding; 
+			 * unfortunately we don't have client here */
+		}
+		else if (window_pane_set_mode(wp, &window_copy_mode) == 0) {
+			window_copy_init_from_pane(wp);
+			if (wp->mode->mouse != NULL)
+				wp->mode->mouse(wp, NULL, m);
 		}
 	}
 }
