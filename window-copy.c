@@ -146,10 +146,10 @@ struct window_copy_mode_data {
 	enum window_copy_input_type jumptype;
 	char		jumpchar;
 
-	u_char		mouse_button;
+	u_char		mouse_click : 3;
+	u_char		mouse_button : 2;
 	u_int		mouse_x;
 	u_int		mouse_y;
-	u_char		mouse_click;
 };
 
 struct screen *
@@ -844,7 +844,7 @@ window_copy_mouse(
 	struct window_copy_mode_data	*data = wp->modedata;
 	struct screen			*s = &data->screen;
 	u_int				 i, old_cy = data->cy;
-	u_int				 button, moved;
+	u_int				 button;
 	struct screen_sel		 old_sel = s->sel;
 
 	if (m->x >= screen_size_x(s))
@@ -854,18 +854,18 @@ window_copy_mouse(
 
 	button = m->b & MOUSE_BUTTON;
 
-	/* filter irrelevant MOUSE_ANY events */
-	if (m->b & MOUSE_DRAG && button == MOUSE_UP)
+	/* filter irrelevant events */
+	if ((button == MOUSE_UP) + !!(m->b & MOUSE_DRAG) + !(data->mouse_click&1) >= 2)
 		return;
 
 	/* If mouse wheel (buttons 4 and 5), scroll. */
 	if ((m->b & MOUSE_45)) {
 		if (button == MOUSE_1) {
 			for (i = 0; i < 5; i++)
-				window_copy_cursor_up(wp, 0);
+				window_copy_cursor_up(wp, 1);
 		} else if (button == MOUSE_2) {
 			for (i = 0; i < 5; i++)
-				window_copy_cursor_down(wp, 0);
+				window_copy_cursor_down(wp, 1);
 			if (data->oy == 0)
 				goto reset_mode;
 		}
@@ -876,64 +876,73 @@ window_copy_mouse(
 	if (button == MOUSE_2)
 		goto reset_mode;
 
-	moved = m->x != data->mouse_x || m->y != data->mouse_y;
 	window_copy_update_cursor(wp, m->x, m->y);
 
-	/* new button or click in new location */
-	if (data->mouse_click & 1 &&
-			(moved || button != data->mouse_button))
-		data->mouse_click = 0;
+	if (button != MOUSE_UP && !(m->b & MOUSE_DRAG)) {
+		s->mode &= ~MODE_MOUSE_STANDARD;
+		s->mode |= MODE_MOUSE_BUTTON;
 
-	switch (data->mouse_click) {
-		case 1: /* words */
-			window_copy_cursor_previous_word(wp,
-					options_get_string(&sess->options, "word-separators"));
+		if (button != data->mouse_button || m->x != data->mouse_x || m->y != data->mouse_y)
+			data->mouse_click = 0;
+		if (!data->mouse_click) {
+			data->mouse_button = button;
+			data->mouse_x = m->x;
+			data->mouse_y = m->y;
+		}
+		data->mouse_click |= 1;
+
+		switch (data->mouse_click >> 1) {
+			case 0: /* click */
+				break;
+
+			case 1: /* words */
+				window_copy_cursor_previous_word(wp,
+						options_get_string(&sess->options, "word-separators"));
+				break;
+
+			case 2: /* lines */
+				window_copy_cursor_start_of_line(wp);
+				break;
+
+			case 3: /* reset */
+				break;
+		}
+		if (button == MOUSE_1 || !s->sel.flag)
 			window_copy_start_selection(wp);
-			data->mouse_click ++;
-		case 2:
+	}
+
+	switch (data->mouse_click >> 1) {
+		case 0: /* click-drag */
+			break;
+
+		case 1: /* words */
 			(window_copy_selection_direction(wp) < 0 ? 
 				window_copy_cursor_previous_word : 
 				window_copy_cursor_next_word_end)(wp,
 					 options_get_string(&sess->options, "word-separators"));
 			break;
 
-		case 3: /* lines */
-			window_copy_cursor_start_of_line(wp);
-			window_copy_start_selection(wp);
-			data->mouse_click ++;
-		case 4:
+		case 2: /* lines */
 			(window_copy_selection_direction(wp) < 0 ?
 				window_copy_cursor_start_of_line :
 				window_copy_cursor_end_of_line)(wp);
 			break;
 
-		default: /* reset */
-			data->mouse_click = 0;
+		case 3: /* reset */
+			s->sel.flag = 0;
+			break;
 	}
 
 	if (button == MOUSE_UP) {
 		s->mode &= ~MODE_MOUSE_BUTTON;
 		s->mode |= MODE_MOUSE_STANDARD;
 
-		if (!moved)
+		if (m->x == data->mouse_x && m->y == data->mouse_y)
 			data->mouse_click ++;
 		else if (data->mouse_button == MOUSE_1)
 			goto reset_mode;
 		else
 			data->mouse_click = 0;
-	} else if (m->b & MOUSE_DRAG) {
-	} else if (!(data->mouse_click & 1)) {
-		s->mode &= ~MODE_MOUSE_STANDARD;
-		s->mode |= MODE_MOUSE_BUTTON;
-
-		if (!data->mouse_click) {
-			data->mouse_button = button;
-			data->mouse_x = m->x;
-			data->mouse_y = m->y;
-
-			if (button == MOUSE_1 || !s->sel.flag)
-				window_copy_start_selection(wp);
-		}
 	}
 
 	if (window_copy_update_selection(wp) && 
@@ -1272,6 +1281,8 @@ window_copy_update_cursor(struct window_pane *wp, u_int cx, u_int cy)
 	u_int				 old_cx, old_cy;
 
 	old_cx = data->cx; old_cy = data->cy;
+	if (old_cx == cx && old_cy == cy)
+		return;
 	data->cx = cx; data->cy = cy;
 	if (old_cx == screen_size_x(s))
 		window_copy_redraw_lines(wp, old_cy, 1);
