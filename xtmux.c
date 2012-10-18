@@ -177,7 +177,7 @@ struct xtmux {
 
 	Cursor		pointer;
 
-	struct client	*client; /* pointer back up to support redraws */
+	struct client	*client; /* TODO: remove, redundant with tty->client */
 	short		ioerror;
 };
 
@@ -254,7 +254,7 @@ xtmux_init(struct client *c, char *display)
 	if (!c->tty.ccolour)
 		c->tty.ccolour = xstrdup("");
 	
-	c->tty.xtmux->client = c;
+	c->tty.xtmux->client = c->tty.client = c;
 }
 
 static int
@@ -652,7 +652,7 @@ int
 xtmux_setup(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
-	struct options *o = &x->client->options;
+	struct options *o = &tty->client->options;
 	const char *font, *prefix;
 	KeySym pkey = NoSymbol;
 	XColor pfg, pbg;
@@ -671,9 +671,7 @@ xtmux_setup(struct tty *tty)
 			XSizeHints size_hints;
 
 			XGetGeometry(x->display, x->window, &root, &xpos, &ypos, &width, &height, &border, &depth);
-			tty->sx = width  / x->cw;
-			tty->sy = height / x->ch;
-
+			tty_set_size(tty, width/x->cw, height/x->ch);
 			XClearWindow(x->display, x->window);
 			recalculate_sizes();
 
@@ -806,7 +804,7 @@ xtmux_open(struct tty *tty, char **cause)
 		FAIL("could not create X window");
 
 	snprintf(windowid, sizeof(windowid), "%u", (unsigned)x->window);
-	environ_set(&x->client->environ, "WINDOWID", windowid);
+	environ_set(&tty->client->environ, "WINDOWID", windowid);
 
 	x->xim = XOpenIM(x->display, NULL, NULL, NULL);
 	if (x->xim)
@@ -2173,8 +2171,8 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 			{
 				/* this is a little hacky, and should be moved to input_mouse,
 				 * but we emulate xterm's behavior directly for now */
-				if (xev->button == Button2 && x->client->session && x->client->session->curw->window->active)
-					xtmux_paste(tty, x->client->session->curw->window->active, NULL, NULL);
+				if (xev->button == Button2 && tty->client->session && tty->client->session->curw->window->active)
+					xtmux_paste(tty, tty->client->session->curw->window->active, NULL, NULL);
 				return;
 			}
 			break;
@@ -2373,7 +2371,7 @@ xtmux_main(struct tty *tty)
 
 			case DestroyNotify:
 				if (xev.xdestroywindow.window == x->window)
-					x->client->flags |= CLIENT_EXIT;
+					tty->client->flags |= CLIENT_EXIT;
 				break;
 
 			default:
