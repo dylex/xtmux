@@ -204,7 +204,7 @@ input_mouse(struct window_pane *wp, struct mouse_event *m)
 	char	buf[10];
 	size_t	len;
 
-	if (wp->screen->mode & ALL_MOUSE_MODES) {
+	if ((wp->screen->mode & ALL_MOUSE_MODES) && !(m->b & MOUSE_PREFIX)) {
 		if (wp->screen->mode & MODE_MOUSE_UTF8) {
 			len = xsnprintf(buf, sizeof buf, "\033[M");
 			len += utf8_split2(m->b + 32, &buf[len]);
