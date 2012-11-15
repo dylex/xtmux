@@ -39,6 +39,7 @@ Documentation on new features can be found in the manpage.  Some highlights:
 
 Usage: 
   configure --enable-xtmux
+  make && make install
   tmux -x
 
 Dylan Simon <dylan-tmux@dylex.net>
