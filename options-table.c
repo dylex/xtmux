@@ -751,6 +751,11 @@ const struct options_table_entry client_options_table[] = {
 	  .default_str = ""
 	},
 
+	{ .name = "xtmux-name",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "xtmux"
+	},
+
 	{ .name = "xtmux-pointer-bg",
 	  .type = OPTIONS_TABLE_STRING,
 	  .default_str = "black"

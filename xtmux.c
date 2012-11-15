@@ -648,6 +648,16 @@ xt_size_hints(struct xtmux *x, XSizeHints *sh)
 	sh->flags = PMinSize | PResizeInc;
 }
 
+static void
+xt_class_hints(struct tty *tty, XClassHint *ch)
+{
+	struct options *o = &tty->client->options;
+	memset(ch, 0, sizeof(*ch));
+
+	ch->res_name = options_get_string(o, "xtmux-name");
+	ch->res_class = (char *)"Xtmux";
+}
+
 int
 xtmux_setup(struct tty *tty)
 {
@@ -658,6 +668,14 @@ xtmux_setup(struct tty *tty)
 	XColor pfg, pbg;
 
 	XENTRY(-1);
+	
+	if (x->window)
+	{
+		XClassHint class_hints;
+		xt_class_hints(tty, &class_hints);
+		/* UTF-8? */
+		XSetClassHint(x->display, x->window, &class_hints);
+	}
 
 	font = options_get_string(o, "xtmux-font");
 	if (xt_load_font(x, 0, font) > 0 || 
@@ -826,9 +844,8 @@ xtmux_open(struct tty *tty, char **cause)
 	wm_hints.input = True;
 	wm_hints.initial_state = NormalState;
 	wm_hints.flags = InputHint | StateHint;
-	class_hints.res_name = (char *)"xtmux";
-	class_hints.res_class = (char *)"Xtmux";
-	Xutf8SetWMProperties(x->display, x->window, "xtmux", "xtmux", NULL, 0, &size_hints, &wm_hints, &class_hints);
+	xt_class_hints(tty, &class_hints);
+	Xutf8SetWMProperties(x->display, x->window, class_hints.res_name, class_hints.res_name, NULL, 0, &size_hints, &wm_hints, &class_hints);
 
 	gc_values.foreground = x->fg;
 	gc_values.background = x->bg;
