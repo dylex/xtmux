@@ -1825,14 +1825,14 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 }
 
 /* cheat a little: */
-extern void cmd_paste_buffer_filter(struct window_pane *, const char *, size_t, const char *);
+extern void cmd_paste_buffer_filter(struct window_pane *, const char *, size_t, const char *, int bracket);
 
 static void
 do_paste(const struct paste_ctx *p, const char *data, size_t size)
 {
 
 	if (p->sep)
-		cmd_paste_buffer_filter(p->wp, data, size, p->sep);
+		cmd_paste_buffer_filter(p->wp, data, size, p->sep, 0);
 	else
 		bufferevent_write(p->wp->event, data, size);
 }
