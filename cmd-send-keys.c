@@ -27,12 +27,22 @@
  * Send keys to client.
  */
 
-enum cmd_retval	 cmd_send_keys_exec(struct cmd *, struct cmd_ctx *);
+enum cmd_retval	 cmd_send_keys_exec(struct cmd *, struct cmd_q *);
 
 const struct cmd_entry cmd_send_keys_entry = {
 	"send-keys", "send",
 	"lRt:", 0, -1,
-	"[-lR] [-t target-pane] key ...",
+	"[-lR] " CMD_TARGET_PANE_USAGE " key ...",
+	0,
+	NULL,
+	NULL,
+	cmd_send_keys_exec
+};
+
+const struct cmd_entry cmd_send_prefix_entry = {
+	"send-prefix", NULL,
+	"2t:", 0, 0,
+	"[-2] " CMD_TARGET_PANE_USAGE,
 	0,
 	NULL,
 	NULL,
@@ -40,7 +50,7 @@ const struct cmd_entry cmd_send_keys_entry = {
 };
 
 enum cmd_retval
-cmd_send_keys_exec(struct cmd *self, struct cmd_ctx *ctx)
+cmd_send_keys_exec(struct cmd *self, struct cmd_q *cmdq)
 {
 	struct args		*args = self->args;
 	struct window_pane	*wp;
@@ -49,8 +59,17 @@ cmd_send_keys_exec(struct cmd *self, struct cmd_ctx *ctx)
 	const char		*str;
 	int			 i, key;
 
-	if (cmd_find_pane(ctx, args_get(args, 't'), &s, &wp) == NULL)
+	if (cmd_find_pane(cmdq, args_get(args, 't'), &s, &wp) == NULL)
 		return (CMD_RETURN_ERROR);
+
+	if (self->entry == &cmd_send_prefix_entry) {
+		if (args_has(args, '2'))
+			key = options_get_number(&s->options, "prefix2");
+		else
+			key = options_get_number(&s->options, "prefix");
+		window_pane_key(wp, s, key);
+		return (CMD_RETURN_NORMAL);
+	}
 
 	if (args_has(args, 'R')) {
 		ictx = &wp->ictx;

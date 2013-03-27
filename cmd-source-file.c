@@ -26,7 +26,10 @@
  * Sources a configuration file.
  */
 
-enum cmd_retval	 cmd_source_file_exec(struct cmd *, struct cmd_ctx *);
+enum cmd_retval	cmd_source_file_exec(struct cmd *, struct cmd_q *);
+
+void		cmd_source_file_show(struct cmd_q *);
+void		cmd_source_file_done(struct cmd_q *);
 
 const struct cmd_entry cmd_source_file_entry = {
 	"source-file", "source",
@@ -39,38 +42,67 @@ const struct cmd_entry cmd_source_file_entry = {
 };
 
 enum cmd_retval
-cmd_source_file_exec(struct cmd *self, struct cmd_ctx *ctx)
+cmd_source_file_exec(struct cmd *self, struct cmd_q *cmdq)
 {
-	struct args		*args = self->args;
-	struct causelist	 causes;
-	char			*cause;
-	struct window_pane	*wp;
-	int			 retval;
-	u_int			 i;
+	struct args	*args = self->args;
+	struct cmd_q	*cmdq1;
+	char		*cause;
 
-	ARRAY_INIT(&causes);
+	cmdq1 = cmdq_new(NULL);
+	cmdq1->emptyfn = cmd_source_file_done;
+	cmdq1->data = cmdq;
 
-	retval = load_cfg(args->argv[0], ctx, &causes);
-	if (ARRAY_EMPTY(&causes))
-		return (retval);
-
-	if (retval == 1 && !RB_EMPTY(&sessions) && ctx->cmdclient != NULL) {
-		wp = RB_MIN(sessions, &sessions)->curw->window->active;
-		window_pane_set_mode(wp, &window_copy_mode);
-		window_copy_init_for_output(wp);
-		for (i = 0; i < ARRAY_LENGTH(&causes); i++) {
-			cause = ARRAY_ITEM(&causes, i);
-			window_copy_add(wp, "%s", cause);
+	switch (load_cfg(args->argv[0], cmdq1, &cause)) {
+	case -1:
+		if (cfg_references == 0) {
+			cmdq_free(cmdq1);
+			cmdq_error(cmdq, "%s", cause);
 			free(cause);
+			return (CMD_RETURN_ERROR);
 		}
-	} else {
-		for (i = 0; i < ARRAY_LENGTH(&causes); i++) {
-			cause = ARRAY_ITEM(&causes, i);
-			ctx->print(ctx, "%s", cause);
-			free(cause);
-		}
+		ARRAY_ADD(&cfg_causes, cause);
+		/* FALLTHROUGH */
+	case 0:
+		if (cfg_references == 0)
+			cmd_source_file_show(cmdq);
+		cmdq_free(cmdq1);
+		return (CMD_RETURN_NORMAL);
 	}
-	ARRAY_FREE(&causes);
 
-	return (retval);
+	cmdq->references++;
+	cfg_references++;
+
+	cmdq_continue(cmdq1);
+	return (CMD_RETURN_WAIT);
+}
+
+void
+cmd_source_file_show(struct cmd_q *cmdq)
+{
+	u_int	 i;
+	char	*cause;
+
+	for (i = 0; i < ARRAY_LENGTH(&cfg_causes); i++) {
+		cause = ARRAY_ITEM(&cfg_causes, i);
+		cmdq_print(cmdq, "%s", cause);
+		free(cause);
+	}
+	ARRAY_FREE(&cfg_causes);
+}
+
+void
+cmd_source_file_done(struct cmd_q *cmdq1)
+{
+	struct cmd_q	*cmdq = cmdq1->data;
+
+	cmdq_free(cmdq1);
+
+	cfg_references--;
+
+	if (cmdq_free(cmdq))
+		return;
+
+	if (cfg_references == 0)
+		cmd_source_file_show(cmdq);
+	cmdq_continue(cmdq);
 }

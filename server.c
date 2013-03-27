@@ -105,11 +105,9 @@ server_create_socket(void)
 int
 server_start(int lockfd, char *lockfile)
 {
-	struct window_pane	*wp;
-	int	 		 pair[2];
-	char			*cause;
-	struct timeval		 tv;
-	u_int			 i;
+	int	 	 pair[2];
+	struct timeval	 tv;
+	char		*cause;
 	pid_t			 child;
 	int			 childstat = -1;
 
@@ -170,31 +168,28 @@ server_start(int lockfd, char *lockfile)
 	free(lockfile);
 	close(lockfd);
 
-	if (access(SYSTEM_CFG, R_OK) == 0)
-		load_cfg(SYSTEM_CFG, NULL, &cfg_causes);
-	else if (errno != ENOENT) {
-		cfg_add_cause(
-		    &cfg_causes, "%s: %s", strerror(errno), SYSTEM_CFG);
-	}
-	if (cfg_file != NULL)
-		load_cfg(cfg_file, NULL, &cfg_causes);
+	cfg_cmd_q = cmdq_new(NULL);
+	cfg_cmd_q->emptyfn = cfg_default_done;
+	cfg_finished = 0;
+	cfg_references = 1;
+	ARRAY_INIT(&cfg_causes);
 
-	/*
-	 * If there is a session already, put the current window and pane into
-	 * more mode.
-	 */
-	if (!RB_EMPTY(&sessions) && !ARRAY_EMPTY(&cfg_causes)) {
-		wp = RB_MIN(sessions, &sessions)->curw->window->active;
-		window_pane_set_mode(wp, &window_copy_mode);
-		window_copy_init_for_output(wp);
-		for (i = 0; i < ARRAY_LENGTH(&cfg_causes); i++) {
-			cause = ARRAY_ITEM(&cfg_causes, i);
-			window_copy_add(wp, "%s", cause);
-			free(cause);
+	if (access(SYSTEM_CFG, R_OK) == 0) {
+		if (load_cfg(SYSTEM_CFG, cfg_cmd_q, &cause) == -1) {
+			xasprintf(&cause, "%s: %s", SYSTEM_CFG, cause);
+			ARRAY_ADD(&cfg_causes, cause);
 		}
-		ARRAY_FREE(&cfg_causes);
+	} else if (errno != ENOENT) {
+		xasprintf(&cause, "%s: %s", SYSTEM_CFG, strerror(errno));
+		ARRAY_ADD(&cfg_causes, cause);
 	}
-	cfg_finished = 1;
+	if (cfg_file != NULL) {
+		if (load_cfg(cfg_file, cfg_cmd_q, &cause) == -1) {
+			xasprintf(&cause, "%s: %s", cfg_file, cause);
+			ARRAY_ADD(&cfg_causes, cause);
+		}
+	}
+	cmdq_continue(cfg_cmd_q);
 
 	server_add_accept(0);
 
@@ -332,7 +327,6 @@ server_update_socket(void)
 }
 
 /* Callback for server socket. */
-/* ARGSUSED */
 void
 server_accept_callback(int fd, short events, unused void *data)
 {
@@ -386,7 +380,6 @@ server_add_accept(int timeout)
 }
 
 /* Signal handler. */
-/* ARGSUSED */
 void
 server_signal_callback(int sig, unused short events, unused void *data)
 {
@@ -482,7 +475,6 @@ server_child_stopped(pid_t pid, int status)
 }
 
 /* Handle once-per-second timer events. */
-/* ARGSUSED */
 void
 server_second_callback(unused int fd, unused short events, unused void *arg)
 {
