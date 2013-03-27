@@ -17,6 +17,7 @@
  */
 
 #include <sys/types.h>
+#include <sys/ioctl.h>
 
 #include <event.h>
 #include <fcntl.h>
@@ -27,23 +28,21 @@
 
 #include "tmux.h"
 
-void	server_client_check_mouse(struct client *, struct window_pane *,
-	    struct mouse_event *);
+void	server_client_check_focus(struct window_pane *);
+void	server_client_check_resize(struct window_pane *);
+void	server_client_check_mouse(struct client *, struct window_pane *);
 void	server_client_repeat_timer(int, short, void *);
 void	server_client_check_exit(struct client *);
 void	server_client_check_redraw(struct client *);
 void	server_client_set_title(struct client *);
 void	server_client_reset_state(struct client *);
+int	server_client_assume_paste(struct session *);
 
 int	server_client_msg_dispatch(struct client *);
 void	server_client_msg_command(struct client *, struct msg_command_data *);
 void	server_client_msg_identify(
 	    struct client *, struct msg_identify_data *, int);
 void	server_client_msg_shell(struct client *);
-
-void printflike2 server_client_msg_error(struct cmd_ctx *, const char *, ...);
-void printflike2 server_client_msg_print(struct cmd_ctx *, const char *, ...);
-void printflike2 server_client_msg_info(struct cmd_ctx *, const char *, ...);
 
 /* Create a new client. */
 void
@@ -62,6 +61,9 @@ server_client_create(int fd)
 	if (gettimeofday(&c->creation_time, NULL) != 0)
 		fatal("gettimeofday failed");
 	memcpy(&c->activity_time, &c->creation_time, sizeof c->activity_time);
+
+	c->cmdq = cmdq_new(c);
+	c->cmdq->client_exit = 1;
 
 	c->stdin_data = evbuffer_new ();
 	c->stdout_data = evbuffer_new ();
@@ -86,8 +88,14 @@ server_client_create(int fd)
 	c->prompt_buffer = NULL;
 	c->prompt_index = 0;
 
-	c->last_mouse.b = MOUSE_UP;
-	c->last_mouse.x = c->last_mouse.y = -1;
+	c->tty.mouse.xb = c->tty.mouse.button = 3;
+	c->tty.mouse.x = c->tty.mouse.y = -1;
+	c->tty.mouse.lx = c->tty.mouse.ly = -1;
+	c->tty.mouse.sx = c->tty.mouse.sy = -1;
+	c->tty.mouse.event = MOUSE_EVENT_UP;
+	c->tty.mouse.flags = 0;
+
+	c->flags |= CLIENT_FOCUSED;
 
 	evtimer_set(&c->repeat_timer, server_client_repeat_timer, c);
 
@@ -151,7 +159,8 @@ server_client_lost(struct client *c)
 
 	evbuffer_free (c->stdin_data);
 	evbuffer_free (c->stdout_data);
-	evbuffer_free (c->stderr_data);
+	if (c->stderr_data != c->stdout_data)
+		evbuffer_free (c->stderr_data);
 
 	status_free_jobs(&c->status_new);
 	status_free_jobs(&c->status_old);
@@ -176,6 +185,10 @@ server_client_lost(struct client *c)
 	free(c->prompt_string);
 	free(c->prompt_buffer);
 	free(c->cwd);
+
+	c->cmdq->dead = 1;
+	cmdq_free(c->cmdq);
+	c->cmdq = NULL;
 
 	environ_free(&c->environ);
 
@@ -278,37 +291,28 @@ server_client_status_timer(void)
 
 /* Check for mouse keys. */
 void
-server_client_check_mouse(
-    struct client *c, struct window_pane *wp, struct mouse_event *mouse)
+server_client_check_mouse(struct client *c, struct window_pane *wp)
 {
-	struct session	*s = c->session;
-	struct options	*oo = &s->options;
-	int		 statusat;
+	struct session		*s = c->session;
+	struct options		*oo = &s->options;
+	struct mouse_event	*m = &c->tty.mouse;
+	int			 statusat;
 
 	statusat = status_at_line(c);
 
 	/* Is this a window selection click on the status line? */
-	if (statusat != -1 && mouse->y == (u_int)statusat &&
+	if (statusat != -1 && m->y == (u_int)statusat &&
 	    options_get_number(oo, "mouse-select-window")) {
-		if (mouse->b == MOUSE_UP && c->last_mouse.b != MOUSE_UP) {
-			status_set_window_at(c, mouse->x);
-			recalculate_sizes();
-			return;
-		}
-		if (mouse->b & MOUSE_45) {
-			if ((mouse->b & MOUSE_BUTTON) == MOUSE_1) {
+		if (m->event & MOUSE_EVENT_CLICK) {
+			status_set_window_at(c, m->x);
+		} else if (m->event == MOUSE_EVENT_WHEEL) {
+			if (m->wheel == MOUSE_WHEEL_UP)
 				session_previous(c->session, 0);
-				server_redraw_session(s);
-				recalculate_sizes();
-			}
-			if ((mouse->b & MOUSE_BUTTON) == MOUSE_2) {
+			else if (m->wheel == MOUSE_WHEEL_DOWN)
 				session_next(c->session, 0);
-				server_redraw_session(s);
-				recalculate_sizes();
-			}
-			return;
+			server_redraw_session(s);
 		}
-		memcpy(&c->last_mouse, mouse, sizeof c->last_mouse);
+		recalculate_sizes();
 		return;
 	}
 
@@ -317,32 +321,46 @@ server_client_check_mouse(
 	 * top and limit if at the bottom. From here on a struct mouse
 	 * represents the offset onto the window itself.
 	 */
-	if (statusat == 0 &&mouse->y > 0)
-		mouse->y--;
-	else if (statusat > 0 && mouse->y >= (u_int)statusat)
-		mouse->y = statusat - 1;
+	if (statusat == 0 && m->y > 0)
+		m->y--;
+	else if (statusat > 0 && m->y >= (u_int)statusat)
+		m->y = statusat - 1;
 
 	/* Is this a pane selection? Allow down only in copy mode. */
 	if (options_get_number(oo, "mouse-select-pane") &&
-	    ((!(mouse->b & MOUSE_DRAG) && mouse->b != MOUSE_UP) ||
-	    wp->mode != &window_copy_mode)) {
-		window_set_active_at(wp->window, mouse->x, mouse->y);
+	    (m->event == MOUSE_EVENT_DOWN || wp->mode != &window_copy_mode)) {
+		window_set_active_at(wp->window, m->x, m->y);
 		if (wp != wp->window->active)
 		{
-			server_redraw_window_borders(wp->window);
-			if ("mouse-select-pane-only")
-				return;
-			wp = wp->window->active; /* may have changed */
+		server_redraw_window_borders(wp->window);
+		if ("mouse-select-pane-only")
+			return;
+		wp = wp->window->active; /* may have changed */
 		}
 	}
 
 	/* Check if trying to resize pane. */
 	if (options_get_number(oo, "mouse-resize-pane"))
-		layout_resize_pane_mouse(c, mouse);
+		layout_resize_pane_mouse(c);
 
 	/* Update last and pass through to client. */
-	memcpy(&c->last_mouse, mouse, sizeof c->last_mouse);
-	window_pane_mouse(wp, c->session, mouse);
+	window_pane_mouse(wp, c->session, m);
+}
+
+/* Is this fast enough to probably be a paste? */
+int
+server_client_assume_paste(struct session *s)
+{
+	struct timeval	tv;
+	int		t;
+
+	if ((t = options_get_number(&s->options, "assume-paste-time")) == 0)
+		return (0);
+
+	timersub(&s->activity_time, &s->last_activity_time, &tv);
+	if (tv.tv_sec == 0 && tv.tv_usec < t * 1000)
+		return (1);
+	return (0);
 }
 
 /* Handle data key input from client. */
@@ -354,11 +372,12 @@ server_client_handle_key(struct client *c, int key)
 	struct window_pane	*wp;
 	struct timeval		 tv;
 	struct key_binding	*bd;
-	int		      	 xtimeout, isprefix;
+	int		      	 xtimeout, isprefix, ispaste;
 
 	/* Check the client is good to accept input. */
 	if ((c->flags & (CLIENT_DEAD|CLIENT_SUSPENDED)) != 0)
 		return;
+
 	if (c->session == NULL)
 		return;
 	s = c->session;
@@ -366,6 +385,9 @@ server_client_handle_key(struct client *c, int key)
 	/* Update the activity timer. */
 	if (gettimeofday(&c->activity_time, NULL) != 0)
 		fatal("gettimeofday failed");
+
+	memcpy(&s->last_activity_time, &s->activity_time,
+	    sizeof s->last_activity_time);
 	memcpy(&s->activity_time, &c->activity_time, sizeof s->activity_time);
 
 	w = c->session->curw->window;
@@ -375,6 +397,7 @@ server_client_handle_key(struct client *c, int key)
 	if (c->flags & CLIENT_IDENTIFY && key >= '0' && key <= '9') {
 		if (c->flags & CLIENT_READONLY)
 			return;
+		window_unzoom(w);
 		wp = window_pane_at_index(w, key - '0');
 		if (wp != NULL && window_pane_visible(wp))
 			window_set_active_pane(w, wp);
@@ -397,37 +420,45 @@ server_client_handle_key(struct client *c, int key)
 	if (key == KEYC_MOUSE) {
 		if (c->flags & CLIENT_READONLY)
 			return;
-		server_client_check_mouse(c, wp, &c->tty.mouse);
+		server_client_check_mouse(c, wp);
 		return;
 	}
 
 	/* Is this a prefix key? */
 	if (key == KEYC_PREFIX)
 		isprefix = 1;
-	else if (key == options_get_number(&c->session->options, "prefix"))
+	else if (key == options_get_number(&s->options, "prefix"))
 		isprefix = 1;
-	else if (key == options_get_number(&c->session->options, "prefix2"))
+	else if (key == options_get_number(&s->options, "prefix2"))
 		isprefix = 1;
 	else
 		isprefix = 0;
 
+	/* Treat prefix as a regular key when pasting is detected. */
+	ispaste = server_client_assume_paste(s);
+	if (ispaste)
+		isprefix = 0;
+
 	/* No previous prefix key. */
 	if (!(c->flags & CLIENT_PREFIX)) {
-		if (isprefix)
+		if (isprefix) {
 			c->flags |= CLIENT_PREFIX;
-		else {
-			/* Try as a non-prefix key binding. */
-			if ((bd = key_bindings_lookup(key)) == NULL) {
-				if (!(c->flags & CLIENT_READONLY))
-					window_pane_key(wp, c->session, key);
-			} else
-				key_bindings_dispatch(bd, c);
+			server_status_client(c);
+			return;
 		}
+
+		/* Try as a non-prefix key binding. */
+		if (ispaste || (bd = key_bindings_lookup(key)) == NULL) {
+			if (!(c->flags & CLIENT_READONLY))
+				window_pane_key(wp, s, key);
+		} else
+			key_bindings_dispatch(bd, c);
 		return;
 	}
 
 	/* Prefix key already pressed. Reset prefix and lookup key. */
 	c->flags &= ~CLIENT_PREFIX;
+	server_status_client(c);
 	if ((bd = key_bindings_lookup(key | KEYC_PREFIX)) == NULL) {
 		/* If repeating, treat this as a key, else ignore. */
 		if (c->flags & CLIENT_REPEAT) {
@@ -435,7 +466,7 @@ server_client_handle_key(struct client *c, int key)
 			if (isprefix)
 				c->flags |= CLIENT_PREFIX;
 			else if (!(c->flags & CLIENT_READONLY))
-				window_pane_key(wp, c->session, key);
+				window_pane_key(wp, s, key);
 		}
 		return;
 	}
@@ -446,12 +477,12 @@ server_client_handle_key(struct client *c, int key)
 		if (isprefix)
 			c->flags |= CLIENT_PREFIX;
 		else if (!(c->flags & CLIENT_READONLY))
-			window_pane_key(wp, c->session, key);
+			window_pane_key(wp, s, key);
 		return;
 	}
 
 	/* If this key can repeat, reset the repeat flags and timer. */
-	xtimeout = options_get_number(&c->session->options, "repeat-time");
+	xtimeout = options_get_number(&s->options, "repeat-time");
 	if (xtimeout != 0 && bd->can_repeat) {
 		c->flags |= CLIENT_PREFIX|CLIENT_REPEAT;
 
@@ -488,7 +519,7 @@ server_client_loop(void)
 
 	/*
 	 * Any windows will have been redrawn as part of clients, so clear
-	 * their flags now.
+	 * their flags now. Also check pane focus and resize.
 	 */
 	for (i = 0; i < ARRAY_LENGTH(&windows); i++) {
 		w = ARRAY_ITEM(&windows, i);
@@ -496,9 +527,90 @@ server_client_loop(void)
 			continue;
 
 		w->flags &= ~WINDOW_REDRAW;
-		TAILQ_FOREACH(wp, &w->panes, entry)
+		TAILQ_FOREACH(wp, &w->panes, entry) {
+			server_client_check_focus(wp);
+			server_client_check_resize(wp);
 			wp->flags &= ~PANE_REDRAW;
+		}
 	}
+}
+
+/* Check if pane should be resized. */
+void
+server_client_check_resize(struct window_pane *wp)
+{
+	struct winsize	ws;
+
+	if (wp->fd == -1 || !(wp->flags & PANE_RESIZE))
+		return;
+
+	memset(&ws, 0, sizeof ws);
+	ws.ws_col = wp->sx;
+	ws.ws_row = wp->sy;
+
+	if (ioctl(wp->fd, TIOCSWINSZ, &ws) == -1) {
+#ifdef __sun
+		/*
+		 * Some versions of Solaris apparently can return an error when
+		 * resizing; don't know why this happens, can't reproduce on
+		 * other platforms and ignoring it doesn't seem to cause any
+		 * issues.
+		 */
+		if (errno != EINVAL)
+#endif
+		fatal("ioctl failed");
+	}
+
+	wp->flags &= ~PANE_RESIZE;
+}
+
+/* Check whether pane should be focused. */
+void
+server_client_check_focus(struct window_pane *wp)
+{
+	u_int		 i;
+	struct client	*c;
+
+	/* If we don't care about focus, forget it. */
+	if (!(wp->base.mode & MODE_FOCUSON))
+		return;
+
+	/* If we're not the active pane in our window, we're not focused. */
+	if (wp->window->active != wp)
+		goto not_focused;
+
+	/* If we're in a mode, we're not focused. */
+	if (wp->screen != &wp->base)
+		goto not_focused;
+
+	/*
+	 * If our window is the current window in any focused clients with an
+	 * attached session, we're focused.
+	 */
+	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
+		c = ARRAY_ITEM(&clients, i);
+		if (c == NULL || c->session == NULL)
+			continue;
+
+		if (!(c->flags & CLIENT_FOCUSED))
+			continue;
+		if (c->session->flags & SESSION_UNATTACHED)
+			continue;
+
+		if (c->session->curw->window == wp->window)
+			goto focused;
+	}
+
+not_focused:
+	if (wp->flags & PANE_FOCUSED)
+		bufferevent_write(wp->event, "\033[O", 3);
+	wp->flags &= ~PANE_FOCUSED;
+	return;
+
+focused:
+	if (!(wp->flags & PANE_FOCUSED))
+		bufferevent_write(wp->event, "\033[I", 3);
+	wp->flags |= PANE_FOCUSED;
 }
 
 /*
@@ -523,6 +635,9 @@ server_client_reset_state(struct client *c)
 	if (c->flags & CLIENT_SUSPENDED)
 		return;
 
+	if (c->flags & CLIENT_CONTROL)
+		return;
+
 	tty_region(&c->tty, 0, c->tty.sy - 1);
 
 	status = options_get_number(oo, "status");
@@ -538,7 +653,7 @@ server_client_reset_state(struct client *c)
 	 * a smooth appearance.
 	 */
 	mode = s->mode;
-	if ((c->last_mouse.b & MOUSE_RESIZE_PANE) &&
+	if ((c->tty.mouse.flags & MOUSE_RESIZE_PANE) &&
 	    !(mode & (MODE_MOUSE_BUTTON|MODE_MOUSE_ANY)))
 		mode |= MODE_MOUSE_BUTTON;
 
@@ -577,14 +692,16 @@ server_client_reset_state(struct client *c)
 }
 
 /* Repeat time callback. */
-/* ARGSUSED */
 void
 server_client_repeat_timer(unused int fd, unused short events, void *data)
 {
 	struct client	*c = data;
 
-	if (c->flags & CLIENT_REPEAT)
+	if (c->flags & CLIENT_REPEAT) {
+		if (c->flags & CLIENT_PREFIX)
+			server_status_client(c);
 		c->flags &= ~(CLIENT_PREFIX|CLIENT_REPEAT);
+	}
 }
 
 /* Check if client should be exited. */
@@ -617,7 +734,7 @@ server_client_check_redraw(struct client *c)
 	struct window_pane	*wp;
 	int		 	 flags, redraw;
 
-	if (c->flags & CLIENT_SUSPENDED
+	if (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED)
 		|| c->tty.flags & TTY_UNMAPPED)
 		return;
 
@@ -760,6 +877,8 @@ server_client_msg_dispatch(struct client *c)
 			if (datalen != 0)
 				fatalx("bad MSG_RESIZE size");
 
+			if (c->flags & CLIENT_CONTROL)
+				break;
 			if (tty_resize(&c->tty)) {
 				recalculate_sizes();
 				server_redraw_client(c);
@@ -814,74 +933,18 @@ server_client_msg_dispatch(struct client *c)
 	}
 }
 
-/* Callback to send error message to client. */
-void printflike2
-server_client_msg_error(struct cmd_ctx *ctx, const char *fmt, ...)
-{
-	va_list	ap;
-
-	va_start(ap, fmt);
-	evbuffer_add_vprintf(ctx->cmdclient->stderr_data, fmt, ap);
-	va_end(ap);
-
-	evbuffer_add(ctx->cmdclient->stderr_data, "\n", 1);
-	server_push_stderr(ctx->cmdclient);
-	ctx->cmdclient->retcode = 1;
-}
-
-/* Callback to send print message to client. */
-void printflike2
-server_client_msg_print(struct cmd_ctx *ctx, const char *fmt, ...)
-{
-	va_list	ap;
-
-	va_start(ap, fmt);
-	evbuffer_add_vprintf(ctx->cmdclient->stdout_data, fmt, ap);
-	va_end(ap);
-
-	evbuffer_add(ctx->cmdclient->stdout_data, "\n", 1);
-	server_push_stdout(ctx->cmdclient);
-}
-
-/* Callback to send print message to client, if not quiet. */
-void printflike2
-server_client_msg_info(struct cmd_ctx *ctx, const char *fmt, ...)
-{
-	va_list	ap;
-
-	if (options_get_number(&global_options, "quiet"))
-		return;
-
-	va_start(ap, fmt);
-	evbuffer_add_vprintf(ctx->cmdclient->stdout_data, fmt, ap);
-	va_end(ap);
-
-	evbuffer_add(ctx->cmdclient->stdout_data, "\n", 1);
-	server_push_stdout(ctx->cmdclient);
-}
-
 /* Handle command message. */
 void
 server_client_msg_command(struct client *c, struct msg_command_data *data)
 {
-	struct cmd_ctx	 ctx;
 	struct cmd_list	*cmdlist = NULL;
 	int		 argc;
 	char	       **argv, *cause;
 
-	ctx.error = server_client_msg_error;
-	ctx.print = server_client_msg_print;
-	ctx.info = server_client_msg_info;
-
-	ctx.msgdata = data;
-	ctx.curclient = NULL;
-
-	ctx.cmdclient = c;
-
 	argc = data->argc;
 	data->argv[(sizeof data->argv) - 1] = '\0';
 	if (cmd_unpack_argv(data->argv, sizeof data->argv, argc, &argv) != 0) {
-		server_client_msg_error(&ctx, "command too long");
+		cmdq_error(c->cmdq, "command too long");
 		goto error;
 	}
 
@@ -891,29 +954,21 @@ server_client_msg_command(struct client *c, struct msg_command_data *data)
 		*argv = xstrdup("new-session");
 	}
 
-	if ((cmdlist = cmd_list_parse(argc, argv, &cause)) == NULL) {
-		server_client_msg_error(&ctx, "%s", cause);
+	if ((cmdlist = cmd_list_parse(argc, argv, NULL, 0, &cause)) == NULL) {
+		cmdq_error(c->cmdq, "%s", cause);
 		cmd_free_argv(argc, argv);
 		goto error;
 	}
 	cmd_free_argv(argc, argv);
 
-	switch (cmd_list_exec(cmdlist, &ctx))
-	{
-	case CMD_RETURN_ERROR:
-	case CMD_RETURN_NORMAL:
-		c->flags |= CLIENT_EXIT;
-		break;
-	case CMD_RETURN_ATTACH:
-	case CMD_RETURN_YIELD:
-		break;
-	}
+	cmdq_run(c->cmdq, cmdlist);
 	cmd_list_free(cmdlist);
 	return;
 
 error:
 	if (cmdlist != NULL)
 		cmd_list_free(cmdlist);
+
 	c->flags |= CLIENT_EXIT;
 }
 
@@ -929,7 +984,11 @@ server_client_msg_identify(
 
 	if (data->flags & IDENTIFY_CONTROL) {
 		c->stdin_callback = control_callback;
-		c->flags |= (CLIENT_CONTROL|CLIENT_SUSPENDED);
+		evbuffer_free(c->stderr_data);
+		c->stderr_data = c->stdout_data;
+		c->flags |= CLIENT_CONTROL;
+		if (data->flags & IDENTIFY_TERMIOS)
+			evbuffer_add_printf(c->stdout_data, "\033P1000p");
 		server_write_client(c, MSG_STDIN, NULL, 0);
 
 		c->tty.fd = -1;
@@ -954,7 +1013,8 @@ server_client_msg_identify(
 
 	tty_resize(&c->tty);
 
-	c->flags |= CLIENT_TERMINAL;
+	if (!(data->flags & IDENTIFY_CONTROL))
+		c->flags |= CLIENT_TERMINAL;
 }
 
 /* Handle shell message. */

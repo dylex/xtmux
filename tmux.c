@@ -49,7 +49,7 @@ char		 socket_path[MAXPATHLEN];
 int		 login_shell;
 char		*environ_path;
 pid_t		 environ_pid = -1;
-int		 environ_idx = -1;
+int		 environ_session_id = -1;
 #ifdef XTMUX
 char		*xdisplay = NULL;
 #endif
@@ -151,36 +151,30 @@ parseenvironment(void)
 {
 	char	*env, path[256];
 	long	 pid;
-	int	 idx;
+	int	 id;
 
 	if ((env = getenv("TMUX")) == NULL)
 		return;
 
-	if (sscanf(env, "%255[^,],%ld,%d", path, &pid, &idx) != 3)
+	if (sscanf(env, "%255[^,],%ld,%d", path, &pid, &id) != 3)
 		return;
 	environ_path = xstrdup(path);
 	environ_pid = pid;
-	environ_idx = idx;
+	environ_session_id = id;
 }
 
 char *
 makesocketpath(const char *label)
 {
-	char		base[MAXPATHLEN], *path;
-	const char	*s;
-	size_t		l;
+	char		base[MAXPATHLEN], realbase[MAXPATHLEN], *path, *s;
 	struct stat	sb;
 	u_int		uid;
 
 	uid = getuid();
 	if ((s = getenv("TMPDIR")) == NULL || *s == '\0')
-		s = _PATH_TMP;
-	if (realpath(s, base) == NULL)
-		strlcpy(base, s, sizeof base);
-	l = strlen(base);
-	while (l > 0 && base[l-1] == '/')
-		l--;
-	xsnprintf(&base[l], sizeof base - l, "/tmux-%u", uid);
+		xsnprintf(base, sizeof base, "%s/tmux-%u", _PATH_TMP, uid);
+	else
+		xsnprintf(base, sizeof base, "%s/tmux-%u", s, uid);
 
 	if (mkdir(base, S_IRWXU) != 0 && errno != EEXIST)
 		return (NULL);
@@ -196,7 +190,10 @@ makesocketpath(const char *label)
 		return (NULL);
 	}
 
-	xasprintf(&path, "%s/%s", base, label);
+	if (realpath(base, realbase) == NULL)
+		strlcpy(realbase, base, sizeof realbase);
+
+	xasprintf(&path, "%s/%s", realbase, label);
 	return (path);
 }
 
@@ -414,8 +411,7 @@ main(int argc, char **argv)
 		}
 	}
 	free(label);
-	if (realpath(path, socket_path) == NULL)
-		strlcpy(socket_path, path, sizeof socket_path);
+	strlcpy(socket_path, path, sizeof socket_path);
 	free(path);
 
 #ifdef HAVE_SETPROCTITLE

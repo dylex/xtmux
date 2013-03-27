@@ -1,45 +1,60 @@
-tmux: X edition, under development
+Welcome to tmux!
 
-This is a fork of tmux that has a built-in X-terminal (ala xterm, rxvt, etc.).
-See NOTES for more information on tmux itself.  Aside from the new features,
-xtmux is binary-compatible with tmux (i.e., a tmux client can talk to an xtmux
-server just fine), and building with --disable-xtmux should result in an
-exact, original tmux.
+tmux is a "terminal multiplexer", it enables a number of terminals (or windows)
+to be accessed and controlled from a single terminal. tmux is intended to be a
+simple, modern, BSD-licensed alternative to programs such as GNU screen.
 
-The motivation for this is efficiency: normally when you run tmux (or screen)
-in an xterm, all the terminal control commands from programs are interpreted by
-tmux, kept in a screen buffer, translated and sent to the xterm, interpreted by
-the xterm, buffered again and rendered.  With xtmux, we can eliminate more that
-half of that processing and memory usage.  Additionally, a single tmux server
-will be able to manage multiple terminal windows, further saving memory.
+This release runs on OpenBSD, FreeBSD, NetBSD, Linux and OS X and may still
+run on Solaris and AIX (although they haven't been tested in a while).
 
-Documentation on new features can be found in the manpage.  Some highlights:
+Since the 1.2 release tmux depends on libevent. Download it from:
 
-  Option xtmux-prefix allows more flexible binding of the prefix key, including
-  modifier keys (e.g., "Alt-c" instead of "^B c").
+	http://www.monkey.org/~provos/libevent/
 
-  Options xtmux-fg, xtmux-bg, xtmux-colors can fully configure the 256 colors
-  supported by the terminal.  Similarly, xtmux-font, xtmux-bold-font, and
-  xtmux-italic-font options are supported (font sizes must match).
+To build tmux from a release tarball, do:
 
-  OSC "^][12;color^G" sequence is supported to set the cursor color.
-  CSI_DECSTMB sequence is supported to set the cursor style, with some
-  extensions.  For example, to use this in VIM to change the insert cursor to a
-  bar (like gvim), do something like this:
+	$ ./configure && make
+	$ sudo make install
 
-    if $TERM == 'screen'
-      set t_SI=^[[5\ q
-      set t_EI=^[[\ q
-    endif
+To get and build the latest from version control:
 
-  Mouse support in copy mode is supported and improved to more closely match
-  xterm selection, allowing double-click for whole word selection.  Also,
-  set-clipboard option is supported to set primary X selection buffer to copied
-  selection.  Finally, paste -x option is added to paste from X clipboard.
+	$ git clone git://git.code.sf.net/p/tmux/tmux-code tmux
+	$ cd tmux
+	$ sh autogen.sh
+	$ ./configure && make
 
-Usage: 
-  configure --enable-xtmux
-  make && make install
-  tmux -x
+For more information see https://sourceforge.net/scm/?type=git&group_id=200378
+and http://git-scm.com. Patches should be sent by email to the mailing list at
+tmux-users@lists.sourceforge.net.
 
-Dylan Simon <dylan-tmux@dylex.net>
+For documentation on using tmux, see the tmux.1 manpage. It can be viewed from
+the source tree with:
+
+	$ nroff -mdoc tmux.1|less
+
+Some common questions are answered in the FAQ file and a more extensive (but
+slightly out of date) guide is available in the OpenBSD FAQ at
+http://www.openbsd.org/faq/faq7.html#tmux. A rough todo list is in the TODO
+file and some example configurations and a Vim syntax file are in the examples
+directory.
+
+For debugging, running tmux with -v or -vv will generate server and client log
+files in the current directory.
+
+tmux mailing lists are available. Visit:
+
+	https://sourceforge.net/mail/?group_id=200378
+
+Bug reports, feature suggestions and especially code contributions are most
+welcome. Please send by email to:
+
+	tmux-users@lists.sourceforge.net
+
+This file and the CHANGES, FAQ and TODO files are licensed under the ISC
+license. Files under examples/ remain copyright their authors unless otherwise
+stated in the file but permission has been received to distribute them with
+tmux. All other files have a license and copyright notice at their start.
+
+-- Nicholas Marriott <nicm@users.sf.net>
+
+$Id$

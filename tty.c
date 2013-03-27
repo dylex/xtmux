@@ -48,8 +48,7 @@ void	tty_redraw_region(struct tty *, const struct tty_ctx *);
 void	tty_emulate_repeat(
 	    struct tty *, enum tty_code_code, enum tty_code_code, u_int);
 void	tty_repeat_space(struct tty *, u_int);
-void	tty_cell(struct tty *,
-	    const struct grid_cell *, const struct grid_utf8 *);
+void	tty_cell(struct tty *, const struct grid_cell *);
 
 #define tty_use_acs(tty) \
 	(tty_term_has((tty)->term, TTYC_ACSC) && !((tty)->flags & TTY_UTF8))
@@ -165,19 +164,18 @@ tty_open(struct tty *tty, const char *overrides, char **cause)
 	}
 	tty->flags |= TTY_OPENED;
 
-	tty->flags &= ~(TTY_NOCURSOR|TTY_FREEZE|TTY_ESCAPE);
+	tty->flags &= ~(TTY_NOCURSOR|TTY_FREEZE|TTY_TIMER);
 
 	tty->event = bufferevent_new(
 	    tty->fd, tty_read_callback, NULL, tty_error_callback, tty);
 
 	tty_start_tty(tty);
 
-	tty_keys_init(tty);
+	tty_keys_build(tty);
 
 	return (0);
 }
 
-/* ARGSUSED */
 void
 tty_read_callback(unused struct bufferevent *bufev, void *data)
 {
@@ -187,7 +185,6 @@ tty_read_callback(unused struct bufferevent *bufev, void *data)
 		;
 }
 
-/* ARGSUSED */
 void
 tty_error_callback(
     unused struct bufferevent *bufev, unused short what, unused void *data)
@@ -241,10 +238,10 @@ tty_start_tty(struct tty *tty)
 
 	tty_putcode(tty, TTYC_CNORM);
 	if (tty_term_has(tty->term, TTYC_KMOUS))
-		tty_puts(tty, "\033[?1000l");
+		tty_puts(tty, "\033[?1000l\033[?1006l\033[?1005l");
 
 	if (tty_term_has(tty->term, TTYC_XT))
-		tty_puts(tty, "\033[>c");
+		tty_puts(tty, "\033[c\033[>4;1m\033[?1004h");
 
 	tty->cx = UINT_MAX;
 	tty->cy = UINT_MAX;
@@ -260,11 +257,11 @@ tty_start_tty(struct tty *tty)
 }
 
 void
-tty_set_version(struct tty *tty, u_int version)
+tty_set_class(struct tty *tty, u_int class)
 {
-	if (tty->xterm_version != 0)
+	if (tty->class != 0)
 		return;
-	tty->xterm_version = version;
+	tty->class = class;
 }
 
 void
@@ -288,8 +285,6 @@ tty_stop_tty(struct tty *tty)
 	if (tcsetattr(tty->fd, TCSANOW, &tty->tio) == -1)
 		return;
 
-	setblocking(tty->fd, 1);
-
 	tty_raw(tty, tty_term_string2(tty->term, TTYC_CSR, 0, ws.ws_row - 1));
 	if (tty_use_acs(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMACS));
@@ -306,12 +301,14 @@ tty_stop_tty(struct tty *tty)
 
 	tty_raw(tty, tty_term_string(tty->term, TTYC_CNORM));
 	if (tty_term_has(tty->term, TTYC_KMOUS))
-		tty_raw(tty, "\033[?1000l");
+		tty_raw(tty, "\033[?1000l\033[?1006l\033[?1005l");
+
+	if (tty_term_has(tty->term, TTYC_XT))
+		tty_raw(tty, "\033[>4m\033[?1004l");
 
 	tty_raw(tty, tty_term_string(tty->term, TTYC_RMCUP));
 
-	if (tty->xterm_version > 270)
-		tty_raw(tty, "\033[61;1\"p");
+	setblocking(tty->fd, 1);
 }
 
 void
@@ -366,7 +363,21 @@ tty_free(struct tty *tty)
 void
 tty_raw(struct tty *tty, const char *s)
 {
-	write(tty->fd, s, strlen(s));
+	ssize_t	n, slen;
+	u_int	i;
+
+	slen = strlen(s);
+	for (i = 0; i < 5; i++) {
+		n = write(tty->fd, s, slen);
+		if (n >= 0) {
+			s += n;
+			slen -= n;
+			if (slen == 0)
+				break;
+		} else if (n == -1 && errno != EAGAIN)
+			break;
+		usleep(100);
+	}
 }
 
 void
@@ -466,21 +477,18 @@ tty_putc(struct tty *tty, u_char ch)
 		write(tty->log_fd, &ch, 1);
 }
 
-void
-tty_pututf8(struct tty *tty, const struct grid_utf8 *gu)
+static void
+tty_pututf8(struct tty *tty, const struct utf8_data *ud)
 {
-	size_t	size;
-
-	size = grid_utf8_size(gu);
 #ifdef XTMUX
 	if (tty->xtmux)
-		xtmux_pututf8(tty, gu, size);
+		xtmux_pututf8(tty, ud);
 	else
 #endif
-	bufferevent_write(tty->event, gu->data, size);
+	bufferevent_write(tty->event, ud->data, ud->size);
 	if (tty->log_fd != -1)
-		write(tty->log_fd, gu->data, size);
-	tty->cx += gu->width;
+		write(tty->log_fd, ud->data, ud->size);
+	tty->cx += ud->width;
 }
 
 void
@@ -549,10 +557,21 @@ tty_update_mode(struct tty *tty, int mode, struct screen *s)
 		}
 		tty->cstyle = s->cstyle;
 	}
-	if (changed & ALL_MOUSE_MODES) {
+	if (changed & (ALL_MOUSE_MODES|MODE_MOUSE_UTF8)) {
 		if (mode & ALL_MOUSE_MODES) {
+			/*
+			 * Enable the UTF-8 (1005) extension if configured to.
+			 * Enable the SGR (1006) extension unconditionally, as
+			 * this is safe from misinterpretation. Do it in this
+			 * order, because in some terminals it's the last one
+			 * that takes effect and SGR is the preferred one.
+			 */
 			if (mode & MODE_MOUSE_UTF8)
 				tty_puts(tty, "\033[?1005h");
+			else
+				tty_puts(tty, "\033[?1005l");
+			tty_puts(tty, "\033[?1006h");
+
 			if (mode & MODE_MOUSE_ANY)
 				tty_puts(tty, "\033[?1003h");
 			else if (mode & MODE_MOUSE_BUTTON)
@@ -566,6 +585,8 @@ tty_update_mode(struct tty *tty, int mode, struct screen *s)
 				tty_puts(tty, "\033[?1002l");
 			else if (tty->mode & MODE_MOUSE_STANDARD)
 				tty_puts(tty, "\033[?1000l");
+
+			tty_puts(tty, "\033[?1006l");
 			if (tty->mode & MODE_MOUSE_UTF8)
 				tty_puts(tty, "\033[?1005l");
 		}
@@ -653,7 +674,7 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 	const struct grid_cell	*gc;
 	struct grid_line	*gl;
 	struct grid_cell	 tmpgc;
-	const struct grid_utf8	*gu;
+	struct utf8_data	 ud;
 	u_int			 i, sx;
 
 #ifdef XTMUX
@@ -683,21 +704,17 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 
 	for (i = 0; i < sx; i++) {
 		gc = grid_view_peek_cell(s->grid, i, py);
-
-		gu = NULL;
-		if (gc->flags & GRID_FLAG_UTF8)
-			gu = grid_view_peek_utf8(s->grid, i, py);
-
 		if (screen_check_selection(s, i, py)) {
 			memcpy(&tmpgc, &s->sel.cell, sizeof tmpgc);
-			tmpgc.data = gc->data;
+			grid_cell_get(gc, &ud);
+			grid_cell_set(&tmpgc, &ud);
 			tmpgc.flags = gc->flags &
 			    ~(GRID_FLAG_FG256|GRID_FLAG_BG256);
 			tmpgc.flags |= s->sel.cell.flags &
 			    (GRID_FLAG_FG256|GRID_FLAG_BG256);
-			tty_cell(tty, &tmpgc, gu);
+			tty_cell(tty, &tmpgc);
 		} else
-			tty_cell(tty, gc, gu);
+			tty_cell(tty, gc);
 	}
 
 	if (sx >= tty->sx) {
@@ -806,6 +823,23 @@ tty_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 	if (tty_term_has(tty->term, TTYC_DCH) ||
 	    tty_term_has(tty->term, TTYC_DCH1))
 		tty_emulate_repeat(tty, TTYC_DCH, TTYC_DCH1, ctx->num);
+}
+
+void
+tty_cmd_clearcharacter(struct tty *tty, const struct tty_ctx *ctx)
+{
+	u_int	i;
+
+	tty_reset(tty);
+
+	tty_cursor_pane(tty, ctx, ctx->ocx, ctx->ocy);
+
+	if (tty_term_has(tty->term, TTYC_ECH))
+		tty_putcode1(tty, TTYC_ECH, ctx->num);
+	else {
+		for (i = 0; i < ctx->num; i++)
+			tty_putc(tty, ' ');
+	}
 }
 
 void
@@ -1107,17 +1141,11 @@ tty_cmd_cell(struct tty *tty, const struct tty_ctx *ctx)
 	struct screen		*s = wp->screen;
 	u_int			 cx;
 	u_int			 width;
-	const struct grid_cell	*gc = ctx->cell;
-	const struct grid_utf8	*gu = ctx->utf8;
-
-	if (gc->flags & GRID_FLAG_UTF8)
-		width = gu->width;
-	else
-		width = 1;
 
 	tty_region_pane(tty, ctx, ctx->orupper, ctx->orlower);
 
 	/* Is the cursor in the very last position? */
+	width = grid_cell_width(ctx->cell);
 	if (ctx->ocx > wp->sx - width) {
 		if (ctx->xoff != 0 || wp->sx != tty->sx) {
 			/*
@@ -1134,17 +1162,14 @@ tty_cmd_cell(struct tty *tty, const struct tty_ctx *ctx)
 			 * move as far left as possible and redraw the last
 			 * cell to move into the last position.
 			 */
-			if (ctx->last_cell.flags & GRID_FLAG_UTF8)
-				cx = screen_size_x(s) - ctx->last_utf8.width;
-			else
-				cx = screen_size_x(s) - 1;
+			cx = screen_size_x(s) - grid_cell_width(&ctx->last_cell);
 			tty_cursor_pane(tty, ctx, cx, ctx->ocy);
-			tty_cell(tty, &ctx->last_cell, &ctx->last_utf8);
+			tty_cell(tty, &ctx->last_cell);
 		}
 	} else
 		tty_cursor_pane(tty, ctx, ctx->ocx, ctx->ocy);
 
-	tty_cell(tty, ctx->cell, ctx->utf8);
+	tty_cell(tty, ctx->cell);
 }
 
 void
@@ -1199,10 +1224,10 @@ tty_cmd_rawstring(struct tty *tty, const struct tty_ctx *ctx)
 }
 
 void
-tty_cell(
-    struct tty *tty, const struct grid_cell *gc, const struct grid_utf8 *gu)
+tty_cell(struct tty *tty, const struct grid_cell *gc)
 {
-	u_int	i;
+	struct utf8_data	ud;
+	u_int			i;
 
 	/* Skip last character if terminal is stupid. */
 	if (tty_term_flags(tty) & TERM_EARLYWRAP &&
@@ -1216,23 +1241,24 @@ tty_cell(
 	/* Set the attributes. */
 	tty_attributes(tty, gc);
 
-	/* If not UTF-8, write directly. */
-	if (!(gc->flags & GRID_FLAG_UTF8)) {
-		if (gc->data < 0x20 || gc->data == 0x7f)
+	/* Get the cell and if ASCII write with putc to do ACS translation. */
+	grid_cell_get(gc, &ud);
+	if (ud.size == 1) {
+		if (*ud.data < 0x20 || *ud.data == 0x7f)
 			return;
-		tty_putc(tty, gc->data);
+		tty_putc(tty, *ud.data);
 		return;
 	}
 
-	/* If the terminal doesn't support UTF-8, write underscores. */
+	/* If not UTF-8, write _. */
 	if (!(tty->flags & TTY_UTF8)) {
-		for (i = 0; i < gu->width; i++)
+		for (i = 0; i < ud.width; i++)
 			tty_putc(tty, '_');
 		return;
 	}
 
-	/* Otherwise, write UTF-8. */
-	tty_pututf8(tty, gu);
+	/* Write the data. */
+	tty_pututf8(tty, &ud);
 }
 
 void

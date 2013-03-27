@@ -75,15 +75,17 @@ server_window_check_bell(struct session *s, struct winlink *wl)
 	if (s->curw != wl || s->flags & SESSION_UNATTACHED)
 		wl->flags |= WINLINK_BELL;
 	if (s->flags & SESSION_UNATTACHED)
-		return (1);
+		return (0);
 	if (s->curw->window == wl->window)
 		w->flags &= ~WINDOW_BELL;
 
 	visual = options_get_number(&s->options, "visual-bell");
 	action = options_get_number(&s->options, "bell-action");
+	if (action == BELL_NONE)
+		return (0);
 	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
 		c = ARRAY_ITEM(&clients, i);
-		if (c == NULL || c->session != s)
+		if (c == NULL || c->session != s || (c->flags & CLIENT_CONTROL))
 			continue;
 		if (!visual) {
 			tty_bell(&c->tty);
@@ -240,7 +242,7 @@ ring_bell(struct session *s)
 
 	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
 		c = ARRAY_ITEM(&clients, i);
-		if (c != NULL && c->session == s)
+		if (c != NULL && c->session == s && !(c->flags & CLIENT_CONTROL))
 			tty_bell(&c->tty);
 	}
 }

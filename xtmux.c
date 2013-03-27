@@ -166,7 +166,6 @@ struct xtmux {
 	unsigned	focus_out : 1;
 	unsigned	cd : 1; /* 1 if cursor is drawn */
 	u_int		cx, cy; /* last drawn cursor location */
-	u_int		mx, my; /* last known mouse location */
 
 	struct putc	putc_buf;
 	struct scroll   scroll_buf;
@@ -980,18 +979,16 @@ grid_attr_cmp(const struct grid_cell *a, const struct grid_cell *b)
 }
 
 static u_int
-grid_char(const struct grid_cell *gc, const struct grid_utf8 *gu)
+grid_char(const struct grid_cell *gc)
 {
+	struct utf8_data ud;
+
 	if (gc->flags & GRID_FLAG_PADDING)
 		return 0;
-	if (gc->flags & GRID_FLAG_UTF8)
-	{
-		struct utf8_data u8;
-		u8.size = grid_utf8_size(gu);
-		memcpy(u8.data, gu->data, u8.size);
-		return utf8_combine(&u8);
-	}
-	return gc->data;
+	grid_cell_get(gc, &ud);
+	if (ud.size != 1)
+		return utf8_combine(&ud);
+	return *ud.data;
 }
 
 void
@@ -1447,7 +1444,7 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 }
 
 static void
-xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, const struct grid_utf8 *gu, size_t n, const struct grid_cell *ga)
+xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, size_t n, const struct grid_cell *ga)
 {
 	u_int i;
 	wchar c[n];
@@ -1456,7 +1453,7 @@ xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, c
 		return;
 
 	for (i = 0; i < n; i ++)
-		c[i] = grid_char(&gc[i], &gu[i]);
+		c[i] = grid_char(&gc[i]);
 
 	xt_draw_chars(x, cx, cy, c, n, ga, !(x->cd && INSIDE(x->cx, x->cy, cx, cy, n, 1)));
 }
@@ -1520,13 +1517,9 @@ xtmux_putc(struct tty *tty, u_char c)
 }
 
 void
-xtmux_pututf8(struct tty *tty, const struct grid_utf8 *gu, size_t size)
+xtmux_pututf8(struct tty *tty, const struct utf8_data *gu)
 {
-	struct utf8_data u8;
-
-	u8.size = size;
-	memcpy(u8.data, gu->data, u8.size);
-	return xtmux_putwc(tty, utf8_combine(&u8));
+	return xtmux_putwc(tty, utf8_combine(gu));
 }
 
 void
@@ -1828,19 +1821,19 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 extern void cmd_paste_buffer_filter(struct window_pane *, const char *, size_t, const char *, int bracket);
 
 static void
-do_paste(const struct paste_ctx *p, const char *data, size_t size)
+do_paste(const struct paste_ctx *p, const struct paste_buffer *pb)
 {
-
 	if (p->sep)
-		cmd_paste_buffer_filter(p->wp, data, size, p->sep, 0);
+		paste_send_pane(pb, p->wp, p->sep, 0);
 	else
-		bufferevent_write(p->wp->event, data, size);
+		bufferevent_write(p->wp->event, pb->data, pb->size);
 }
 
 static int 
 xt_paste_property(struct xtmux *x, Window w, Atom p)
 {
 	XTextProperty t;
+	struct paste_buffer pb;
 
 	if (!XGetTextProperty(x->display, w, &t, p) || !t.value || t.format != 8)
 	{
@@ -1849,7 +1842,9 @@ xt_paste_property(struct xtmux *x, Window w, Atom p)
 	}
 
 	log_warnx("pasting %lu characters", t.nitems);
-	do_paste(&x->paste, t.value, t.nitems);
+	pb.data = t.value;
+	pb.size = t.nitems;
+	do_paste(&x->paste, &pb);
 
 	x->paste.time = 0;
 	x->paste.wp = NULL;
@@ -1901,7 +1896,12 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 		/* short cut */
 		struct paste_buffer *pb = paste_get_top(&global_buffers);
 		if (pb)
-			do_paste(&x->paste, pb->data, pb->size);
+			do_paste(&x->paste, pb);
+
+		x->paste.time = 0;
+		x->paste.wp = NULL;
+		free(x->paste.sep);
+		x->paste.sep = NULL;
 		XRETURN(0);
 	}
 
@@ -1973,12 +1973,12 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 
 		if (i == b || grid_attr_cmp(&gc, &ga))
 		{
-			xt_draw_cells(x, ox+b, oy+py, &gl->celldata[b], &gl->utf8data[b], i-b, &ga);
+			xt_draw_cells(x, ox+b, oy+py, &gl->celldata[b], i-b, &ga);
 			b = i;
 			ga = gc;
 		}
 	}
-	xt_draw_cells(x, ox+b, oy+py, &gl->celldata[b], &gl->utf8data[b], i-b, &ga);
+	xt_draw_cells(x, ox+b, oy+py, &gl->celldata[b], i-b, &ga);
 }
 
 void
@@ -2169,6 +2169,8 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 	struct xtmux *x = tty->xtmux;
 	struct mouse_event *m = &tty->mouse;
 
+	m->lx = m->x;
+	m->ly = m->y;
 	m->x = xev->x / x->cw;
 	m->y = xev->y / x->ch;
 
@@ -2176,63 +2178,57 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 		case ButtonPress:
 			switch (xev->button)
 			{
-				case Button1: m->b = MOUSE_1; break;
-				case Button2: m->b = MOUSE_2; break;
-				case Button3: m->b = MOUSE_3; break;
-				case Button4: m->b = MOUSE_1 | MOUSE_45; break;
-				case Button5: m->b = MOUSE_2 | MOUSE_45; break;
+				case Button1: m->event = MOUSE_EVENT_DOWN; m->button = m->xb = 0; break;
+				case Button2: m->event = MOUSE_EVENT_DOWN; m->button = m->xb = 1; break;
+				case Button3: m->event = MOUSE_EVENT_DOWN; m->button = m->xb = 2; break;
+				case Button4: m->event = MOUSE_EVENT_WHEEL; m->wheel = MOUSE_WHEEL_UP; m->xb = 64; break;
+				case Button5: m->event = MOUSE_EVENT_WHEEL; m->wheel = MOUSE_WHEEL_DOWN; m->xb = 65; break;
 				default: return;
 			}
-			if (!(tty->mode & ALL_MOUSE_MODES) || 
-					(xev->state & ShiftMask && xev->button == Button2))
-			{
-				/* this is a little hacky, and should be moved to input_mouse,
-				 * but we emulate xterm's behavior directly for now */
-				if (xev->button == Button2 && tty->client->session && tty->client->session->curw->window->active)
-					xtmux_paste(tty, tty->client->session->curw->window->active, NULL, NULL);
-				return;
-			}
+			if (m->event & MOUSE_EVENT_CLICK && m->sx == m->x && m->sy == m->y)
+				m->clicks = (m->clicks + 1) % 3;
+			else
+				m->clicks = 0;
+			m->sx = m->x;
+			m->sy = m->y;
 			break;
 		case ButtonRelease:
-			m->b = MOUSE_UP;
+			m->event = MOUSE_EVENT_UP;
+			if (m->event == MOUSE_EVENT_DOWN && m->sx == m->x && m->sy == m->y)
+				m->event |= MOUSE_EVENT_CLICK;
+			m->xb = 3;
 			break;
 		case MotionNotify:
 			if (!(tty->mode & (MODE_MOUSE_BUTTON | MODE_MOUSE_ANY)))
 				return;
-			if (m->x == x->mx && m->y == x->my)
+			if (m->x == m->lx && m->y == m->ly)
 				return;
-			if (xev->state & Button1Mask)
-				m->b = MOUSE_1;
-			else if (xev->state & Button2Mask)
-				m->b = MOUSE_2;
-			else if (xev->state & Button3Mask)
-				m->b = MOUSE_3;
-			else if (xev->state & Button4Mask)
-				m->b = MOUSE_1 | MOUSE_45;
-			else if (xev->state & Button5Mask)
-				m->b = MOUSE_2 | MOUSE_45;
-			else
+			m->event = MOUSE_EVENT_DRAG;
+			if (xev->state & Button1Mask) {
+				m->button = 0; m->xb = 32;
+			} else if (xev->state & Button2Mask) {
+				m->button = 1; m->xb = 33;
+			} else if (xev->state & Button3Mask) {
+				m->button = 2; m->xb = 34;
+			} else
 			{
 				if (!(tty->mode & MODE_MOUSE_ANY))
 					return;
-				m->b = MOUSE_UP;
+				m->event |= MOUSE_EVENT_UP;
+				m->xb = 35;
 			}
-			m->b |= MOUSE_DRAG;
 			break;
 	}
 
 	if (xev->state & ShiftMask)
-		m->b |= 4;
+		m->xb |= 4;
 	if (xev->state & Mod4Mask) /* META */
-		m->b |= 8;
+		m->xb |= 8;
 	if (xev->state & ControlMask)
-		m->b |= 16;
+		m->xb |= 16;
 
 	if (xev->state & (x->prefix_mod >= 0 ? 1<<x->prefix_mod : ShiftMask))
-		m->b |= MOUSE_PREFIX;
-
-	x->mx = m->x;
-	x->my = m->y;
+		m->flags |= MOUSE_PREFIX;
 
 	server_client_handle_key(tty->client, KEYC_MOUSE);
 }
