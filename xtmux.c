@@ -1855,14 +1855,14 @@ xt_paste_property(struct xtmux *x, Window w, Atom p)
 	return 0;
 }
 
-int
+enum cmd_retval
 xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const char *sep)
 {
 	struct xtmux *x = tty->xtmux;
 	Atom s = None;
 	int r;
 
-	XENTRY(-1);
+	XENTRY(CMD_RETURN_ERROR);
 
 	if (!which || !strncasecmp(which, "primary", strlen(which)))
 		s = XA_PRIMARY;
@@ -1878,7 +1878,7 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 	}
 
 	if (s == None)
-		XRETURN(-1);
+		XRETURN(CMD_RETURN_ERROR);
 
 	x->paste.time = x->last_time;
 	x->paste.wp = wp;
@@ -1888,8 +1888,11 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 	else
 		x->paste.sep = NULL;
 
-	if (s >= XA_CUT_BUFFER0 && s <= XA_CUT_BUFFER7)
-		XRETURN(xt_paste_property(x, DefaultRootWindow(x->display), s));
+	if (s >= XA_CUT_BUFFER0 && s <= XA_CUT_BUFFER7) {
+		if (xt_paste_property(x, DefaultRootWindow(x->display), s))
+			XRETURN(CMD_RETURN_ERROR);
+		XRETURN(CMD_RETURN_NORMAL);
+	}
 
 	if (XGetSelectionOwner(x->display, s) == x->window) 
 	{
@@ -1902,11 +1905,12 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 		x->paste.wp = NULL;
 		free(x->paste.sep);
 		x->paste.sep = NULL;
-		XRETURN(0);
+		XRETURN(CMD_RETURN_NORMAL);
 	}
 
-	r = XConvertSelection(x->display, s, XA_STRING, XA_STRING, x->window, x->paste.time);
-	XRETURN(r);
+	if (XConvertSelection(x->display, s, XA_STRING, XA_STRING, x->window, x->paste.time))
+		XRETURN(CMD_RETURN_ERROR);
+	XRETURN(CMD_RETURN_NORMAL);
 }
 
 static void
