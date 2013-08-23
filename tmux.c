@@ -306,7 +306,8 @@ main(int argc, char **argv)
 		case 'x':
 			if (!optarg)
 				optarg = getenv("DISPLAY");
-			xdisplay = xstrdup(optarg);
+			if (optarg)
+				xdisplay = xstrdup(optarg);
 			break;
 #endif
 		default:
