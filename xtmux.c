@@ -984,8 +984,9 @@ grid_char(const struct grid_cell *gc)
 	struct utf8_data ud;
 
 	if (gc->flags & GRID_FLAG_PADDING)
-		return 0;
+		return ' ';
 	grid_cell_get(gc, &ud);
+	/* XXX does ud.width matter? 0-width characters seem messed up */
 	if (ud.size != 1)
 		return utf8_combine(&ud);
 	return *ud.data;
