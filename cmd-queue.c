@@ -35,7 +35,7 @@ cmdq_new(struct client *c)
 	cmdq->dead = 0;
 
 	cmdq->client = c;
-	cmdq->client_exit = 0;
+	cmdq->client_exit = -1;
 
 	TAILQ_INIT(&cmdq->queue);
 	cmdq->item = NULL;
@@ -69,9 +69,7 @@ cmdq_print(struct cmd_q *cmdq, const char *fmt, ...)
 	if (c == NULL)
 		/* nothing */;
 	else if (c->session == NULL || (c->flags & CLIENT_CONTROL)) {
-		va_start(ap, fmt);
 		evbuffer_add_vprintf(c->stdout_data, fmt, ap);
-		va_end(ap);
 
 		evbuffer_add(c->stdout_data, "\n", 1);
 		server_push_stdout(c);
@@ -104,9 +102,7 @@ cmdq_info(struct cmd_q *cmdq, const char *fmt, ...)
 	if (c == NULL)
 		/* nothing */;
 	else if (c->session == NULL || (c->flags & CLIENT_CONTROL)) {
-		va_start(ap, fmt);
 		evbuffer_add_vprintf(c->stdout_data, fmt, ap);
-		va_end(ap);
 
 		evbuffer_add(c->stdout_data, "\n", 1);
 		server_push_stdout(c);
@@ -143,7 +139,7 @@ cmdq_error(struct cmd_q *cmdq, const char *fmt, ...)
 		evbuffer_add(c->stderr_data, "\n", 1);
 
 		server_push_stderr(c);
-		c->retcode = 1;
+		c->retval = 1;
 	} else {
 		*msg = toupper((u_char) *msg);
 		status_message_set(c, "%s", msg);
@@ -154,17 +150,17 @@ cmdq_error(struct cmd_q *cmdq, const char *fmt, ...)
 
 /* Print a guard line. */
 int
-cmdq_guard(struct cmd_q *cmdq, const char *guard)
+cmdq_guard(struct cmd_q *cmdq, const char *guard, int flags)
 {
 	struct client	*c = cmdq->client;
 
-	if (c == NULL || c->session == NULL)
+	if (c == NULL)
 		return 0;
 	if (!(c->flags & CLIENT_CONTROL))
 		return 0;
 
-	evbuffer_add_printf(c->stdout_data, "%%%s %ld %u\n", guard,
-	    (long) cmdq->time, cmdq->number);
+	evbuffer_add_printf(c->stdout_data, "%%%s %ld %u %d\n", guard,
+	    (long) cmdq->time, cmdq->number, flags);
 	server_push_stdout(c);
 	return 1;
 }
@@ -199,7 +195,7 @@ cmdq_continue(struct cmd_q *cmdq)
 {
 	struct cmd_q_item	*next;
 	enum cmd_retval		 retval;
-	int			 empty, guard;
+	int			 empty, guard, flags;
 	char			 s[1024];
 
 	notify_disable();
@@ -225,13 +221,16 @@ cmdq_continue(struct cmd_q *cmdq)
 			cmdq->time = time(NULL);
 			cmdq->number++;
 
-			guard = cmdq_guard(cmdq, "begin");
+			flags = !!(cmdq->cmd->flags & CMD_CONTROL);
+			guard = cmdq_guard(cmdq, "begin", flags);
+
 			retval = cmdq->cmd->entry->exec(cmdq->cmd, cmdq);
+
 			if (guard) {
 				if (retval == CMD_RETURN_ERROR)
-				    cmdq_guard(cmdq, "error");
+					cmdq_guard(cmdq, "error", flags);
 				else
-				    cmdq_guard(cmdq, "end");
+					cmdq_guard(cmdq, "end", flags);
 			}
 
 			if (retval == CMD_RETURN_ERROR)
@@ -256,7 +255,7 @@ cmdq_continue(struct cmd_q *cmdq)
 	} while (cmdq->item != NULL);
 
 empty:
-	if (cmdq->client_exit)
+	if (cmdq->client_exit > 0)
 		cmdq->client->flags |= CLIENT_EXIT;
 	if (cmdq->emptyfn != NULL)
 		cmdq->emptyfn(cmdq); /* may free cmdq */

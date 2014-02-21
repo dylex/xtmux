@@ -19,6 +19,7 @@
 #include <sys/types.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,7 +40,6 @@ const struct cmd_entry cmd_load_buffer_entry = {
 	CMD_BUFFER_USAGE " path",
 	0,
 	NULL,
-	NULL,
 	cmd_load_buffer_exec
 };
 
@@ -50,11 +50,11 @@ cmd_load_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
 	struct client	*c = cmdq->client;
 	struct session  *s;
 	FILE		*f;
-	const char	*path, *newpath, *wd;
+	const char	*path;
 	char		*pdata, *new_pdata, *cause;
 	size_t		 psize;
 	u_int		 limit;
-	int		 ch, error, buffer, *buffer_ptr;
+	int		 ch, error, buffer, *buffer_ptr, cwd, fd;
 
 	if (!args_has(args, 'b'))
 		buffer = -1;
@@ -72,7 +72,7 @@ cmd_load_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
 		buffer_ptr = xmalloc(sizeof *buffer_ptr);
 		*buffer_ptr = buffer;
 
-		error = server_set_stdin_callback (c, cmd_load_buffer_callback,
+		error = server_set_stdin_callback(c, cmd_load_buffer_callback,
 		    buffer_ptr, &cause);
 		if (error != 0) {
 			cmdq_error(cmdq, "%s: %s", path, cause);
@@ -82,20 +82,17 @@ cmd_load_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
 		return (CMD_RETURN_WAIT);
 	}
 
-	if (c != NULL)
-		wd = c->cwd;
-	else if ((s = cmd_current_session(cmdq, 0)) != NULL) {
-		wd = options_get_string(&s->options, "default-path");
-		if (*wd == '\0')
-			wd = s->cwd;
-	} else
-		wd = NULL;
-	if (wd != NULL && *wd != '\0') {
-		newpath = get_full_path(wd, path);
-		if (newpath != NULL)
-			path = newpath;
-	}
-	if ((f = fopen(path, "rb")) == NULL) {
+	if (c != NULL && c->session == NULL)
+		cwd = c->cwd;
+	else if ((s = cmd_current_session(cmdq, 0)) != NULL)
+		cwd = s->cwd;
+	else
+		cwd = AT_FDCWD;
+
+	if ((fd = openat(cwd, path, O_RDONLY)) == -1 ||
+	    (f = fdopen(fd, "rb")) == NULL) {
+		if (fd != -1)
+			close(fd);
 		cmdq_error(cmdq, "%s: %s", path, strerror(errno));
 		return (CMD_RETURN_ERROR);
 	}
@@ -172,6 +169,7 @@ cmd_load_buffer_callback(struct client *c, int closed, void *data)
 		/* No context so can't use server_client_msg_error. */
 		evbuffer_add_printf(c->stderr_data, "no buffer %d\n", *buffer);
 		server_push_stderr(c);
+		free(pdata);
 	}
 
 	free(data);

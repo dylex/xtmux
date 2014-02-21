@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
+#include <locale.h>
 #include <pwd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,14 +49,11 @@ time_t		 start_time;
 char		 socket_path[MAXPATHLEN];
 int		 login_shell;
 char		*environ_path;
-pid_t		 environ_pid = -1;
-int		 environ_session_id = -1;
 #ifdef XTMUX
 char		*xdisplay = NULL;
 #endif
 
 __dead void	 usage(void);
-void	 	 parseenvironment(void);
 char 		*makesocketpath(const char *);
 
 #ifndef HAVE___PROGNAME
@@ -66,7 +64,11 @@ __dead void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: %s [-28lquvV] [-c shell-command] [-f file] [-L socket-name]\n"
+	    "usage: %s [-2lquvV"
+#ifdef XTMUX
+			      "x"
+#endif
+	                       "] [-c shell-command] [-f file] [-L socket-name]\n"
 	    "            [-S socket-path] [command [flags]]\n",
 	    __progname);
 	exit(1);
@@ -130,39 +132,6 @@ areshell(const char *shell)
 	return (0);
 }
 
-const char*
-get_full_path(const char *wd, const char *path)
-{
-	static char	newpath[MAXPATHLEN];
-	char		oldpath[MAXPATHLEN];
-
-	if (getcwd(oldpath, sizeof oldpath) == NULL)
-		return (NULL);
-	if (chdir(wd) != 0)
-		return (NULL);
-	if (realpath(path, newpath) != 0)
-		return (NULL);
-	chdir(oldpath);
-	return (newpath);
-}
-
-void
-parseenvironment(void)
-{
-	char	*env, path[256];
-	long	 pid;
-	int	 id;
-
-	if ((env = getenv("TMUX")) == NULL)
-		return;
-
-	if (sscanf(env, "%255[^,],%ld,%d", path, &pid, &id) != 3)
-		return;
-	environ_path = xstrdup(path);
-	environ_pid = pid;
-	environ_session_id = id;
-}
-
 char *
 makesocketpath(const char *label)
 {
@@ -171,10 +140,12 @@ makesocketpath(const char *label)
 	u_int		uid;
 
 	uid = getuid();
-	if ((s = getenv("TMPDIR")) == NULL || *s == '\0')
-		xsnprintf(base, sizeof base, "%s/tmux-%u", _PATH_TMP, uid);
-	else
+	if ((s = getenv("TMUX_TMPDIR")) != NULL && *s != '\0')
+		xsnprintf(base, sizeof base, "%s/", s);
+	else if ((s = getenv("TMPDIR")) != NULL && *s != '\0')
 		xsnprintf(base, sizeof base, "%s/tmux-%u", s, uid);
+	else
+		xsnprintf(base, sizeof base, "%s/tmux-%u", _PATH_TMP, uid);
 
 	if (mkdir(base, S_IRWXU) != 0 && errno != EEXIST)
 		return (NULL);
@@ -185,7 +156,8 @@ makesocketpath(const char *label)
 		errno = ENOTDIR;
 		return (NULL);
 	}
-	if (sb.st_uid != uid || (sb.st_mode & (S_IRWXG|S_IRWXO)) != 0) {
+	if (sb.st_uid != uid || (!S_ISDIR(sb.st_mode) &&
+		sb.st_mode & (S_IRWXG|S_IRWXO)) != 0) {
 		errno = EACCES;
 		return (NULL);
 	}
@@ -241,39 +213,39 @@ int
 main(int argc, char **argv)
 {
 	struct passwd	*pw;
-	char		*s, *path, *label, *home, **var;
-	int	 	 opt, flags, quiet, keys;
+	char		*s, *path, *label, **var, tmp[MAXPATHLEN];
+	char		 in[256];
+	const char	*home;
+	long long	 pid;
+	int	 	 opt, flags, quiet, keys, session;
 
 #if defined(DEBUG) && defined(__OpenBSD__)
 	malloc_options = (char *) "AFGJPX";
 #endif
 
+	setlocale(LC_TIME, "");
+
 	quiet = flags = 0;
 	label = path = NULL;
 	login_shell = (**argv == '-');
-	while ((opt = getopt(argc, argv, "28c:Cdf:lL:qS:uUvV"
+	while ((opt = getopt(argc, argv, "2c:Cdf:lL:qS:uUVv"
 #ifdef XTMUX
 					"x"
 #endif
 			    )) != -1) {
 		switch (opt) {
 		case '2':
-			flags |= IDENTIFY_256COLOURS;
-			flags &= ~IDENTIFY_88COLOURS;
-			break;
-		case '8':
-			flags |= IDENTIFY_88COLOURS;
-			flags &= ~IDENTIFY_256COLOURS;
+			flags |= CLIENT_256COLOURS;
 			break;
 		case 'c':
 			free(shell_cmd);
 			shell_cmd = xstrdup(optarg);
 			break;
 		case 'C':
-			if (flags & IDENTIFY_CONTROL)
-				flags |= IDENTIFY_TERMIOS;
+			if (flags & CLIENT_CONTROL)
+				flags |= CLIENT_CONTROLCONTROL;
 			else
-				flags |= IDENTIFY_CONTROL;
+				flags |= CLIENT_CONTROL;
 			break;
 		case 'V':
 			printf("%s %s\n", __progname, VERSION);
@@ -297,7 +269,7 @@ main(int argc, char **argv)
 			path = xstrdup(optarg);
 			break;
 		case 'u':
-			flags |= IDENTIFY_UTF8;
+			flags |= CLIENT_UTF8;
 			break;
 		case 'v':
 			debug_level++;
@@ -320,7 +292,7 @@ main(int argc, char **argv)
 	if (shell_cmd != NULL && argc != 0)
 		usage();
 
-	if (!(flags & IDENTIFY_UTF8)) {
+	if (!(flags & CLIENT_UTF8)) {
 		/*
 		 * If the user has set whichever of LC_ALL, LC_CTYPE or LANG
 		 * exist (in that order) to contain UTF-8, it is a safe
@@ -334,12 +306,14 @@ main(int argc, char **argv)
 		}
 		if (s != NULL && (strcasestr(s, "UTF-8") != NULL ||
 		    strcasestr(s, "UTF8") != NULL))
-			flags |= IDENTIFY_UTF8;
+			flags |= CLIENT_UTF8;
 	}
 
 	environ_init(&global_environ);
 	for (var = environ; *var != NULL; var++)
 		environ_put(&global_environ, *var);
+	if (getcwd(tmp, sizeof tmp) != NULL)
+		environ_set(&global_environ, "PWD", tmp);
 
 	options_init(&global_options, NULL);
 	options_table_populate_tree(server_options_table, &global_options);
@@ -356,7 +330,7 @@ main(int argc, char **argv)
 	options_table_populate_tree(client_options_table, &global_c_options);
 
 	/* Enable UTF-8 if the first client is on UTF-8 terminal. */
-	if (flags & IDENTIFY_UTF8) {
+	if (flags & CLIENT_UTF8) {
 		options_set_number(&global_s_options, "status-utf8", 1);
 		options_set_number(&global_s_options, "mouse-utf8", 1);
 		options_set_number(&global_w_options, "utf8", 1);
@@ -381,19 +355,27 @@ main(int argc, char **argv)
 			pw = getpwuid(getuid());
 			if (pw != NULL)
 				home = pw->pw_dir;
+			else
+				home = NULL;
 		}
-		xasprintf(&cfg_file, "%s/%s", home, DEFAULT_CFG);
-		if (access(cfg_file, R_OK) != 0 && errno == ENOENT) {
-			free(cfg_file);
-			cfg_file = NULL;
+		if (home != NULL) {
+			xasprintf(&cfg_file, "%s/.tmux.conf", home);
+			if (access(cfg_file, R_OK) != 0 && errno == ENOENT) {
+				free(cfg_file);
+				cfg_file = NULL;
+			}
 		}
 	}
+
+	/* Get path from environment. */
+	s = getenv("TMUX");
+	if (s != NULL && sscanf(s, "%255[^,],%lld,%d", in, &pid, &session) == 3)
+		environ_path = xstrdup(in);
 
 	/*
 	 * Figure out the socket path. If specified on the command-line with -S
 	 * or -L, use it, otherwise try $TMUX or assume -L default.
 	 */
-	parseenvironment();
 	if (path == NULL) {
 		/* If no -L, use the environment. */
 		if (label == NULL) {
@@ -406,13 +388,18 @@ main(int argc, char **argv)
 		/* -L or default set. */
 		if (label != NULL) {
 			if ((path = makesocketpath(label)) == NULL) {
-				fprintf(stderr, "can't create socket\n");
+				fprintf(stderr, "can't create socket: %s\n",
+					strerror(errno));
 				exit(1);
 			}
 		}
 	}
 	free(label);
-	strlcpy(socket_path, path, sizeof socket_path);
+
+	if (strlcpy(socket_path, path, sizeof socket_path) >= sizeof socket_path) {
+		fprintf(stderr, "socket path too long: %s\n", path);
+		exit(1);
+	}
 	free(path);
 
 #ifdef HAVE_SETPROCTITLE

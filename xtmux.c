@@ -221,7 +221,7 @@ static jmp_buf xdisplay_recover;
 			(WITHIN1(X1, W1, X2, W2) && WITHIN1(Y1, H1, Y2, H2))
 
 void
-xtmux_init(struct client *c, char *display)
+xtmux_init(struct client *c, const char *display)
 {
 	u_int i;
 	size_t dl;

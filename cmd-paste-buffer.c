@@ -44,7 +44,6 @@ const struct cmd_entry cmd_paste_buffer_entry = {
 	"[-dpr" X_OPT "] [-s separator] [-b buffer-index] " CMD_TARGET_PANE_USAGE,
 	0,
 	NULL,
-	NULL,
 	cmd_paste_buffer_exec
 };
 

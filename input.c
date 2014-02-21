@@ -70,6 +70,11 @@ int	input_input(struct input_ctx *);
 int	input_c0_dispatch(struct input_ctx *);
 int	input_esc_dispatch(struct input_ctx *);
 int	input_csi_dispatch(struct input_ctx *);
+void	input_csi_dispatch_rm(struct input_ctx *);
+void	input_csi_dispatch_rm_private(struct input_ctx *);
+void	input_csi_dispatch_sm(struct input_ctx *);
+void	input_csi_dispatch_sm_private(struct input_ctx *);
+void	input_csi_dispatch_winops(struct input_ctx *);
 void	input_csi_dispatch_sgr(struct input_ctx *);
 int	input_dcs_dispatch(struct input_ctx *);
 int	input_utf8_open(struct input_ctx *);
@@ -150,6 +155,7 @@ enum input_csi_type {
 	INPUT_CSI_SM_PRIVATE,
 	INPUT_CSI_TBC,
 	INPUT_CSI_VPA,
+	INPUT_CSI_WINOPS,
 };
 
 /* Control (CSI) command table. */
@@ -184,6 +190,7 @@ const struct input_table_entry input_csi_table[] = {
 	{ 'q', " ", INPUT_CSI_DECSCUSR },
 	{ 'r', "",  INPUT_CSI_DECSTBM },
 	{ 's', "",  INPUT_CSI_SCP },
+	{ 't', "",  INPUT_CSI_WINOPS },
 	{ 'u', "",  INPUT_CSI_RCP },
 };
 
@@ -1071,10 +1078,9 @@ int
 input_csi_dispatch(struct input_ctx *ictx)
 {
 	struct screen_write_ctx	       *sctx = &ictx->ctx;
-	struct window_pane	       *wp = ictx->wp;
 	struct screen		       *s = sctx->s;
 	struct input_table_entry       *entry;
-	int			 	n, m;
+	int				n, m;
 
 	if (ictx->flags & INPUT_DISCARD)
 		return (0);
@@ -1113,6 +1119,9 @@ input_csi_dispatch(struct input_ctx *ictx)
 		n = input_get(ictx, 0, 1, 1);
 		m = input_get(ictx, 1, 1, 1);
 		screen_write_cursormove(sctx, m - 1, n - 1);
+		break;
+	case INPUT_CSI_WINOPS:
+		input_csi_dispatch_winops(ictx);
 		break;
 	case INPUT_CSI_CUU:
 		screen_write_cursorup(sctx, input_get(ictx, 0, 1, 1));
@@ -1230,7 +1239,60 @@ input_csi_dispatch(struct input_ctx *ictx)
 		screen_write_cursormove(sctx, ictx->old_cx, ictx->old_cy);
 		break;
 	case INPUT_CSI_RM:
-		switch (input_get(ictx, 0, 0, -1)) {
+		input_csi_dispatch_rm(ictx);
+		break;
+	case INPUT_CSI_RM_PRIVATE:
+		input_csi_dispatch_rm_private(ictx);
+		break;
+	case INPUT_CSI_SCP:
+		memcpy(&ictx->old_cell, &ictx->cell, sizeof ictx->old_cell);
+		ictx->old_cx = s->cx;
+		ictx->old_cy = s->cy;
+		break;
+	case INPUT_CSI_SGR:
+		input_csi_dispatch_sgr(ictx);
+		break;
+	case INPUT_CSI_SM:
+		input_csi_dispatch_sm(ictx);
+		break;
+	case INPUT_CSI_SM_PRIVATE:
+		input_csi_dispatch_sm_private(ictx);
+		break;
+	case INPUT_CSI_TBC:
+		switch (input_get(ictx, 0, 0, 0)) {
+		case 0:
+			if (s->cx < screen_size_x(s))
+				bit_clear(s->tabs, s->cx);
+			break;
+		case 3:
+			bit_nclear(s->tabs, 0, screen_size_x(s) - 1);
+			break;
+		default:
+			log_debug("%s: unknown '%c'", __func__, ictx->ch);
+			break;
+		}
+		break;
+	case INPUT_CSI_VPA:
+		n = input_get(ictx, 0, 1, 1);
+		screen_write_cursormove(sctx, s->cx, n - 1);
+		break;
+	case INPUT_CSI_DECSCUSR:
+		n = input_get(ictx, 0, 0, 0);
+		screen_set_cursor_style(s, n);
+		break;
+	}
+
+	return (0);
+}
+
+/* Handle CSI RM. */
+void
+input_csi_dispatch_rm(struct input_ctx *ictx)
+{
+	u_int	i;
+
+	for (i = 0; i < ictx->param_list_len; i++) {
+		switch (input_get(ictx, i, 0, -1)) {
 		case 4:		/* IRM */
 			screen_write_mode_clear(&ictx->ctx, MODE_INSERT);
 			break;
@@ -1238,10 +1300,18 @@ input_csi_dispatch(struct input_ctx *ictx)
 			log_debug("%s: unknown '%c'", __func__, ictx->ch);
 			break;
 		}
-		break;
-	case INPUT_CSI_RM_PRIVATE:
-		switch (input_get(ictx, 0, 0, -1)) {
-		case 1:		/* GATM */
+	}
+}
+
+/* Handle CSI private RM. */
+void
+input_csi_dispatch_rm_private(struct input_ctx *ictx)
+{
+	u_int	i;
+
+	for (i = 0; i < ictx->param_list_len; i++) {
+		switch (input_get(ictx, i, 0, -1)) {
+		case 1:		/* DECCKM */
 			screen_write_mode_clear(&ictx->ctx, MODE_KCURSOR);
 			break;
 		case 3:		/* DECCOLM */
@@ -1271,10 +1341,10 @@ input_csi_dispatch(struct input_ctx *ictx)
 			break;
 		case 47:
 		case 1047:
-			window_pane_alternate_off(wp, &ictx->cell, 0);
+			window_pane_alternate_off(ictx->wp, &ictx->cell, 0);
 			break;
 		case 1049:
-			window_pane_alternate_off(wp, &ictx->cell, 1);
+			window_pane_alternate_off(ictx->wp, &ictx->cell, 1);
 			break;
 		case 2004:
 			screen_write_mode_clear(&ictx->ctx, MODE_BRACKETPASTE);
@@ -1283,17 +1353,17 @@ input_csi_dispatch(struct input_ctx *ictx)
 			log_debug("%s: unknown '%c'", __func__, ictx->ch);
 			break;
 		}
-		break;
-	case INPUT_CSI_SCP:
-		memcpy(&ictx->old_cell, &ictx->cell, sizeof ictx->old_cell);
-		ictx->old_cx = s->cx;
-		ictx->old_cy = s->cy;
-		break;
-	case INPUT_CSI_SGR:
-		input_csi_dispatch_sgr(ictx);
-		break;
-	case INPUT_CSI_SM:
-		switch (input_get(ictx, 0, 0, -1)) {
+	}
+}
+
+/* Handle CSI SM. */
+void
+input_csi_dispatch_sm(struct input_ctx *ictx)
+{
+	u_int	i;
+
+	for (i = 0; i < ictx->param_list_len; i++) {
+		switch (input_get(ictx, i, 0, -1)) {
 		case 4:		/* IRM */
 			screen_write_mode_set(&ictx->ctx, MODE_INSERT);
 			break;
@@ -1301,10 +1371,18 @@ input_csi_dispatch(struct input_ctx *ictx)
 			log_debug("%s: unknown '%c'", __func__, ictx->ch);
 			break;
 		}
-		break;
-	case INPUT_CSI_SM_PRIVATE:
-		switch (input_get(ictx, 0, 0, -1)) {
-		case 1:		/* GATM */
+	}
+}
+
+/* Handle CSI private SM. */
+void
+input_csi_dispatch_sm_private(struct input_ctx *ictx)
+{
+	u_int	i;
+
+	for (i = 0; i < ictx->param_list_len; i++) {
+		switch (input_get(ictx, i, 0, -1)) {
+		case 1:		/* DECCKM */
 			screen_write_mode_set(&ictx->ctx, MODE_KCURSOR);
 			break;
 		case 3:		/* DECCOLM */
@@ -1330,10 +1408,10 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_mode_set(&ictx->ctx, MODE_MOUSE_ANY);
 			break;
 		case 1004:
-			if (s->mode & MODE_FOCUSON)
+			if (ictx->ctx.s->mode & MODE_FOCUSON)
 				break;
 			screen_write_mode_set(&ictx->ctx, MODE_FOCUSON);
-			wp->flags &= ~PANE_FOCUSED; /* force update if needed */
+			ictx->wp->flags |= PANE_FOCUSPUSH; /* force update */
 			break;
 		case 1005:
 			screen_write_mode_set(&ictx->ctx, MODE_MOUSE_UTF8);
@@ -1343,10 +1421,10 @@ input_csi_dispatch(struct input_ctx *ictx)
 			break;
 		case 47:
 		case 1047:
-			window_pane_alternate_on(wp, &ictx->cell, 0);
+			window_pane_alternate_on(ictx->wp, &ictx->cell, 0);
 			break;
 		case 1049:
-			window_pane_alternate_on(wp, &ictx->cell, 1);
+			window_pane_alternate_on(ictx->wp, &ictx->cell, 1);
 			break;
 		case 2004:
 			screen_write_mode_set(&ictx->ctx, MODE_BRACKETPASTE);
@@ -1355,32 +1433,56 @@ input_csi_dispatch(struct input_ctx *ictx)
 			log_debug("%s: unknown '%c'", __func__, ictx->ch);
 			break;
 		}
-		break;
-	case INPUT_CSI_TBC:
-		switch (input_get(ictx, 0, 0, 0)) {
-		case 0:
-			if (s->cx < screen_size_x(s))
-				bit_clear(s->tabs, s->cx);
+	}
+}
+
+/* Handle CSI window operations. */
+void
+input_csi_dispatch_winops(struct input_ctx *ictx)
+{
+	struct window_pane	*wp = ictx->wp;
+	int			 n, m;
+
+	m = 0;
+	while ((n = input_get(ictx, m, 0, -1)) != -1) {
+		switch (n) {
+		case 1:
+		case 2:
+		case 5:
+		case 6:
+		case 7:
+		case 11:
+		case 13:
+		case 14:
+		case 19:
+		case 20:
+		case 21:
+		case 24:
 			break;
 		case 3:
-			bit_nclear(s->tabs, 0, screen_size_x(s) - 1);
+		case 4:
+		case 8:
+			m++;
+			if (input_get(ictx, m, 0, -1) == -1)
+				return;
+			/* FALLTHROUGH */
+		case 9:
+		case 10:
+		case 22:
+		case 23:
+			m++;
+			if (input_get(ictx, m, 0, -1) == -1)
+				return;
+			break;
+		case 18:
+			input_reply(ictx, "\033[8;%u;%u", wp->sy, wp->sx);
 			break;
 		default:
 			log_debug("%s: unknown '%c'", __func__, ictx->ch);
 			break;
 		}
-		break;
-	case INPUT_CSI_VPA:
-		n = input_get(ictx, 0, 1, 1);
-		screen_write_cursormove(sctx, s->cx, n - 1);
-		break;
-	case INPUT_CSI_DECSCUSR:
-		n = input_get(ictx, 0, 0, 0);
-		screen_set_cursor_style(s, n);
-		break;
+		m++;
 	}
-
-	return (0);
 }
 
 /* Handle CSI SGR. */

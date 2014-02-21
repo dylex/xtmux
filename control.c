@@ -55,6 +55,7 @@ control_callback(struct client *c, int closed, unused void *data)
 {
 	char		*line, *cause;
 	struct cmd_list	*cmdlist;
+	struct cmd	*cmd;
 
 	if (closed)
 		c->flags |= CLIENT_EXIT;
@@ -72,12 +73,14 @@ control_callback(struct client *c, int closed, unused void *data)
 			c->cmdq->time = time(NULL);
 			c->cmdq->number++;
 
-			cmdq_guard(c->cmdq, "begin");
+			cmdq_guard(c->cmdq, "begin", 1);
 			control_write(c, "parse error: %s", cause);
-			cmdq_guard(c->cmdq, "error");
+			cmdq_guard(c->cmdq, "error", 1);
 
 			free(cause);
 		} else {
+			TAILQ_FOREACH(cmd, &cmdlist->list, qentry)
+				cmd->flags |= CMD_CONTROL;
 			cmdq_run(c->cmdq, cmdlist);
 			cmd_list_free(cmdlist);
 		}
