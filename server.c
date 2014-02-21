@@ -140,6 +140,11 @@ server_start(int lockfd, char *lockfile)
 		fatal("event_reinit failed");
 	clear_signals(0);
 
+#if LIBEVENT_VERSION_NUMBER >= 0x02000400
+//	if (debug_level > 1)
+//		event_enable_debug_mode();
+#endif
+
 	logfile("server");
 	log_debug("server started, pid %ld", (long) getpid());
 

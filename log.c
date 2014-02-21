@@ -63,11 +63,6 @@ log_open(int level, const char *path)
 		return;
 	log_level = level;
 
-#if LIBEVENT_VERSION_NUMBER >= 0x02000400
-	if (level > 1)
-		event_enable_debug_mode();
-#endif
-
 	setlinebuf(log_file);
 	event_set_log_callback(log_event_cb);
 

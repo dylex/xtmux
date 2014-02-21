@@ -362,12 +362,12 @@ client_send_identify(int flags)
 	for (ss = environ; *ss != NULL; ss++)
 		client_write_one(MSG_IDENTIFY_ENVIRON, -1, *ss, strlen(*ss) + 1);
 
+	client_write_one(MSG_IDENTIFY_DONE, -1, NULL, 0);
+
 #ifdef XTMUX
 	if (xdisplay)
 		client_write_one(MSG_XDISPLAY, -1, xdisplay, strlen(xdisplay) + 1);
 #endif
-
-	client_write_one(MSG_IDENTIFY_DONE, -1, NULL, 0);
 
 	client_update_event();
 }
