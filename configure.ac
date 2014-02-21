@@ -1,10 +1,10 @@
 # $Id$
 
 # Miscellaneous autofoo bullshit.
-AC_INIT(tmux, 1.8)
+AC_INIT(tmux, 1.9)
 
 AC_CONFIG_AUX_DIR(etc)
-AM_INIT_AUTOMAKE([foreign])
+AM_INIT_AUTOMAKE([foreign subdir-objects])
 
 AC_CANONICAL_HOST
 
@@ -16,7 +16,11 @@ AC_CANONICAL_HOST
 # Set up the compiler in two different ways and say yes we may want to install.
 AC_PROG_CC
 AM_PROG_CC_C_O
+AC_PROG_MKDIR_P
 AC_PROG_INSTALL
+
+# Default tmux.conf goes in /etc not ${prefix}/etc.
+test "$sysconfdir" = '${prefix}/etc' && sysconfdir=/etc
 
 # Check for various headers. Alternatives included from compat.h.
 AC_CHECK_HEADERS(
@@ -132,7 +136,7 @@ fi
 # Look for curses.
 AC_SEARCH_LIBS(
 	setupterm,
-	[terminfo curses ncurses],
+	[terminfo curses ncurses tinfo],
 	found_curses=yes,
 	found_curses=no
 )
@@ -309,9 +313,33 @@ AM_CONDITIONAL(NO_STRTONUM, [test "x$found_strtonum" = xno])
 # Look for strnvis, compat/{vis,unvis}.c used if missing.
 AC_CHECK_FUNC(strnvis, found_strnvis=yes, found_strnvis=no)
 if test "x$found_strnvis" = xyes; then
+	AC_MSG_CHECKING(if strnvis is broken)
+	AC_EGREP_HEADER([strnvis\(char \*, const char \*, size_t, int\)],
+		        vis.h,
+		        AC_MSG_RESULT(no),
+			[found_strnvis=no])
+	if test "x$found_strnvis" = xno; then
+		AC_MSG_RESULT(yes)
+	fi
+fi
+if test "x$found_strnvis" = xyes; then
 	AC_DEFINE(HAVE_VIS)
 fi
 AM_CONDITIONAL(NO_VIS, [test "x$found_strnvis" = xno])
+
+# Look for cfmakeraw, compat/cfmakeraw.c used if missing.
+AC_CHECK_FUNC(cfmakeraw, found_cfmakeraw=yes, found_cfmakeraw=no)
+if test "x$found_cfmakeraw" = xyes; then
+	AC_DEFINE(HAVE_CFMAKERAW)
+fi
+AM_CONDITIONAL(NO_CFMAKERAW, [test "x$found_cfmakeraw" = xno])
+
+# Look for openat, compat/openat.c used if missing.
+AC_CHECK_FUNC(openat, found_openat=yes, found_openat=no)
+if test "x$found_openat" = xyes; then
+	AC_DEFINE(HAVE_OPENAT)
+fi
+AM_CONDITIONAL(NO_OPENAT, [test "x$found_openat" = xno])
 
 # Look for getopt. glibc's getopt does not enforce argument order and the ways
 # of making it do so are stupid, so just use our own instead.
@@ -345,6 +373,7 @@ AC_CHECK_FUNCS(
 		dirfd \
 		setproctitle \
 		sysconf \
+		cfmakeraw \
 	]
 )
 
@@ -416,6 +445,10 @@ else
 	AC_MSG_RESULT(no)
 fi
 
+# Man page defaults to mdoc.
+MANFORMAT=mdoc
+AC_SUBST(MANFORMAT)
+
 # Figure out the platform for osdep-*.c and forkpty-*.c.
 AC_MSG_CHECKING(platform)
 case "$host_os" in
@@ -455,6 +488,7 @@ case "$host_os" in
 	*solaris*)
 		AC_MSG_RESULT(sunos)
 		PLATFORM=sunos
+		MANFORMAT=man
 		;;
 	*hpux*)
 		AC_MSG_RESULT(hpux)

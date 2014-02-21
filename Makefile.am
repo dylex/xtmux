@@ -2,18 +2,18 @@
 
 # Obvious program stuff.
 bin_PROGRAMS = tmux
-dist_man1_MANS = tmux.1
+CLEANFILES = tmux.1.mdoc tmux.1.man
 
 # Distribution tarball options.
 EXTRA_DIST = \
-	CHANGES FAQ README TODO examples compat \
-	array.h compat.h tmux.h osdep-*.c
+	CHANGES FAQ README TODO COPYING examples compat \
+	array.h compat.h tmux.h osdep-*.c mdoc2man.awk tmux.1
 dist-hook:
 	grep "^#found_debug=" configure
 	find $(distdir) -name .svn -type d|xargs rm -Rf
 
 # Preprocessor flags.
-CPPFLAGS += @XOPEN_DEFINES@
+CPPFLAGS += @XOPEN_DEFINES@ -DTMUX_CONF="\"$(sysconfdir)/tmux.conf\""
 
 # glibc as usual does things ass-backwards and hides useful things by default,
 # so everyone has to add this.
@@ -48,7 +48,11 @@ endif
 
 # Set flags for Solaris.
 if IS_SUNOS
+if IS_GCC
+CPPFLAGS += -D_XPG6 -D__EXTENSIONS__ -D_POSIX_PTHREAD_SEMANTICS
+else
 CPPFLAGS += -D_XPG4_2 -D__EXTENSIONS__ -D_POSIX_PTHREAD_SEMANTICS
+endif
 endif
 
 # Set flags for Sun CC.
@@ -118,7 +122,6 @@ dist_tmux_SOURCES = \
 	cmd-select-pane.c \
 	cmd-select-window.c \
 	cmd-send-keys.c \
-	cmd-server-info.c \
 	cmd-set-buffer.c \
 	cmd-set-environment.c \
 	cmd-set-option.c \
@@ -127,7 +130,6 @@ dist_tmux_SOURCES = \
 	cmd-show-options.c \
 	cmd-source-file.c \
 	cmd-split-window.c \
-	cmd-start-server.c \
 	cmd-string.c \
 	cmd-suspend-client.c \
 	cmd-swap-pane.c \
@@ -171,6 +173,7 @@ dist_tmux_SOURCES = \
 	session.c \
 	signal.c \
 	status.c \
+	style.c \
 	tmux.c \
 	tty-acs.c \
 	tty-keys.c \
@@ -231,6 +234,25 @@ endif
 if NO_B64_NTOP
 nodist_tmux_SOURCES += compat/b64_ntop.c
 endif
+if NO_CFMAKERAW
+nodist_tmux_SOURCES += compat/cfmakeraw.c
+endif
+if NO_OPENAT
+nodist_tmux_SOURCES += compat/openat.c
+endif
+
+# Install tmux.1 in the right format.
+install-exec-hook:
+	if test x@MANFORMAT@ = xmdoc; then \
+		sed -e "s|@SYSCONFDIR@|$(sysconfdir)|g" $(srcdir)/tmux.1 \
+			>$(srcdir)/tmux.1.mdoc; \
+	else \
+		sed -e "s|@SYSCONFDIR@|$(sysconfdir)|g" $(srcdir)/tmux.1| \
+			$(AWK) -fmdoc2man.awk >$(srcdir)/tmux.1.man; \
+	fi
+	$(MKDIR_P) $(DESTDIR)$(mandir)/man1
+	$(INSTALL_DATA) $(srcdir)/tmux.1.@MANFORMAT@ \
+		$(DESTDIR)$(mandir)/man1/tmux.1
 
 # Update SF web site.
 upload-index.html: update-index.html

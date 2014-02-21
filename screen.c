@@ -111,12 +111,8 @@ screen_set_cursor_colour(struct screen *s, const char *colour_string)
 void
 screen_set_title(struct screen *s, const char *title)
 {
-	char	tmp[BUFSIZ];
-
-	strlcpy(tmp, title, sizeof tmp);
-
 	free(s->title);
-	s->title = xstrdup(tmp);
+	s->title = xstrdup(title);
 }
 
 /* Resize screen. */
@@ -366,7 +362,13 @@ void
 screen_reflow(struct screen *s, u_int new_x)
 {
 	struct grid	*old = s->grid;
+	u_int		 change;
 
 	s->grid = grid_create(old->sx, old->sy, old->hlimit);
-	s->cy -= grid_reflow(s->grid, old, new_x);
+
+	change = grid_reflow(s->grid, old, new_x);
+	if (change < s->cy)
+		s->cy -= change;
+	else
+		s->cy = 0;
 }

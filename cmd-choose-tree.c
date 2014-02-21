@@ -41,7 +41,6 @@ const struct cmd_entry cmd_choose_tree_entry = {
 	"[-W format] " CMD_TARGET_WINDOW_USAGE,
 	0,
 	NULL,
-	NULL,
 	cmd_choose_tree_exec
 };
 
@@ -51,7 +50,6 @@ const struct cmd_entry cmd_choose_session_entry = {
 	CMD_TARGET_WINDOW_USAGE " [-F format] [template]",
 	0,
 	NULL,
-	NULL,
 	cmd_choose_tree_exec
 };
 
@@ -60,7 +58,6 @@ const struct cmd_entry cmd_choose_window_entry = {
 	"F:t:", 0, 1,
 	CMD_TARGET_WINDOW_USAGE "[-F format] [template]",
 	0,
-	NULL,
 	NULL,
 	cmd_choose_tree_exec
 };
@@ -89,10 +86,7 @@ cmd_choose_tree_exec(struct cmd *self, struct cmd_q *cmdq)
 		return (CMD_RETURN_ERROR);
 	}
 
-	if ((s = c->session) == NULL)
-		return (CMD_RETURN_ERROR);
-
-	if ((wl = cmd_find_window(cmdq, args_get(args, 't'), NULL)) == NULL)
+	if ((wl = cmd_find_window(cmdq, args_get(args, 't'), &s)) == NULL)
 		return (CMD_RETURN_ERROR);
 
 	if (window_pane_set_mode(wl->window->active, &window_choose_mode) != 0)
@@ -232,8 +226,10 @@ windows_only:
 
 	window_choose_ready(wl->window->active, cur_win, NULL);
 
-	if (args_has(args, 'u'))
+	if (args_has(args, 'u')) {
 		window_choose_expand_all(wl->window->active);
+		window_choose_set_current(wl->window->active, cur_win);
+	}
 
 	return (CMD_RETURN_NORMAL);
 }

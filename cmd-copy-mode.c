@@ -33,7 +33,6 @@ const struct cmd_entry cmd_copy_mode_entry = {
 	"[-u] " CMD_TARGET_PANE_USAGE,
 	0,
 	cmd_copy_mode_key_binding,
-	NULL,
 	cmd_copy_mode_exec
 };
 
@@ -54,9 +53,11 @@ cmd_copy_mode_exec(struct cmd *self, struct cmd_q *cmdq)
 	if (cmd_find_pane(cmdq, args_get(args, 't'), NULL, &wp) == NULL)
 		return (CMD_RETURN_ERROR);
 
-	if (window_pane_set_mode(wp, &window_copy_mode) != 0)
-		return (CMD_RETURN_NORMAL);
-	window_copy_init_from_pane(wp);
+	if (wp->mode != &window_copy_mode) {
+		if (window_pane_set_mode(wp, &window_copy_mode) != 0)
+			return (CMD_RETURN_NORMAL);
+		window_copy_init_from_pane(wp);
+	}
 	if (wp->mode == &window_copy_mode && args_has(self->args, 'u'))
 		window_copy_pageup(wp);
 

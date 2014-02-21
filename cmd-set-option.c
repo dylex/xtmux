@@ -60,13 +60,15 @@ struct options_entry *cmd_set_option_flag(struct cmd *, struct cmd_q *,
 struct options_entry *cmd_set_option_choice(struct cmd *, struct cmd_q *,
 	    const struct options_table_entry *, struct options *,
 	    const char *);
+struct options_entry *cmd_set_option_style(struct cmd *, struct cmd_q *,
+	    const struct options_table_entry *, struct options *,
+	    const char *);
 
 const struct cmd_entry cmd_set_option_entry = {
 	"set-option", "set",
 	"acgoqst:uw", 1, 2,
 	"[-acgosquw] [-t target-session|target-window|target-client] option [value]",
 	0,
-	NULL,
 	NULL,
 	cmd_set_option_exec
 };
@@ -76,7 +78,6 @@ const struct cmd_entry cmd_set_window_option_entry = {
 	"agoqt:u", 1, 2,
 	"[-agoqu] " CMD_TARGET_WINDOW_USAGE " option [value]",
 	0,
-	NULL,
 	NULL,
 	cmd_set_option_exec
 };
@@ -128,8 +129,13 @@ cmd_set_option_exec(struct cmd *self, struct cmd_q *cmdq)
 			oo = &global_w_options;
 		else {
 			wl = cmd_find_window(cmdq, args_get(args, 't'), NULL);
-			if (wl == NULL)
+			if (wl == NULL) {
+				cmdq_error(cmdq,
+				    "couldn't set '%s'%s", optstr,
+				    (!args_has(args, 't') && !args_has(args,
+				    'g')) ? " need target window or -g" : "");
 				return (CMD_RETURN_ERROR);
+			}
 			oo = &wl->window->options;
 		}
 	} else if (table == session_options_table) {
@@ -137,8 +143,13 @@ cmd_set_option_exec(struct cmd *self, struct cmd_q *cmdq)
 			oo = &global_s_options;
 		else {
 			s = cmd_find_session(cmdq, args_get(args, 't'), 0);
-			if (s == NULL)
+			if (s == NULL) {
+				cmdq_error(cmdq,
+				    "couldn't set '%s'%s", optstr,
+				    (!args_has(args, 't') && !args_has(args,
+				    'g')) ? " need target session or -g" : "");
 				return (CMD_RETURN_ERROR);
+			}
 			oo = &s->options;
 		}
 	} else if (table == client_options_table) {
@@ -170,7 +181,7 @@ cmd_set_option_exec(struct cmd *self, struct cmd_q *cmdq)
 	}
 
 	/* Start or stop timers when automatic-rename changed. */
-	if (strcmp (oe->name, "automatic-rename") == 0) {
+	if (strcmp(oe->name, "automatic-rename") == 0) {
 		for (i = 0; i < ARRAY_LENGTH(&windows); i++) {
 			if ((w = ARRAY_ITEM(&windows, i)) == NULL)
 				continue;
@@ -305,15 +316,22 @@ cmd_set_option_set(struct cmd *self, struct cmd_q *cmdq,
 		break;
 	case OPTIONS_TABLE_COLOUR:
 		o = cmd_set_option_colour(self, cmdq, oe, oo, value);
+		if (o != NULL)
+			style_update_new(oo, o->name, oe->style);
 		break;
 	case OPTIONS_TABLE_ATTRIBUTES:
 		o = cmd_set_option_attributes(self, cmdq, oe, oo, value);
+		if (o != NULL)
+			style_update_new(oo, o->name, oe->style);
 		break;
 	case OPTIONS_TABLE_FLAG:
 		o = cmd_set_option_flag(self, cmdq, oe, oo, value);
 		break;
 	case OPTIONS_TABLE_CHOICE:
 		o = cmd_set_option_choice(self, cmdq, oe, oo, value);
+		break;
+	case OPTIONS_TABLE_STYLE:
+		o = cmd_set_option_style(self, cmdq, oe, oo, value);
 		break;
 	}
 	if (o == NULL)
@@ -462,4 +480,24 @@ cmd_set_option_choice(unused struct cmd *self, struct cmd_q *cmdq,
 	}
 
 	return (options_set_number(oo, oe->name, choice));
+}
+
+/* Set a style option. */
+struct options_entry *
+cmd_set_option_style(struct cmd *self, struct cmd_q *cmdq,
+    const struct options_table_entry *oe, struct options *oo,
+    const char *value)
+{
+	struct args		*args = self->args;
+	struct options_entry	*o;
+	int			 append;
+
+	append = args_has(args, 'a');
+	if ((o = options_set_style(oo, oe->name, value, append)) == NULL) {
+		cmdq_error(cmdq, "bad style: %s", value);
+		return (NULL);
+	}
+
+	style_update_old(oo, oe->name, &o->style);
+	return (o);
 }

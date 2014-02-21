@@ -1,7 +1,8 @@
 /* $Id$ */
 
 /*
- * Copyright (c) 2007 Nicholas Marriott <nicm@users.sourceforge.net>
+ * Copyright (c) 2013 Dagobert Michelsen
+ * Copyright (c) 2013 Nicholas Marriott <nicm@users.sourceforge.net>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,42 +17,16 @@
  * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/types.h>
-
-#include <signal.h>
-#include <unistd.h>
+#include <string.h>
 
 #include "tmux.h"
 
-/*
- * Kill the server and do nothing else.
- */
-
-enum cmd_retval	 cmd_kill_server_exec(struct cmd *, struct cmd_q *);
-
-const struct cmd_entry cmd_kill_server_entry = {
-	"kill-server", NULL,
-	"", 0, 0,
-	"",
-	0,
-	NULL,
-	cmd_kill_server_exec
-};
-
-const struct cmd_entry cmd_start_server_entry = {
-	"start-server", "start",
-	"", 0, 0,
-	"",
-	CMD_STARTSERVER,
-	NULL,
-	cmd_kill_server_exec
-};
-
-enum cmd_retval
-cmd_kill_server_exec(struct cmd *self, unused struct cmd_q *cmdq)
+void
+cfmakeraw(struct termios *tio)
 {
-	if (self->entry == &cmd_kill_server_entry)
-		kill(getpid(), SIGTERM);
-
-	return (CMD_RETURN_NORMAL);
+	tio->c_iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL|IXON);
+	tio->c_oflag &= ~OPOST;
+	tio->c_lflag &= ~(ECHO|ECHONL|ICANON|ISIG|IEXTEN);
+	tio->c_cflag &= ~(CSIZE|PARENB);
+	tio->c_cflag |= CS8;
 }
