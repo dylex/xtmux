@@ -10,6 +10,7 @@ EXTRA_DIST = \
 	array.h compat.h tmux.h osdep-*.c mdoc2man.awk tmux.1 \
 	README.xtmux xtmux.c
 dist-hook:
+	make clean
 	grep "^#found_debug=" configure
 	find $(distdir) -name .svn -type d|xargs rm -Rf
 
