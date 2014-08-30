@@ -555,7 +555,7 @@ tty_update_mode(struct tty *tty, int mode, struct screen *s)
 		else
 			tty_putcode(tty, TTYC_CIVIS);
 	}
-	if (tty->cstyle != s->cstyle && s->cstyle <= 4) {
+	if (tty->cstyle != s->cstyle) {
 		if (tty_term_has(tty->term, TTYC_SS)) {
 			if (s->cstyle == 0 &&
 			    tty_term_has(tty->term, TTYC_SE))
