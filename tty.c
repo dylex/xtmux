@@ -842,7 +842,11 @@ tty_cmd_clearcharacter(struct tty *tty, const struct tty_ctx *ctx)
 
 	tty_cursor_pane(tty, ctx, ctx->ocx, ctx->ocy);
 
-	if (tty_term_has(tty->term, TTYC_ECH))
+	if (
+#ifdef XTMUX
+	    !tty->xtmux &&
+#endif
+	    tty_term_has(tty->term, TTYC_ECH))
 		tty_putcode1(tty, TTYC_ECH, ctx->num);
 	else {
 		for (i = 0; i < ctx->num; i++)
