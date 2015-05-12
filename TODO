@@ -1,5 +1,4 @@
 - command bits and pieces:
-	* use "--" to mark start of command w/ neww etc to avoid quoting
 	* why doesn't command-prompt work if made read-only?
 	* allow multiple targets: fnmatch for -t/-c, for example detach all
 	  clients with -t*
@@ -20,10 +19,10 @@
 	* way to set socket path from config file
 
 - format improvements:
+	* last bits of status_replace into formats?
 	* option to quote format (#{session_name:quoted})
 	* formats need conditions for >0 (for #P)
 	* some way to pad # stuff with spaces, #!2T maybe
-	* status stuff is redundant with formats
 	* last window update time and format for it
 	* formats to show if a window is linked into multiple sessions, into
 	  multiple attached sessions, and is the active window in multiple
@@ -33,7 +32,7 @@
 	* choose-pane command (augment choose-tree to do this?)
 	* choose-mode and copy-mode are very similar, make choose-mode a subset?
 	* flag to choose-* for sort order
-	* choose mode would be better per client than per window
+	* choose mode would be better per client than per window?
 	* two choices (first one then second, for swap-pane and join-pane)
 
 - improve monitor-*:
@@ -44,11 +43,29 @@
 
 - improve mouse support:
 	* bind commands to mouse in different areas? 
-	* more fine-grained options
+	* more fine-grained options?
 	* commands executed when clicking on a pattern (URL)
-	* send arrow key sequences for mouse scroll wheel in alternate screen
 	* mouse-select-pane will screw up with !MODE_MOUSE_STANDARD (it sets
 	  the flag on w/o checking the others before calling tty_update_mode)
+	* mouse can be like normal key bindings?
+	      - {button-{1,2,3},wheel-{up,down}}-{status,pane,border} and
+	        drag-{start,end}-{status,pane,border} plus the modifiers
+	      - resize and copy can be special cases - once you call something
+	        like copy-mode -M or resize-pane -M to start the drag, it tracks
+	        mouse until you call -m to stop the drag. or just keep drags
+	        entirely special?
+	      - what happens with stuff that wants mouse inside? especially for
+	        pane clicks which need to run command AND pass event through
+	        (like mouse-select-pane). maybe just a flag to say whether it
+		always runs or only if pane hasn't taken mouse? or it could be
+		eg bind Button1Pane "select-pane -t=; send-keys -Mt='
+	      - also need a) some way to tell commands bound to key which
+	        window or pane the mouse key binding applies to (maybe a new
+	        special char in target, or pass targets through formats?) b) a
+	        way to bind repeat count to mode keys so that wheel up/down can
+	        do multiple lines c) send-keys -M to pass a mouse event through?
+	      - what does the mouse->KEYC_* conversion and find-the-pane bit?
+                server_client_handle_key?
 
 - hooks!
 
@@ -58,18 +75,15 @@
 	* split-window -> split-pane??
 
 - better UTF-8 support:
-	* #22T can split in the middle of UTF-8 characters!
 	* window names and titles
 	* message display
 	* prompt input
 	* multibyte key input
-	* buffer_sample and the choose-* could show UTF-8 properly
 
 - copy/paste improvements:
 	* incremental searching
 	* append to buffer
 	* paste w/o trailing whitespace
-	* named buffers and allow gaps in the stack
 	* command to toggle selection not to move it in copy-mode
 
 - layout stuff
@@ -83,14 +97,16 @@
 	  panelink to replace layout_cell
 	* way to set hints/limits about pane size for resizing
 	* panning over window (window larger than visible)
+	* a mode where one application can cross two panes (ie x|y, width =
+          COLUMNS/2 but height = ROWS * 2)
+        * general key to space cells out evenly (horiz or vert) within their
+          parent cell (could replace even-vert/even-horiz layouts)
 
 - terminfo bits
 	* use a better termcap internally instead of screen, perhaps xterm
 	* use screen-256color when started on 256 colour terminal?
 	* need a tmux terminfo entry to document the extensions we are using in
 	  upstream terminfo
-	* support title stack, both internally and externally (restore on
-	  detach) http://docs.freebsd.org/cgi/getmsg.cgi?fetch=1149299+0+archive/2010/freebsd-questions/20100207.freebsd-questions
 
 - code cleanup
 	* instead of separate window and session options, just one master
@@ -116,6 +132,10 @@
 	  tell when in the config file - then we use cmdq->c if we need a
 	  client w/o a session else cmd_current_client
 	* optimize pane redraws, 20120318184853.GK10965@yelena.nicm.ath.cx
+	* cmd_find_* could be much simpler - parse everything the same, only
+          difference is what to choose when not given a ":" or "." (such as a
+          plain "0" could be session, window or pane). So just cmd_find_target
+          with a type (session, window, or pane)..
 
 - miscellaneous
 	* way to keep a job running just read its last line of output for #()
@@ -123,11 +143,13 @@
 	* live update: server started with -U connects to server, requests
 	  sessions and windows, receives file descriptors
 	* there are inconsistencies in what we get from old shell and what
-	  comes from config for new sessions and windows
+	  comes from config for new sessions and windows. likewise, panes and
+	  jobs and run-shell and lock command all start with slightly different
+	  environments
 	* multiline status line?
 	* bind commands to key sequences -- make it so ALL keys go through a
 	  table, first an implicit table in which C-b is the only default
 	  binding to a command that says "next key from $othertable" and so
 	  on. means -n can go away as well
-
-
+	* customizable command aliases
+	* any remaining clients in wait-for should be woken when server exits

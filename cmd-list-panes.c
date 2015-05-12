@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2009 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -40,7 +40,6 @@ const struct cmd_entry cmd_list_panes_entry = {
 	"asF:t:", 0, 0,
 	"[-as] [-F format] " CMD_TARGET_WINDOW_USAGE,
 	0,
-	NULL,
 	cmd_list_panes_exec
 };
 
@@ -129,9 +128,7 @@ cmd_list_panes_window(struct cmd *self,
 	TAILQ_FOREACH(wp, &wl->window->panes, entry) {
 		ft = format_create();
 		format_add(ft, "line", "%u", n);
-		format_session(ft, s);
-		format_winlink(ft, s, wl);
-		format_window_pane(ft, wp);
+		format_defaults(ft, NULL, s, wl, wp);
 
 		line = format_expand(ft, template);
 		cmdq_print(cmdq, "%s", line);

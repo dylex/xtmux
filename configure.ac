@@ -1,7 +1,9 @@
 # $Id$
 
 # Miscellaneous autofoo bullshit.
-AC_INIT(tmux, 1.9ax)
+AC_INIT(tmux, 2.0x)
+RELEASE=1.9ax
+AC_SUBST(RELEASE)
 
 AC_CONFIG_AUX_DIR(etc)
 AM_INIT_AUTOMAKE([foreign subdir-objects])
@@ -16,36 +18,15 @@ AC_CANONICAL_HOST
 # Set up the compiler in two different ways and say yes we may want to install.
 AC_PROG_CC
 AM_PROG_CC_C_O
-AC_PROG_MKDIR_P
+AC_PROG_CPP
+AC_PROG_EGREP
 AC_PROG_INSTALL
 
 # Default tmux.conf goes in /etc not ${prefix}/etc.
 test "$sysconfdir" = '${prefix}/etc' && sysconfdir=/etc
 
-# Check for various headers. Alternatives included from compat.h.
-AC_CHECK_HEADERS(
-	[ \
-		bitstring.h \
-		curses.h \
-		dirent.h \
-		fcntl.h \
-		inttypes.h \
-		libutil.h \
-		ncurses.h \
-		ndir.h \
-		paths.h \
-		pty.h \
-		stdint.h \
-		sys/dir.h \
-		sys/ndir.h \
-		sys/tree.h \
-		term.h \
-		util.h \
-	]
-)
-
 # Is this a debug build?
-#found_debug=yes
+found_debug=yes
 AC_ARG_ENABLE(
 	debug,
 	AC_HELP_STRING(--enable-debug, create a debug build),
@@ -55,12 +36,12 @@ AM_CONDITIONAL(IS_DEBUG, test "x$found_debug" = xyes)
 
 # Is this a static build?
 AC_ARG_ENABLE(
-       static,
-       AC_HELP_STRING(--enable-static, create a static build),
-       found_static=$enable_static
+	static,
+	AC_HELP_STRING(--enable-static, create a static build),
+	found_static=$enable_static
 )
 if test "x$found_static" = xyes; then
-   LDFLAGS="$LDFLAGS -static"
+	LDFLAGS="$LDFLAGS -static"
 fi
 
 # Is this gcc?
@@ -108,6 +89,40 @@ AC_EGREP_CPP(
 AM_CONDITIONAL(IS_GLIBC, test "x$found_glibc" = xyes)
 AC_MSG_RESULT($found_glibc)
 
+# Check for various headers. Alternatives included from compat.h.
+AC_CHECK_HEADERS(
+	[ \
+		bitstring.h \
+		curses.h \
+		dirent.h \
+		fcntl.h \
+		inttypes.h \
+		libutil.h \
+		ncurses.h \
+		ndir.h \
+		paths.h \
+		pty.h \
+		stdint.h \
+		sys/dir.h \
+		sys/ndir.h \
+		sys/tree.h \
+		term.h \
+		util.h \
+	]
+)
+
+# Check for some functions that are replaced or omitted.
+AC_CHECK_FUNCS(
+	[ \
+		bzero \
+		dirfd \
+		flock \
+		setproctitle \
+		sysconf \
+		cfmakeraw \
+	]
+)
+
 # Look for clock_gettime. Must come before event_init.
 AC_SEARCH_LIBS(clock_gettime, rt)
 
@@ -141,7 +156,14 @@ AC_SEARCH_LIBS(
 	found_curses=no
 )
 if test "x$found_curses" = xno; then
-    AC_MSG_ERROR("curses not found")
+	AC_MSG_ERROR("curses not found")
+fi
+
+# Look for utempter.
+AC_CHECK_HEADER(utempter.h, have_utempter=yes, have_utempter=no)
+if test "x$have_utempter" = xyes; then
+	AC_DEFINE(HAVE_UTEMPTER)
+	LIBS="$LIBS -lutempter"
 fi
 
 # Check for b64_ntop.
@@ -221,7 +243,7 @@ if test "x$found_cmsg_data" = xno; then
 	if test "x$found_cmsg_data" = xyes; then
 		XOPEN_DEFINES="-D_XOPEN_SOURCE -D_XOPEN_SOURCE_EXTENDED"
 	else
-    		AC_MSG_ERROR("CMSG_DATA not found")
+		AC_MSG_ERROR("CMSG_DATA not found")
 	fi
 fi
 AC_SUBST(XOPEN_DEFINES)
@@ -289,6 +311,13 @@ if test "x$found_fgetln" = xyes; then
 fi
 AM_CONDITIONAL(NO_FGETLN, [test "x$found_fgetln" = xno])
 
+# Look for fparseln, compat/fparseln.c used if missing.
+AC_CHECK_FUNC(fparseln, found_fparseln=yes, found_fparseln=no)
+if test "x$found_fparseln" = xyes; then
+	AC_DEFINE(HAVE_FPARSELN)
+fi
+AM_CONDITIONAL(NO_FPARSELN, [test "x$found_fparseln" = xno])
+
 # Look for strcasestr, compat/strcasestr.c used if missing.
 AC_CHECK_FUNC(strcasestr, found_strcasestr=yes, found_strcasestr=no)
 if test "x$found_strcasestr" = xyes; then
@@ -315,8 +344,8 @@ AC_CHECK_FUNC(strnvis, found_strnvis=yes, found_strnvis=no)
 if test "x$found_strnvis" = xyes; then
 	AC_MSG_CHECKING(if strnvis is broken)
 	AC_EGREP_HEADER([strnvis\(char \*, const char \*, size_t, int\)],
-		        vis.h,
-		        AC_MSG_RESULT(no),
+			vis.h,
+			AC_MSG_RESULT(no),
 			[found_strnvis=no])
 	if test "x$found_strnvis" = xno; then
 		AC_MSG_RESULT(yes)
@@ -366,17 +395,6 @@ if test "x$found_getopt" != xno; then
 fi
 AM_CONDITIONAL(NO_GETOPT, [test "x$found_getopt" = xno])
 
-# Check for some functions that are replaced or omitted.
-AC_CHECK_FUNCS(
-	[ \
-		bzero \
-		dirfd \
-		setproctitle \
-		sysconf \
-		cfmakeraw \
-	]
-)
-
 # Check for BSD-style integer types.
 AC_MSG_CHECKING(for BSD-style unsigned types)
 AC_COMPILE_IFELSE([AC_LANG_SOURCE(
@@ -386,10 +404,10 @@ AC_COMPILE_IFELSE([AC_LANG_SOURCE(
 		#include <stdint.h>
 		#else
 		#include <inttypes.h>
-		#endif	
+		#endif
 		int main(void)
 		{ u_int8_t u8; u_int16_t u16; u_int32_t u32; u_int64_t u64; }
-       ])],
+	])],
 	[AC_DEFINE(HAVE_BSD_TYPES) AC_MSG_RESULT(yes)],
 	AC_MSG_RESULT(no)
 )
@@ -423,7 +441,7 @@ AC_LINK_IFELSE([AC_LANG_SOURCE(
 			printf("%s\n", cp);
 			exit(0);
 		}
-       ])],
+	])],
 	[AC_DEFINE(HAVE___PROGNAME) AC_MSG_RESULT(yes)],
 	AC_MSG_RESULT(no)
 )
@@ -494,6 +512,10 @@ case "$host_os" in
 		AC_MSG_RESULT(hpux)
 		PLATFORM=hpux
 		;;
+	*cygwin*)
+		AC_MSG_RESULT(cygwin)
+		PLATFORM=cygwin
+		;;
 	*)
 		AC_MSG_RESULT(unknown)
 		PLATFORM=unknown
@@ -530,5 +552,5 @@ if test "x$have_x" = xyes ; then
 	AC_SEARCH_LIBS(XOpenDisplay, X11)
 fi
 
-# autoconf should create a Makefile. A shock!
+# autoconf should create a Makefile.
 AC_OUTPUT(Makefile)

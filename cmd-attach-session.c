@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -37,7 +37,6 @@ const struct cmd_entry cmd_attach_session_entry = {
 	"c:drt:", 0, 0,
 	"[-dr] [-c working-directory] " CMD_TARGET_SESSION_USAGE,
 	CMD_CANTNEST|CMD_STARTSERVER,
-	NULL,
 	cmd_attach_session_exec
 };
 
@@ -107,11 +106,8 @@ cmd_attach_session(struct cmd_q *cmdq, const char *tflag, int dflag, int rflag,
 
 		if (cflag != NULL) {
 			ft = format_create();
-			if ((c = cmd_find_client(cmdq, NULL, 1)) != NULL)
-				format_client(ft, c);
-			format_session(ft, s);
-			format_winlink(ft, s, s->curw);
-			format_window_pane(ft, s->curw->window->active);
+			format_defaults(ft, cmd_find_client(cmdq, NULL, 1), s,
+			    NULL, NULL);
 			cp = format_expand(ft, cflag);
 			format_free(ft);
 
@@ -132,7 +128,7 @@ cmd_attach_session(struct cmd_q *cmdq, const char *tflag, int dflag, int rflag,
 		server_redraw_client(cmdq->client);
 		s->curw->flags &= ~WINLINK_ALERTFLAGS;
 	} else {
-		if (server_client_open(cmdq->client, s, &cause) != 0) {
+		if (server_client_open(cmdq->client, &cause) != 0) {
 			cmdq_error(cmdq, "open terminal failed: %s", cause);
 			free(cause);
 			return (CMD_RETURN_ERROR);
@@ -140,11 +136,8 @@ cmd_attach_session(struct cmd_q *cmdq, const char *tflag, int dflag, int rflag,
 
 		if (cflag != NULL) {
 			ft = format_create();
-			if ((c = cmd_find_client(cmdq, NULL, 1)) != NULL)
-				format_client(ft, c);
-			format_session(ft, s);
-			format_winlink(ft, s, s->curw);
-			format_window_pane(ft, s->curw->window->active);
+			format_defaults(ft, cmd_find_client(cmdq, NULL, 1), s,
+			    NULL, NULL);
 			cp = format_expand(ft, cflag);
 			format_free(ft);
 

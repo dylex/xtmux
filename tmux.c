@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <locale.h>
 #include <pwd.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@ char		*cfg_file;
 char		*shell_cmd;
 int		 debug_level;
 time_t		 start_time;
-char		 socket_path[MAXPATHLEN];
+char		 socket_path[PATH_MAX];
 int		 login_shell;
 char		*environ_path;
 #ifdef XTMUX
@@ -81,7 +82,7 @@ logfile(const char *name)
 
 	if (debug_level > 0) {
 		xasprintf(&path, "tmux-%s-%ld.log", name, (long) getpid());
-		log_open(debug_level, path);
+		log_open(path);
 		free(path);
 	}
 }
@@ -135,13 +136,13 @@ areshell(const char *shell)
 char *
 makesocketpath(const char *label)
 {
-	char		base[MAXPATHLEN], realbase[MAXPATHLEN], *path, *s;
+	char		base[PATH_MAX], realbase[PATH_MAX], *path, *s;
 	struct stat	sb;
 	u_int		uid;
 
 	uid = getuid();
 	if ((s = getenv("TMUX_TMPDIR")) != NULL && *s != '\0')
-		xsnprintf(base, sizeof base, "%s/", s);
+		xsnprintf(base, sizeof base, "%s/tmux-%u", s, uid);
 	else if ((s = getenv("TMPDIR")) != NULL && *s != '\0')
 		xsnprintf(base, sizeof base, "%s/tmux-%u", s, uid);
 	else
@@ -156,8 +157,7 @@ makesocketpath(const char *label)
 		errno = ENOTDIR;
 		return (NULL);
 	}
-	if (sb.st_uid != uid || (!S_ISDIR(sb.st_mode) &&
-		sb.st_mode & (S_IRWXG|S_IRWXO)) != 0) {
+	if (sb.st_uid != uid || (sb.st_mode & S_IRWXO) != 0) {
 		errno = EACCES;
 		return (NULL);
 	}
@@ -213,11 +213,11 @@ int
 main(int argc, char **argv)
 {
 	struct passwd	*pw;
-	char		*s, *path, *label, **var, tmp[MAXPATHLEN];
+	char		*s, *path, *label, **var, tmp[PATH_MAX];
 	char		 in[256];
 	const char	*home;
 	long long	 pid;
-	int	 	 opt, flags, quiet, keys, session;
+	int	 	 opt, flags, keys, session;
 
 #if defined(DEBUG) && defined(__OpenBSD__)
 	malloc_options = (char *) "AFGJPX";
@@ -225,7 +225,7 @@ main(int argc, char **argv)
 
 	setlocale(LC_TIME, "");
 
-	quiet = flags = 0;
+	flags = 0;
 	label = path = NULL;
 	login_shell = (**argv == '-');
 	while ((opt = getopt(argc, argv, "2c:Cdf:lL:qS:uUVv"
@@ -262,7 +262,6 @@ main(int argc, char **argv)
 			label = xstrdup(optarg);
 			break;
 		case 'q':
-			quiet = 1;
 			break;
 		case 'S':
 			free(path);
@@ -317,11 +316,11 @@ main(int argc, char **argv)
 
 	options_init(&global_options, NULL);
 	options_table_populate_tree(server_options_table, &global_options);
-	options_set_number(&global_options, "quiet", quiet);
 
 	options_init(&global_s_options, NULL);
 	options_table_populate_tree(session_options_table, &global_s_options);
-	options_set_string(&global_s_options, "default-shell", "%s", getshell());
+	options_set_string(&global_s_options, "default-shell", "%s",
+	    getshell());
 
 	options_init(&global_w_options, NULL);
 	options_table_populate_tree(window_options_table, &global_w_options);

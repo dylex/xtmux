@@ -176,6 +176,17 @@ typedef uint64_t u_int64_t;
 #define TTY_NAME_MAX 32
 #endif
 
+#ifndef HOST_NAME_MAX
+#define HOST_NAME_MAX 255
+#endif
+
+#ifndef HAVE_FLOCK
+#define LOCK_SH 0
+#define LOCK_EX 0
+#define LOCK_NB 0
+#define flock(fd, op) (0)
+#endif
+
 #ifndef HAVE_BZERO
 #undef bzero
 #define bzero(buf, len) memset(buf, 0, len);
@@ -237,6 +248,10 @@ int		 vasprintf(char **, const char *, va_list);
 #ifndef HAVE_FGETLN
 /* fgetln.c */
 char		*fgetln(FILE *, size_t *);
+#endif
+
+#ifndef HAVE_FPARSELN
+char		*fparseln(FILE *, size_t *, size_t *, const char *, int);
 #endif
 
 #ifndef HAVE_SETENV

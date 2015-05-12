@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2008 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -33,7 +33,14 @@ const struct cmd_entry cmd_move_window_entry = {
 	"dkrs:t:", 0, 0,
 	"[-dkr] " CMD_SRCDST_WINDOW_USAGE,
 	0,
-	NULL,
+	cmd_move_window_exec
+};
+
+const struct cmd_entry cmd_link_window_entry = {
+	"link-window", "linkw",
+	"dks:t:", 0, 0,
+	"[-dk] " CMD_SRCDST_WINDOW_USAGE,
+	0,
 	cmd_move_window_exec
 };
 
@@ -47,7 +54,8 @@ cmd_move_window_exec(struct cmd *self, struct cmd_q *cmdq)
 	int		 idx, kflag, dflag;
 
 	if (args_has(args, 'r')) {
-		if ((s = cmd_find_session(cmdq, args_get(args, 't'), 0)) == NULL)
+		s = cmd_find_session(cmdq, args_get(args, 't'), 0);
+		if (s == NULL)
 			return (CMD_RETURN_ERROR);
 
 		session_renumber_windows(s);
@@ -63,12 +71,14 @@ cmd_move_window_exec(struct cmd *self, struct cmd_q *cmdq)
 
 	kflag = args_has(self->args, 'k');
 	dflag = args_has(self->args, 'd');
-	if (server_link_window(src, wl, dst, idx, kflag, !dflag, &cause) != 0) {
-		cmdq_error(cmdq, "can't move window: %s", cause);
+	if (server_link_window(src, wl, dst, idx, kflag, !dflag,
+	    &cause) != 0) {
+		cmdq_error(cmdq, "can't link window: %s", cause);
 		free(cause);
 		return (CMD_RETURN_ERROR);
 	}
-	server_unlink_window(src, wl);
+	if (self->entry == &cmd_move_window_entry)
+		server_unlink_window(src, wl);
 	recalculate_sizes();
 
 	return (CMD_RETURN_NORMAL);
