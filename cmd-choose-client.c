@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2009 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -27,6 +27,12 @@
  * Enter choice mode to choose a client.
  */
 
+#define CHOOSE_CLIENT_TEMPLATE					\
+	"#{client_tty}: #{session_name} "			\
+	"[#{client_width}x#{client_height} #{client_termname}]"	\
+	"#{?client_utf8, (utf8),}#{?client_readonly, (ro),} "	\
+	"(last used #{client_activity_string})"
+
 enum cmd_retval	 cmd_choose_client_exec(struct cmd *, struct cmd_q *);
 
 void	cmd_choose_client_callback(struct window_choose_data *);
@@ -36,7 +42,6 @@ const struct cmd_entry cmd_choose_client_entry = {
 	"F:t:", 0, 1,
 	CMD_TARGET_WINDOW_USAGE " [-F format] [template]",
 	0,
-	NULL,
 	cmd_choose_client_exec
 };
 
@@ -89,8 +94,7 @@ cmd_choose_client_exec(struct cmd *self, struct cmd_q *cmdq)
 
 		cdata->ft_template = xstrdup(template);
 		format_add(cdata->ft, "line", "%u", i);
-		format_session(cdata->ft, c1->session);
-		format_client(cdata->ft, c1);
+		format_defaults(cdata->ft, c1, NULL, NULL, NULL);
 
 		cdata->command = cmd_template_replace(action, c1->tty.path, 1);
 

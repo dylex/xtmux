@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2009 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -68,9 +68,15 @@ window_name_callback(unused int fd, unused short events, void *data)
 char *
 default_window_name(struct window *w)
 {
-	if (w->active->cmd != NULL && *w->active->cmd != '\0')
-		return (parse_window_name(w->active->cmd));
-	return (parse_window_name(w->active->shell));
+	char    *cmd, *s;
+
+	cmd = cmd_stringify_argv(w->active->argc, w->active->argv);
+	if (cmd != NULL && *cmd != '\0')
+		s = parse_window_name(cmd);
+	else
+		s = parse_window_name(w->active->shell);
+	free(cmd);
+	return (s);
 }
 
 char *
@@ -80,8 +86,8 @@ format_window_name(struct window *w)
 	char			*fmt, *name;
 
 	ft = format_create();
-	format_window(ft, w);
-	format_window_pane(ft, w->active);
+	format_defaults_window(ft, w);
+	format_defaults_pane(ft, w->active);
 
 	fmt = options_get_string(&w->options, "automatic-rename-format");
 	name = format_expand(ft, fmt);

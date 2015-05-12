@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2009 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -26,6 +26,8 @@
  * Break pane off into a window.
  */
 
+#define BREAK_PANE_TEMPLATE "#{session_name}:#{window_index}.#{pane_index}"
+
 enum cmd_retval	 cmd_break_pane_exec(struct cmd *, struct cmd_q *);
 
 const struct cmd_entry cmd_break_pane_entry = {
@@ -33,7 +35,6 @@ const struct cmd_entry cmd_break_pane_entry = {
 	"dPF:t:", 0, 0,
 	"[-dP] [-F format] " CMD_TARGET_PANE_USAGE,
 	0,
-	NULL,
 	cmd_break_pane_exec
 };
 
@@ -48,7 +49,6 @@ cmd_break_pane_exec(struct cmd *self, struct cmd_q *cmdq)
 	char			*name;
 	char			*cause;
 	int			 base_idx;
-	struct client		*c;
 	struct format_tree	*ft;
 	const char		*template;
 	char			*cp;
@@ -65,16 +65,7 @@ cmd_break_pane_exec(struct cmd *self, struct cmd_q *cmdq)
 	server_unzoom_window(w);
 
 	TAILQ_REMOVE(&w->panes, wp, entry);
-	if (wp == w->active) {
-		w->active = w->last;
-		w->last = NULL;
-		if (w->active == NULL) {
-			w->active = TAILQ_PREV(wp, window_panes, entry);
-			if (w->active == NULL)
-				w->active = TAILQ_NEXT(wp, entry);
-		}
-	} else if (wp == w->last)
-		w->last = NULL;
+	window_lost_pane(w, wp);
 	layout_close_pane(wp);
 
 	w = wp->window = window_create1(s->sx, s->sy);
@@ -98,11 +89,7 @@ cmd_break_pane_exec(struct cmd *self, struct cmd_q *cmdq)
 			template = BREAK_PANE_TEMPLATE;
 
 		ft = format_create();
-		if ((c = cmd_find_client(cmdq, NULL, 1)) != NULL)
-			format_client(ft, c);
-		format_session(ft, s);
-		format_winlink(ft, s, wl);
-		format_window_pane(ft, wp);
+		format_defaults(ft, cmd_find_client(cmdq, NULL, 1), s, wl, wp);
 
 		cp = format_expand(ft, template);
 		cmdq_print(cmdq, "%s", cp);

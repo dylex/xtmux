@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2010 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -18,6 +18,7 @@
 
 #include <sys/types.h>
 
+#include <getopt.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -125,7 +126,7 @@ args_free(struct args *args)
 size_t
 args_print(struct args *args, char *buf, size_t len)
 {
-	size_t		 	 off;
+	size_t		 	 off, used;
 	int			 i;
 	const char		*quotes;
 	struct args_entry	*entry;
@@ -165,9 +166,12 @@ args_print(struct args *args, char *buf, size_t len)
 			quotes = "\"";
 		else
 			quotes = "";
-		off += xsnprintf(buf + off, len - off, "%s-%c %s%s%s",
+		used = xsnprintf(buf + off, len - off, "%s-%c %s%s%s",
 		    off != 0 ? " " : "", entry->flag, quotes, entry->value,
 		    quotes);
+		if (used > len - off)
+			used = len - off;
+		off += used;
 	}
 
 	/* And finally the argument vector. */
@@ -181,8 +185,11 @@ args_print(struct args *args, char *buf, size_t len)
 			quotes = "\"";
 		else
 			quotes = "";
-		off += xsnprintf(buf + off, len - off, "%s%s%s%s",
+		used = xsnprintf(buf + off, len - off, "%s%s%s%s",
 		    off != 0 ? " " : "", quotes, args->argv[i], quotes);
+		if (used > len - off)
+			used = len - off;
+		off += used;
 	}
 
 	return (off);

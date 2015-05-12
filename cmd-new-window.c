@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -30,15 +30,16 @@
  * Create a new window.
  */
 
+#define NEW_WINDOW_TEMPLATE "#{session_name}:#{window_index}.#{pane_index}"
+
 enum cmd_retval	cmd_new_window_exec(struct cmd *, struct cmd_q *);
 
 const struct cmd_entry cmd_new_window_entry = {
 	"new-window", "neww",
-	"ac:dF:kn:Pt:", 0, 1,
+	"ac:dF:kn:Pt:", 0, -1,
 	"[-adkP] [-c start-directory] [-F format] [-n window-name] "
 	CMD_TARGET_WINDOW_USAGE " [command]",
 	0,
-	NULL,
 	cmd_new_window_exec
 };
 
@@ -48,11 +49,11 @@ cmd_new_window_exec(struct cmd *self, struct cmd_q *cmdq)
 	struct args		*args = self->args;
 	struct session		*s;
 	struct winlink		*wl;
-	struct client		*c;
-	const char		*cmd, *template;
-	char			*cause, *cp;
-	int			 idx, last, detached, cwd, fd = -1;
+	const char		*cmd, *path, *template;
+	char		       **argv, *cause, *cp;
+	int			 argc, idx, last, detached, cwd, fd = -1;
 	struct format_tree	*ft;
+	struct environ_entry	*envent;
 
 	if (args_has(args, 'a')) {
 		wl = cmd_find_window(cmdq, args_get(args, 't'), &s);
@@ -77,23 +78,38 @@ cmd_new_window_exec(struct cmd *self, struct cmd_q *cmdq)
 			server_unlink_window(s, wl);
 		}
 	} else {
-		if ((idx = cmd_find_index(cmdq, args_get(args, 't'), &s)) == -2)
+		idx = cmd_find_index(cmdq, args_get(args, 't'), &s);
+		if (idx == -2)
 			return (CMD_RETURN_ERROR);
 	}
 	detached = args_has(args, 'd');
 
-	if (args->argc == 0)
+	if (args->argc == 0) {
 		cmd = options_get_string(&s->options, "default-command");
+		if (cmd != NULL && *cmd != '\0') {
+			argc = 1;
+			argv = (char **)&cmd;
+		} else {
+			argc = 0;
+			argv = NULL;
+		}
+	} else {
+		argc = args->argc;
+		argv = args->argv;
+	}
+
+	path = NULL;
+	if (cmdq->client != NULL && cmdq->client->session == NULL)
+		envent = environ_find(&cmdq->client->environ, "PATH");
 	else
-		cmd = args->argv[0];
+		envent = environ_find(&s->environ, "PATH");
+	if (envent != NULL)
+		path = envent->value;
 
 	if (args_has(args, 'c')) {
 		ft = format_create();
-		if ((c = cmd_find_client(cmdq, NULL, 1)) != NULL)
-			format_client(ft, c);
-		format_session(ft, s);
-		format_winlink(ft, s, s->curw);
-		format_window_pane(ft, s->curw->window->active);
+		format_defaults(ft, cmd_find_client(cmdq, NULL, 1), s, NULL,
+		    NULL);
 		cp = format_expand(ft, args_get(args, 'c'));
 		format_free(ft);
 
@@ -135,7 +151,8 @@ cmd_new_window_exec(struct cmd *self, struct cmd_q *cmdq)
 
 	if (idx == -1)
 		idx = -1 - options_get_number(&s->options, "base-index");
-	wl = session_new(s, args_get(args, 'n'), cmd, cwd, idx, &cause);
+	wl = session_new(s, args_get(args, 'n'), argc, argv, path, cwd, idx,
+		&cause);
 	if (wl == NULL) {
 		cmdq_error(cmdq, "create window failed: %s", cause);
 		free(cause);
@@ -152,11 +169,8 @@ cmd_new_window_exec(struct cmd *self, struct cmd_q *cmdq)
 			template = NEW_WINDOW_TEMPLATE;
 
 		ft = format_create();
-		if ((c = cmd_find_client(cmdq, NULL, 1)) != NULL)
-			format_client(ft, c);
-		format_session(ft, s);
-		format_winlink(ft, s, wl);
-		format_window_pane(ft, wl->window->active);
+		format_defaults(ft, cmd_find_client(cmdq, NULL, 1), s, wl,
+		    NULL);
 
 		cp = format_expand(ft, template);
 		cmdq_print(cmdq, "%s", cp);

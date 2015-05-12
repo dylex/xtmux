@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2009 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -115,21 +115,22 @@ server_client_create(int fd)
 
 /* Open client terminal if needed. */
 int
-server_client_open(struct client *c, struct session *s, char **cause)
+server_client_open(struct client *c, char **cause)
 {
-	struct options	*oo = s != NULL ? &s->options : &global_s_options;
-	char		*overrides;
-
 	if (c->flags & CLIENT_CONTROL)
 		return (0);
+
+	if (strcmp(c->ttyname, "/dev/tty") == 0) {
+		*cause = xstrdup("can't use /dev/tty");
+		return (-1);
+	}
 
 	if (!(c->flags & CLIENT_TERMINAL)) {
 		*cause = xstrdup("not a terminal");
 		return (-1);
 	}
 
-	overrides = options_get_string(oo, "terminal-overrides");
-	if (tty_open(&c->tty, overrides, cause) != 0)
+	if (tty_open(&c->tty, cause) != 0)
 		return (-1);
 
 	return (0);
@@ -160,7 +161,7 @@ server_client_lost(struct client *c)
 	evbuffer_free(c->stdin_data);
 	evbuffer_free(c->stdout_data);
 	if (c->stderr_data != c->stdout_data)
-		evbuffer_free (c->stderr_data);
+		evbuffer_free(c->stderr_data);
 
 	status_free_jobs(&c->status_new);
 	status_free_jobs(&c->status_old);
@@ -226,7 +227,7 @@ server_client_callback(int fd, short events, void *data)
 		return;
 
 	if (fd == c->ibuf.fd) {
-		if (events & EV_WRITE && msgbuf_write(&c->ibuf.w) < 0 &&
+		if (events & EV_WRITE && msgbuf_write(&c->ibuf.w) <= 0 &&
 		    errno != EAGAIN)
 			goto client_lost;
 
@@ -333,8 +334,9 @@ server_client_check_mouse(struct client *c, struct window_pane *wp)
 		window_set_active_at(wp->window, m->x, m->y);
 		if (wp != wp->window->active)
 		{
+		server_status_window(wp->window);
 		server_redraw_window_borders(wp->window);
-		if ("mouse-select-pane-only")
+		if (options_get_number(oo, "mouse-select-pane-only"))
 			return;
 		wp = wp->window->active; /* may have changed */
 		}
@@ -549,8 +551,18 @@ server_client_check_resize(struct window_pane *wp)
 	ws.ws_col = wp->sx;
 	ws.ws_row = wp->sy;
 
-	if (ioctl(wp->fd, TIOCSWINSZ, &ws) == -1)
+	if (ioctl(wp->fd, TIOCSWINSZ, &ws) == -1) {
+#ifdef __sun
+		/*
+		 * Some versions of Solaris apparently can return an error when
+		 * resizing; don't know why this happens, can't reproduce on
+		 * other platforms and ignoring it doesn't seem to cause any
+		 * issues.
+		 */
+		if (errno != EINVAL && errno != ENXIO)
+#endif
 		fatal("ioctl failed");
+	}
 
 	wp->flags &= ~PANE_RESIZE;
 }
@@ -644,7 +656,7 @@ server_client_reset_state(struct client *c)
 	if (!window_pane_visible(wp) || wp->yoff + s->cy >= c->tty.sy - status)
 		tty_cursor(&c->tty, 0, 0);
 	else {
-		o = status && options_get_number (oo, "status-position") == 0;
+		o = status && options_get_number(oo, "status-position") == 0;
 		tty_cursor(&c->tty, wp->xoff + s->cx, o + wp->yoff + s->cy);
 	}
 
@@ -654,7 +666,7 @@ server_client_reset_state(struct client *c)
 	 */
 	mode = s->mode;
 	if ((c->tty.mouse.flags & MOUSE_RESIZE_PANE) &&
-	    !(mode & (MODE_MOUSE_BUTTON|MODE_MOUSE_ANY)))
+	    !(mode & MODE_MOUSE_BUTTON))
 		mode |= MODE_MOUSE_BUTTON;
 
 	/*
@@ -779,19 +791,25 @@ server_client_check_redraw(struct client *c)
 void
 server_client_set_title(struct client *c)
 {
-	struct session	*s = c->session;
-	const char	*template;
-	char		*title;
+	struct session		*s = c->session;
+	const char		*template;
+	char			*title;
+	struct format_tree	*ft;
 
 	template = options_get_string(&s->options, "set-titles-string");
 
-	title = status_replace(c, NULL, NULL, NULL, template, time(NULL), 1);
+	ft = format_create();
+	format_defaults(ft, c, NULL, NULL, NULL);
+
+	title = format_expand_time(ft, template, time(NULL));
 	if (c->title == NULL || strcmp(title, c->title) != 0) {
 		free(c->title);
 		c->title = xstrdup(title);
 		tty_set_title(&c->tty, c->title);
 	}
 	free(title);
+
+	format_free(ft);
 }
 
 /* Dispatch message from client. */
@@ -882,6 +900,9 @@ server_client_msg_dispatch(struct client *c)
 				break;
 			c->flags &= ~CLIENT_SUSPENDED;
 
+			if (c->tty.fd == -1) /* exited in the meantime */
+				break;
+
 			if (gettimeofday(&c->activity_time, NULL) != 0)
 				fatal("gettimeofday");
 			if (c->session != NULL)
@@ -918,7 +939,7 @@ server_client_msg_command(struct client *c, struct imsg *imsg)
 		fatalx("bad MSG_COMMAND size");
 	memcpy(&data, imsg->data, sizeof data);
 
-	buf = (char*)imsg->data + sizeof data;
+	buf = (char *)imsg->data + sizeof data;
 	len = imsg->hdr.len  - IMSG_HEADER_SIZE - sizeof data;
 	if (len > 0 && buf[len - 1] != '\0')
 		fatalx("bad MSG_COMMAND string");

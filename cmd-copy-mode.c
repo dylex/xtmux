@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicm@users.sourceforge.net>
@@ -21,10 +21,9 @@
 #include "tmux.h"
 
 /*
- * Enter copy mode.
+ * Enter copy or clock mode.
  */
 
-void		 cmd_copy_mode_key_binding(struct cmd *, int);
 enum cmd_retval	 cmd_copy_mode_exec(struct cmd *, struct cmd_q *);
 
 const struct cmd_entry cmd_copy_mode_entry = {
@@ -32,17 +31,16 @@ const struct cmd_entry cmd_copy_mode_entry = {
 	"t:u", 0, 0,
 	"[-u] " CMD_TARGET_PANE_USAGE,
 	0,
-	cmd_copy_mode_key_binding,
 	cmd_copy_mode_exec
 };
 
-void
-cmd_copy_mode_key_binding(struct cmd *self, int key)
-{
-	self->args = args_create(0);
-	if (key == KEYC_PPAGE)
-		args_set(self->args, 'u', NULL);
-}
+const struct cmd_entry cmd_clock_mode_entry = {
+	"clock-mode", NULL,
+	"t:", 0, 0,
+	CMD_TARGET_PANE_USAGE,
+	0,
+	cmd_copy_mode_exec
+};
 
 enum cmd_retval
 cmd_copy_mode_exec(struct cmd *self, struct cmd_q *cmdq)
@@ -52,6 +50,11 @@ cmd_copy_mode_exec(struct cmd *self, struct cmd_q *cmdq)
 
 	if (cmd_find_pane(cmdq, args_get(args, 't'), NULL, &wp) == NULL)
 		return (CMD_RETURN_ERROR);
+
+	if (self->entry == &cmd_clock_mode_entry) {
+		window_pane_set_mode(wp, &window_clock_mode);
+		return (CMD_RETURN_NORMAL);
+	}
 
 	if (wp->mode != &window_copy_mode) {
 		if (window_pane_set_mode(wp, &window_copy_mode) != 0)

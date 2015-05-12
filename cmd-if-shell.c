@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $OpenBSD$ */
 
 /*
  * Copyright (c) 2009 Tiago Cunha <me@tiagocunha.org>
@@ -37,10 +37,9 @@ void	cmd_if_shell_free(void *);
 
 const struct cmd_entry cmd_if_shell_entry = {
 	"if-shell", "if",
-	"bt:", 2, 3,
-	"[-b] " CMD_TARGET_PANE_USAGE " shell-command command [command]",
+	"bFt:", 2, 3,
+	"[-bF] " CMD_TARGET_PANE_USAGE " shell-command command [command]",
 	0,
-	NULL,
 	cmd_if_shell_exec
 };
 
@@ -57,7 +56,8 @@ cmd_if_shell_exec(struct cmd *self, struct cmd_q *cmdq)
 {
 	struct args			*args = self->args;
 	struct cmd_if_shell_data	*cdata;
-	char				*shellcmd;
+	char				*shellcmd, *cmd, *cause;
+	struct cmd_list			*cmdlist;
 	struct client			*c;
 	struct session			*s = NULL;
 	struct winlink			*wl = NULL;
@@ -76,14 +76,29 @@ cmd_if_shell_exec(struct cmd *self, struct cmd_q *cmdq)
 	}
 
 	ft = format_create();
-	if (s != NULL)
-		format_session(ft, s);
-	if (s != NULL && wl != NULL)
-		format_winlink(ft, s, wl);
-	if (wp != NULL)
-		format_window_pane(ft, wp);
+	format_defaults(ft, NULL, s, wl, wp);
 	shellcmd = format_expand(ft, args->argv[0]);
 	format_free(ft);
+
+	if (args_has(args, 'F')) {
+		cmd = NULL;
+		if (*shellcmd != '0' && *shellcmd != '\0')
+			cmd = args->argv[1];
+		else if (args->argc == 3)
+			cmd = args->argv[2];
+		if (cmd == NULL)
+			return (CMD_RETURN_NORMAL);
+		if (cmd_string_parse(cmd, &cmdlist, NULL, 0, &cause) != 0) {
+			if (cause != NULL) {
+				cmdq_error(cmdq, "%s", cause);
+				free(cause);
+			}
+			return (CMD_RETURN_ERROR);
+		}
+		cmdq_run(cmdq, cmdlist);
+		cmd_list_free(cmdlist);
+		return (CMD_RETURN_NORMAL);
+	}
 
 	cdata = xmalloc(sizeof *cdata);
 	cdata->cmd_if = xstrdup(args->argv[1]);
