@@ -264,7 +264,7 @@ xdisplay_error(Display *disp, XErrorEvent *e)
 	char msg[256] = "<unknown error>";
 
 	XGetErrorText(disp, e->error_code, msg, sizeof msg-1);
-	log_warnx("X11 error: %s %u,%u", msg, e->request_code, e->minor_code);
+	fprintf(stderr, "X11 error: %s %u,%u\n", msg, e->request_code, e->minor_code);
 
 	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
 		c = ARRAY_ITEM(&clients, i);
@@ -282,7 +282,7 @@ xdisplay_ioerror(Display *disp)
 	u_int i;
 	struct client *c;
 
-	log_warnx("X11 IO error");
+	fprintf(stderr, "X11 IO error\n");
 
 	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
 		c = ARRAY_ITEM(&clients, i);
@@ -355,9 +355,9 @@ event_mask(int mode)
 	if (mode & ALL_MOUSE_MODES)
 	{
 		m |= ButtonReleaseMask;
-		if (mode & MODE_MOUSE_ANY)
+		/* if (mode & MODE_MOUSE_ANY)
 			m |= PointerMotionMask;
-		else /* if (mode & MODE_MOUSE_BUTTON) */
+		else */ /* if (mode & MODE_MOUSE_BUTTON) */
 			/* as ButtonMotionMask cannot take effect while a button is down, 
 			 * which is how tmux uses it, we must always set it here */
 			m |= ButtonMotionMask;
@@ -539,7 +539,7 @@ xt_load_font(struct xtmux *x, enum font_type type, const char *name)
 	fs = XLoadQueryFont(x->display, name);
 	if (!fs)
 	{
-		log_warnx("font not found: %s", name);
+		fprintf(stderr, "font not found: %s\n", name);
 		return -1;
 	}
 	if (fs->fid == font->fid)
@@ -564,7 +564,7 @@ xt_load_font(struct xtmux *x, enum font_type type, const char *name)
 	else if (x->cw != fs->max_bounds.width || 
 			x->ch != fs->ascent + fs->descent)
 	{
-		log_warnx("font extents mismatch: %s", name);
+		fprintf(stderr, "font extents mismatch: %s\n", name);
 		XFreeFont(x->display, fs);
 		return -1;
 	}
@@ -580,7 +580,7 @@ xt_load_font(struct xtmux *x, enum font_type type, const char *name)
 	font->ascent = fs->ascent;
 	font->descent = fs->descent;
 	font->char_max = (fs->max_byte1 << 8) + fs->max_char_or_byte2;
-	font->char_mask = xrealloc(font->char_mask, FONT_CHAR_OFF(font->char_max)+1, sizeof *font->char_mask);
+	font->char_mask = xreallocarray(font->char_mask, FONT_CHAR_OFF(font->char_max)+1, sizeof *font->char_mask);
 	memset(font->char_mask, 0, (sizeof *font->char_mask)*(FONT_CHAR_OFF(font->char_max)+1));
 
 	i = n = 0;
@@ -601,7 +601,7 @@ xt_load_font(struct xtmux *x, enum font_type type, const char *name)
 
 	/* trim */
 	font->char_max = w;
-	font->char_mask = xrealloc(font->char_mask, FONT_CHAR_OFF(font->char_max)+1, sizeof *font->char_mask);
+	font->char_mask = xreallocarray(font->char_mask, FONT_CHAR_OFF(font->char_max)+1, sizeof *font->char_mask);
 
 	log_debug("font loaded with %u/%u characters: %s", n, i, font->name);
 	XFreeFontInfo(NULL, fs, 1);
@@ -831,7 +831,7 @@ xtmux_open(struct tty *tty, char **cause)
 				NULL);
 	if (!x->xic)
 	{
-		log_warnx("xtmux: failed to initialize input method");
+		fprintf(stderr, "xtmux: failed to initialize input method\n");
 		if (x->xim)
 			XCloseIM(x->xim);
 		x->xim = 0;
@@ -1148,7 +1148,7 @@ xt_do_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_i
 			 * instead, just clear and refresh (poorly), and hope
 			 * the proper event comes in later if it matters
 			 */
-			log_warnx("didn't get expected expose event; redrawing");
+			fprintf(stderr, "didn't get expected expose event; redrawing\n");
 			xt_redraw(x, x2, y2, w, h);
 			return;
 		}
@@ -1202,7 +1202,7 @@ xt_scroll(struct xtmux *x, u_int sx, u_int sy, u_int w, u_int h, int n)
 {
 	struct scroll *s = &x->scroll_buf;
 
-	log_debug2("xt_scroll %u,%u %ux%u %d", sx, sy, w, h, n);
+	log_debug("xt_scroll %u,%u %ux%u %d", sx, sy, w, h, n);
 
 	if (s->n && (s->x != sx || s->y != sy || s->w != w || s->h != h || (s->n ^ n) < 0))
 		xt_scroll_flush(x);
@@ -1687,10 +1687,11 @@ xtmux_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
-	u_int y = ctx->ocy;
+	u_int y;
 
 	XENTRY();
 
+	y = ctx->ocy;
 	if (ctx->ocx > 0)
 	{
 		if (ctx->ocx < screen_size_x(s))
@@ -1713,10 +1714,11 @@ xtmux_cmd_clearstartofscreen(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->wp->screen;
-	u_int y = ctx->ocy;
+	u_int y;
 
 	XENTRY();
 
+	y = ctx->ocy;
 	if (ctx->ocx < screen_size_x(s))
 		xt_clear(x,
 				PANE_X(0), PANE_CY,
@@ -1786,7 +1788,7 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 	r.time = xev->time;
 	r.property = None;
 
-	pb = paste_get_top(&global_buffers);
+	pb = paste_get_top();
 
 	if (xev->target == XA_STRING)
 	{
@@ -1838,11 +1840,11 @@ xt_paste_property(struct xtmux *x, Window w, Atom p)
 
 	if (!XGetTextProperty(x->display, w, &t, p) || !t.value || t.format != 8)
 	{
-		log_warnx("could not get text property to paste");
+		fprintf(stderr, "could not get text property to paste\n");
 		return -1;
 	}
 
-	log_warnx("pasting %lu characters", t.nitems);
+	log_debug("pasting %lu characters", t.nitems);
 	pb.data = t.value;
 	pb.size = t.nitems;
 	do_paste(&x->paste, &pb);
@@ -1861,7 +1863,6 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 {
 	struct xtmux *x = tty->xtmux;
 	Atom s = None;
-	int r;
 
 	XENTRY(CMD_RETURN_ERROR);
 
@@ -1898,7 +1899,7 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 	if (XGetSelectionOwner(x->display, s) == x->window) 
 	{
 		/* short cut */
-		struct paste_buffer *pb = paste_get_top(&global_buffers);
+		struct paste_buffer *pb = paste_get_top();
 		if (pb)
 			do_paste(&x->paste, pb);
 
@@ -1936,7 +1937,7 @@ xtmux_selection_notify(struct tty *tty, XSelectionEvent *xev)
 				if (wp == x->paste.wp)
 					goto found;
 
-	log_info("paste target pane disappeared");
+	log_debug("paste target pane disappeared");
 	x->paste.wp = NULL;
 	return;
 
@@ -1989,10 +1990,11 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 void
 xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 {
-	u_int sx = screen_size_x(s);
+	u_int sx;
 
 	XENTRY();
 
+	sx = screen_size_x(s);
 	if (sx > tty->sx)
 		sx = tty->sx;
 
@@ -2098,6 +2100,7 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 		case XK_F10: 		key = KEYC_F10;  	break;
 		case XK_F11: 		key = KEYC_F11;  	break;
 		case XK_F12: 		key = KEYC_F12;  	break;
+		/*
 		case XK_F13: 		key = KEYC_F13;  	break;
 		case XK_F14: 		key = KEYC_F14;  	break;
 		case XK_F15: 		key = KEYC_F15;  	break;
@@ -2106,6 +2109,7 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 		case XK_F18: 		key = KEYC_F18;  	break;
 		case XK_F19: 		key = KEYC_F19;  	break;
 		case XK_F20: 		key = KEYC_F20;  	break;
+		*/
 		case XK_KP_Insert:
 		case XK_Insert:		key = KEYC_IC;		break;
 		case XK_KP_Delete:
@@ -2204,7 +2208,7 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 			m->xb = 3;
 			break;
 		case MotionNotify:
-			if (!(tty->mode & (MODE_MOUSE_BUTTON | MODE_MOUSE_ANY)))
+			if (!(tty->mode & (MODE_MOUSE_BUTTON /* | MODE_MOUSE_ANY */)))
 				return;
 			if (m->x == m->lx && m->y == m->ly)
 				return;
@@ -2217,7 +2221,7 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 				m->button = 2; m->xb = 34;
 			} else
 			{
-				if (!(tty->mode & MODE_MOUSE_ANY))
+				/* if (!(tty->mode & MODE_MOUSE_ANY)) */
 					return;
 				m->event |= MOUSE_EVENT_UP;
 				m->xb = 35;
@@ -2393,7 +2397,7 @@ xtmux_main(struct tty *tty)
 				break;
 
 			default:
-				log_warnx("unhandled x event %d", xev.type);
+				fprintf(stderr, "unhandled x event %d\n", xev.type);
 		}
 	}
 }
