@@ -105,7 +105,7 @@ cmd_confirm_before_callback(void *data, const char *s)
 		return (0);
 	}
 
-	cmdq_run(c->cmdq, cmdlist);
+	cmdq_run(c->cmdq, cmdlist, NULL);
 	cmd_list_free(cmdlist);
 
 	return (0);
@@ -117,7 +117,7 @@ cmd_confirm_before_free(void *data)
 	struct cmd_confirm_before_data	*cdata = data;
 	struct client			*c = cdata->client;
 
-	c->references--;
+	server_client_unref(c);
 
 	free(cdata->cmd);
 	free(cdata);

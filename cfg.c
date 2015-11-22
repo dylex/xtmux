@@ -23,14 +23,62 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "tmux.h"
 
-struct cmd_q		*cfg_cmd_q;
-int			 cfg_finished;
-int			 cfg_references;
-ARRAY_DECL (, char *)	 cfg_causes = ARRAY_INITIALIZER;
-struct client		*cfg_client;
+char		 *cfg_file;
+struct cmd_q	 *cfg_cmd_q;
+int		  cfg_finished;
+int		  cfg_references;
+char		**cfg_causes;
+u_int		  cfg_ncauses;
+struct client	 *cfg_client;
+
+void	cfg_default_done(struct cmd_q *);
+
+void
+set_cfg_file(const char *path)
+{
+	free(cfg_file);
+	cfg_file = xstrdup(path);
+}
+
+void
+start_cfg(void)
+{
+	char		*cause = NULL;
+	const char	*home;
+
+	cfg_cmd_q = cmdq_new(NULL);
+	cfg_cmd_q->emptyfn = cfg_default_done;
+
+	cfg_finished = 0;
+	cfg_references = 1;
+
+	cfg_client = TAILQ_FIRST(&clients);
+	if (cfg_client != NULL)
+		cfg_client->references++;
+
+	if (access(TMUX_CONF, R_OK) == 0) {
+		if (load_cfg(TMUX_CONF, cfg_cmd_q, &cause) == -1)
+			cfg_add_cause("%s: %s", TMUX_CONF, cause);
+	} else if (errno != ENOENT)
+		cfg_add_cause("%s: %s", TMUX_CONF, strerror(errno));
+
+	if (cfg_file == NULL && (home = find_home()) != NULL) {
+		xasprintf(&cfg_file, "%s/.tmux.conf", home);
+		if (access(cfg_file, R_OK) != 0 && errno == ENOENT) {
+			free(cfg_file);
+			cfg_file = NULL;
+		}
+	}
+	if (cfg_file != NULL && load_cfg(cfg_file, cfg_cmd_q, &cause) == -1)
+		cfg_add_cause("%s: %s", cfg_file, cause);
+	free(cause);
+
+	cmdq_continue(cfg_cmd_q);
+}
 
 int
 load_cfg(const char *path, struct cmd_q *cmdq, char **cause)
@@ -49,7 +97,7 @@ load_cfg(const char *path, struct cmd_q *cmdq, char **cause)
 	}
 
 	found = 0;
-	while ((buf = fparseln(f, NULL, &line, delim, 0))) {
+	while ((buf = fparseln(f, NULL, &line, delim, 0)) != NULL) {
 		log_debug("%s: %s", path, buf);
 
 		/* Skip empty lines. */
@@ -74,7 +122,7 @@ load_cfg(const char *path, struct cmd_q *cmdq, char **cause)
 
 		if (cmdlist == NULL)
 			continue;
-		cmdq_append(cmdq, cmdlist);
+		cmdq_append(cmdq, cmdlist, NULL);
 		cmd_list_free(cmdlist);
 		found++;
 	}
@@ -106,55 +154,59 @@ cfg_default_done(unused struct cmd_q *cmdq)
 		 */
 		if (!TAILQ_EMPTY(&cfg_client->cmdq->queue))
 			cmdq_continue(cfg_client->cmdq);
-		cfg_client->references--;
+		server_client_unref(cfg_client);
 		cfg_client = NULL;
 	}
 }
 
 void
-cfg_add_cause(const char* fmt, ...)
+cfg_add_cause(const char *fmt, ...)
 {
-	va_list	ap;
-	char*	msg;
+	va_list	 ap;
+	char	*msg;
 
 	va_start(ap, fmt);
 	xvasprintf(&msg, fmt, ap);
-	va_end (ap);
+	va_end(ap);
 
-	ARRAY_ADD(&cfg_causes, msg);
+	cfg_ncauses++;
+	cfg_causes = xreallocarray(cfg_causes, cfg_ncauses, sizeof *cfg_causes);
+	cfg_causes[cfg_ncauses - 1] = msg;
 }
 
 void
 cfg_print_causes(struct cmd_q *cmdq)
 {
-	char	*cause;
 	u_int	 i;
 
-	for (i = 0; i < ARRAY_LENGTH(&cfg_causes); i++) {
-		cause = ARRAY_ITEM(&cfg_causes, i);
-		cmdq_print(cmdq, "%s", cause);
-		free(cause);
+	for (i = 0; i < cfg_ncauses; i++) {
+		cmdq_print(cmdq, "%s", cfg_causes[i]);
+		free(cfg_causes[i]);
 	}
-	ARRAY_FREE(&cfg_causes);
+
+	free(cfg_causes);
+	cfg_causes = NULL;
+	cfg_ncauses = 0;
 }
 
 void
 cfg_show_causes(struct session *s)
 {
 	struct window_pane	*wp;
-	char			*cause;
 	u_int			 i;
 
-	if (s == NULL || ARRAY_EMPTY(&cfg_causes))
+	if (s == NULL || cfg_ncauses == 0)
 		return;
 	wp = s->curw->window->active;
 
 	window_pane_set_mode(wp, &window_copy_mode);
 	window_copy_init_for_output(wp);
-	for (i = 0; i < ARRAY_LENGTH(&cfg_causes); i++) {
-		cause = ARRAY_ITEM(&cfg_causes, i);
-		window_copy_add(wp, "%s", cause);
-		free(cause);
+	for (i = 0; i < cfg_ncauses; i++) {
+		window_copy_add(wp, "%s", cfg_causes[i]);
+		free(cfg_causes[i]);
 	}
-	ARRAY_FREE(&cfg_causes);
+
+	free(cfg_causes);
+	cfg_causes = NULL;
+	cfg_ncauses = 0;
 }

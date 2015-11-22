@@ -38,6 +38,20 @@
  * (any matching MODEKEYEDIT_SWITCHMODE*) are special-cased to do this.
  */
 
+/* Entry in the default mode key tables. */
+struct mode_key_entry {
+	int			key;
+
+	/*
+	 * Editing mode for vi: 0 is edit mode, keys not in the table are
+	 * returned as MODEKEY_OTHER; 1 is command mode, keys not in the table
+	 * are returned as MODEKEY_NONE. This is also matched on, allowing some
+	 * keys to be bound in edit mode.
+	 */
+	int			mode;
+	enum mode_key_cmd	cmd;
+};
+
 /* Edit keys command strings. */
 const struct mode_key_cmdstr mode_key_cmdstr_edit[] = {
 	{ MODEKEYEDIT_BACKSPACE, "backspace" },
@@ -251,6 +265,10 @@ const struct mode_key_entry mode_key_vi_choice[] = {
 	{ KEYC_RIGHT,		    0, MODEKEYCHOICE_TREE_EXPAND },
 	{ KEYC_LEFT | KEYC_CTRL,    0, MODEKEYCHOICE_TREE_COLLAPSE_ALL },
 	{ KEYC_RIGHT | KEYC_CTRL,   0, MODEKEYCHOICE_TREE_EXPAND_ALL },
+	{ KEYC_MOUSEDOWN1_PANE,     0, MODEKEYCHOICE_CHOOSE },
+	{ KEYC_MOUSEDOWN3_PANE,     0, MODEKEYCHOICE_TREE_TOGGLE },
+	{ KEYC_WHEELUP_PANE,        0, MODEKEYCHOICE_UP },
+	{ KEYC_WHEELDOWN_PANE,      0, MODEKEYCHOICE_DOWN },
 
 	{ 0,			   -1, 0 }
 };
@@ -326,6 +344,9 @@ const struct mode_key_entry mode_key_vi_copy[] = {
 	{ KEYC_RIGHT,		    0, MODEKEYCOPY_RIGHT },
 	{ KEYC_UP | KEYC_CTRL,	    0, MODEKEYCOPY_SCROLLUP },
 	{ KEYC_UP,		    0, MODEKEYCOPY_UP },
+	{ KEYC_WHEELUP_PANE,        0, MODEKEYCOPY_SCROLLUP },
+	{ KEYC_WHEELDOWN_PANE,      0, MODEKEYCOPY_SCROLLDOWN },
+	{ KEYC_MOUSEDRAG1_PANE,     0, MODEKEYCOPY_STARTSELECTION },
 
 	{ 0,			   -1, 0 }
 };
@@ -405,6 +426,10 @@ const struct mode_key_entry mode_key_emacs_choice[] = {
 	{ KEYC_RIGHT,		    0, MODEKEYCHOICE_TREE_EXPAND },
 	{ KEYC_LEFT | KEYC_CTRL,    0, MODEKEYCHOICE_TREE_COLLAPSE_ALL },
 	{ KEYC_RIGHT | KEYC_CTRL,   0, MODEKEYCHOICE_TREE_EXPAND_ALL },
+	{ KEYC_MOUSEDOWN1_PANE,     0, MODEKEYCHOICE_CHOOSE },
+	{ KEYC_MOUSEDOWN3_PANE,     0, MODEKEYCHOICE_TREE_TOGGLE },
+	{ KEYC_WHEELUP_PANE,        0, MODEKEYCHOICE_UP },
+	{ KEYC_WHEELDOWN_PANE,      0, MODEKEYCHOICE_DOWN },
 
 	{ 0,			   -1, 0 }
 };
@@ -467,6 +492,9 @@ const struct mode_key_entry mode_key_emacs_copy[] = {
 	{ KEYC_UP | KEYC_CTRL,	    0, MODEKEYCOPY_SCROLLUP },
 	{ KEYC_UP | KEYC_ESCAPE,    0, MODEKEYCOPY_HALFPAGEUP },
 	{ KEYC_UP,		    0, MODEKEYCOPY_UP },
+	{ KEYC_WHEELUP_PANE,        0, MODEKEYCOPY_SCROLLUP },
+	{ KEYC_WHEELDOWN_PANE,      0, MODEKEYCOPY_SCROLLDOWN },
+	{ KEYC_MOUSEDRAG1_PANE,     0, MODEKEYCOPY_STARTSELECTION },
 
 	{ 0,			   -1, 0 }
 };

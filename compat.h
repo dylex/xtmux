@@ -1,5 +1,3 @@
-/* $Id$ */
-
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicm@users.sourceforge.net>
  *
@@ -185,11 +183,6 @@ typedef uint64_t u_int64_t;
 #define LOCK_EX 0
 #define LOCK_NB 0
 #define flock(fd, op) (0)
-#endif
-
-#ifndef HAVE_BZERO
-#undef bzero
-#define bzero(buf, len) memset(buf, 0, len);
 #endif
 
 #ifndef HAVE_CLOSEFROM

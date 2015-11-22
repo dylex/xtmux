@@ -1,4 +1,4 @@
-/*	$OpenBSD: imsg.c,v 1.6 2014/06/30 00:26:22 deraadt Exp $	*/
+/*	$OpenBSD: imsg.c,v 1.9 2015/07/12 18:40:49 nicm Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -17,7 +17,6 @@
  */
 
 #include <sys/types.h>
-#include <sys/queue.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 
@@ -35,12 +34,10 @@ int	 imsg_get_fd(struct imsgbuf *);
 
 int	 available_fds(unsigned int);
 
-/* TA:  2014-09-08:  Note that the original code calls getdtablecount() which is
- * OpenBSD specific.  Until such time that it's ported elsewhere from
- * <unistd.h>, I've mimicked what OpenSMTPD are doing, by using available_fds()
- * instead.
+/*
+ * The original code calls getdtablecount() which is OpenBSD specific. Use
+ * available_fds() from OpenSMTPD instead.
  */
-
 int
 available_fds(unsigned int n)
 {
@@ -54,8 +51,12 @@ available_fds(unsigned int n)
 	for (i = 0; i < n; i++) {
 		fds[i] = -1;
 		if ((fds[i] = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-			ret = 1;
-			break;
+			if (errno == EAFNOSUPPORT || errno == EPROTONOSUPPORT)
+				fds[i] = socket(AF_INET6, SOCK_DGRAM, 0);
+			if (fds[i] < 0) {
+				ret = 1;
+				break;
+			}
 		}
 	}
 
@@ -69,7 +70,7 @@ void
 imsg_init(struct imsgbuf *ibuf, int fd)
 {
 	msgbuf_init(&ibuf->w);
-	bzero(&ibuf->r, sizeof(ibuf->r));
+	memset(&ibuf->r, 0, sizeof(ibuf->r));
 	ibuf->fd = fd;
 	ibuf->w.fd = fd;
 	ibuf->pid = getpid();
@@ -90,7 +91,8 @@ imsg_read(struct imsgbuf *ibuf)
 	int			 fd;
 	struct imsg_fd		*ifd;
 
-	bzero(&msg, sizeof(msg));
+	memset(&msg, 0, sizeof(msg));
+	memset(&cmsgbuf, 0, sizeof(cmsgbuf));
 
 	iov.iov_base = ibuf->r.buf + ibuf->r.wpos;
 	iov.iov_len = sizeof(ibuf->r.buf) - ibuf->r.wpos;
@@ -318,7 +320,7 @@ int
 imsg_flush(struct imsgbuf *ibuf)
 {
 	while (ibuf->w.queued)
-		if (msgbuf_write(&ibuf->w) < 0)
+		if (msgbuf_write(&ibuf->w) <= 0)
 			return (-1);
 	return (0);
 }

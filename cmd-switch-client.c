@@ -31,8 +31,8 @@ enum cmd_retval	 cmd_switch_client_exec(struct cmd *, struct cmd_q *);
 
 const struct cmd_entry cmd_switch_client_entry = {
 	"switch-client", "switchc",
-	"lc:npt:r", 0, 0,
-	"[-lnpr] [-c target-client] [-t target-session]",
+	"lc:Enpt:rT:", 0, 0,
+	"[-Elnpr] [-c target-client] [-t target-session] [-T key-table]",
 	CMD_READONLY,
 	cmd_switch_client_exec
 };
@@ -46,7 +46,8 @@ cmd_switch_client_exec(struct cmd *self, struct cmd_q *cmdq)
 	struct winlink		*wl = NULL;
 	struct window 		*w = NULL;
 	struct window_pane	*wp = NULL;
-	const char		*tflag;
+	const char		*tflag, *tablename, *update;
+	struct key_table	*table;
 
 	if ((c = cmd_find_client(cmdq, args_get(args, 'c'), 0)) == NULL)
 		return (CMD_RETURN_ERROR);
@@ -56,6 +57,18 @@ cmd_switch_client_exec(struct cmd *self, struct cmd_q *cmdq)
 			c->flags &= ~CLIENT_READONLY;
 		else
 			c->flags |= CLIENT_READONLY;
+	}
+
+	tablename = args_get(args, 'T');
+	if (tablename != NULL) {
+		table = key_bindings_get_table(tablename, 0);
+		if (table == NULL) {
+			cmdq_error(cmdq, "table %s doesn't exist", tablename);
+			return (CMD_RETURN_ERROR);
+		}
+		table->references++;
+		key_bindings_unref_table(c->keytable);
+		c->keytable = table;
 	}
 
 	tflag = args_get(args, 't');
@@ -86,10 +99,12 @@ cmd_switch_client_exec(struct cmd *self, struct cmd_q *cmdq)
 		} else {
 			if ((s = cmd_find_session(cmdq, tflag, 1)) == NULL)
 				return (CMD_RETURN_ERROR);
-			w = cmd_lookup_windowid(tflag);
-			if (w == NULL &&
-			    (wp = cmd_lookup_paneid(tflag)) != NULL)
-				w = wp->window;
+			w = window_find_by_id_str(tflag);
+			if (w == NULL) {
+				wp = window_pane_find_by_id_str(tflag);
+				if (wp != NULL)
+					w = wp->window;
+			}
 			if (w != NULL)
 				wl = winlink_find_by_window(&s->windows, w);
 		}
@@ -104,10 +119,17 @@ cmd_switch_client_exec(struct cmd *self, struct cmd_q *cmdq)
 		}
 	}
 
-	if (c->session != NULL)
+	if (c != NULL && !args_has(args, 'E')) {
+		update = options_get_string(&s->options, "update-environment");
+		environ_update(update, &c->environ, &s->environ);
+	}
+
+	if (c->session != NULL && c->session != s)
 		c->last_session = c->session;
 	c->session = s;
-	session_update_activity(s);
+	status_timer_start(c);
+	session_update_activity(s, NULL);
+	gettimeofday(&s->last_attached_time, NULL);
 
 	recalculate_sizes();
 	server_check_unattached();

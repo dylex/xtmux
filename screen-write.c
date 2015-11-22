@@ -46,7 +46,6 @@ screen_write_stop(unused struct screen_write_ctx *ctx)
 {
 }
 
-
 /* Reset screen state. */
 void
 screen_write_reset(struct screen_write_ctx *ctx)
@@ -795,6 +794,8 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped)
 	gl = &s->grid->linedata[s->grid->hsize + s->cy];
 	if (wrapped)
 		gl->flags |= GRID_LINE_WRAPPED;
+	else
+		gl->flags &= ~GRID_LINE_WRAPPED;
 
 	if (s->cy == s->rlower)
 		grid_view_scroll_region_up(s->grid, s->rupper, s->rlower);

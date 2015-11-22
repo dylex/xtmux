@@ -35,9 +35,6 @@
 const char *options_table_mode_keys_list[] = {
 	"emacs", "vi", NULL
 };
-const char *options_table_mode_mouse_list[] = {
-	"off", "on", "copy-mode", NULL
-};
 const char *options_table_clock_mode_style_list[] = {
 	"12", "24", NULL
 };
@@ -51,7 +48,7 @@ const char *options_table_status_position_list[] = {
 	"top", "bottom", NULL
 };
 const char *options_table_bell_action_list[] = {
-	"none", "any", "current", NULL
+	"none", "any", "current", "other", NULL
 };
 
 /* Server options. */
@@ -61,6 +58,11 @@ const struct options_table_entry server_options_table[] = {
 	  .minimum = 1,
 	  .maximum = INT_MAX,
 	  .default_num = 20
+	},
+
+	{ .name = "default-terminal",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = "screen"
 	},
 
 	{ .name = "escape-time",
@@ -78,6 +80,11 @@ const struct options_table_entry server_options_table[] = {
 	{ .name = "focus-events",
 	  .type = OPTIONS_TABLE_FLAG,
 	  .default_num = 0
+	},
+
+	{ .name = "history-file",
+	  .type = OPTIONS_TABLE_STRING,
+	  .default_str = NULL
 	},
 
 	{ .name = "message-limit",
@@ -99,8 +106,7 @@ const struct options_table_entry server_options_table[] = {
 
 	{ .name = "terminal-overrides",
 	  .type = OPTIONS_TABLE_STRING,
-	  .default_str = "*256col*:colors=256"
-	                 ",xterm*:XT:Ms=\\E]52;%p1%s;%p2%s\\007"
+	  .default_str = "xterm*:XT:Ms=\\E]52;%p1%s;%p2%s\\007"
 	                 ":Cs=\\E]12;%p1%s\\007:Cr=\\E]112\\007"
 			 ":Ss=\\E[%p1%d q:Se=\\E[2 q,screen*:XT"
 	},
@@ -143,11 +149,6 @@ const struct options_table_entry session_options_table[] = {
 	{ .name = "default-shell",
 	  .type = OPTIONS_TABLE_STRING,
 	  .default_str = _PATH_BSHELL
-	},
-
-	{ .name = "default-terminal",
-	  .type = OPTIONS_TABLE_STRING,
-	  .default_str = "screen"
 	},
 
 	{ .name = "destroy-unattached",
@@ -203,11 +204,6 @@ const struct options_table_entry session_options_table[] = {
 	  .default_str = "lock -np"
 	},
 
-	{ .name = "lock-server",
-	  .type = OPTIONS_TABLE_FLAG,
-	  .default_num = 1
-	},
-
 	{ .name = "message-attr",
 	  .type = OPTIONS_TABLE_ATTRIBUTES,
 	  .default_num = 0,
@@ -254,22 +250,7 @@ const struct options_table_entry session_options_table[] = {
 	  .default_str = "bg=yellow,fg=black"
 	},
 
-	{ .name = "mouse-resize-pane",
-	  .type = OPTIONS_TABLE_FLAG,
-	  .default_num = 0
-	},
-
-	{ .name = "mouse-select-pane",
-	  .type = OPTIONS_TABLE_FLAG,
-	  .default_num = 0
-	},
-
-	{ .name = "mouse-select-pane-only",
-	  .type = OPTIONS_TABLE_FLAG,
-	  .default_num = 0
-	},
-
-	{ .name = "mouse-select-window",
+	{ .name = "mouse",
 	  .type = OPTIONS_TABLE_FLAG,
 	  .default_num = 0
 	},
@@ -313,7 +294,7 @@ const struct options_table_entry session_options_table[] = {
 
 	{ .name = "set-titles-string",
 	  .type = OPTIONS_TABLE_STRING,
-	  .default_str = "#S:#I:#W - \"#T\""
+	  .default_str = "#S:#I:#W - \"#T\" #{session_alerts}"
 	},
 
 	{ .name = "status",
@@ -502,20 +483,6 @@ const struct options_table_entry window_options_table[] = {
 	                 "#{?pane_dead,[dead],}"
 	},
 
-	{ .name = "c0-change-trigger",
-	  .type = OPTIONS_TABLE_NUMBER,
-	  .default_num = 250,
-	  .minimum = 0,
-	  .maximum = USHRT_MAX
-	},
-
-	{ .name = "c0-change-interval",
-	  .type = OPTIONS_TABLE_NUMBER,
-	  .default_num = 100,
-	  .minimum = 1,
-	  .maximum = USHRT_MAX
-	},
-
 	{ .name = "clock-mode-colour",
 	  .type = OPTIONS_TABLE_COLOUR,
 	  .default_num = 4
@@ -577,12 +544,6 @@ const struct options_table_entry window_options_table[] = {
 	  .type = OPTIONS_TABLE_CHOICE,
 	  .choices = options_table_mode_keys_list,
 	  .default_num = MODEKEY_EMACS
-	},
-
-	{ .name = "mode-mouse",
-	  .type = OPTIONS_TABLE_CHOICE,
-	  .choices = options_table_mode_mouse_list,
-	  .default_num = 0
 	},
 
 	{ .name = "mode-style",
@@ -672,6 +633,16 @@ const struct options_table_entry window_options_table[] = {
 	  .default_num = 0 /* overridden in main() */
 	},
 
+	{ .name = "window-active-style",
+	  .type = OPTIONS_TABLE_STYLE,
+	  .default_str = "default"
+	},
+
+	{ .name = "window-style",
+	  .type = OPTIONS_TABLE_STYLE,
+	  .default_str = "default"
+	},
+
 	{ .name = "window-status-activity-attr",
 	  .type = OPTIONS_TABLE_ATTRIBUTES,
 	  .default_num = GRID_ATTR_REVERSE,
@@ -750,7 +721,7 @@ const struct options_table_entry window_options_table[] = {
 
 	{ .name = "window-status-current-format",
 	  .type = OPTIONS_TABLE_STRING,
-	  .default_str = "#I:#W#F"
+	  .default_str = "#I:#W#{?window_flags,#{window_flags}, }"
 	},
 
 	{ .name = "window-status-current-style",
@@ -766,7 +737,7 @@ const struct options_table_entry window_options_table[] = {
 
 	{ .name = "window-status-format",
 	  .type = OPTIONS_TABLE_STRING,
-	  .default_str = "#I:#W#F"
+	  .default_str = "#I:#W#{?window_flags,#{window_flags}, }"
 	},
 
 	{ .name = "window-status-last-attr",
