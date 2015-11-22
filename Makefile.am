@@ -1,4 +1,4 @@
-# $Id$
+# Makefile.am
 
 # Obvious program stuff.
 bin_PROGRAMS = tmux
@@ -6,13 +6,12 @@ CLEANFILES = tmux.1.mdoc tmux.1.man
 
 # Distribution tarball options.
 EXTRA_DIST = \
-	CHANGES FAQ README TODO COPYING examples compat \
+	CHANGES FAQ README TODO COPYING examples compat/*.[ch] \
 	array.h compat.h tmux.h osdep-*.c mdoc2man.awk tmux.1 \
 	README.xtmux xtmux.c
 dist-hook:
 	make clean
 	grep "^#found_debug=" configure
-	find $(distdir) -name .svn -type d|xargs rm -Rf
 
 # Preprocessor flags.
 CPPFLAGS += @XOPEN_DEFINES@ -DTMUX_CONF="\"$(sysconfdir)/tmux.conf\""
@@ -23,8 +22,7 @@ if IS_GLIBC
 CFLAGS += -D_GNU_SOURCE
 endif
 
-# Set flags for gcc. gcc4 whines abouts silly stuff so it needs slightly
-# different flags.
+# Set flags for gcc.
 if IS_GCC
 CFLAGS += -std=gnu99 -O2
 if IS_DEBUG
@@ -33,17 +31,14 @@ CFLAGS += -Wno-long-long -Wall -W -Wnested-externs -Wformat=2
 CFLAGS += -Wmissing-prototypes -Wstrict-prototypes -Wmissing-declarations
 CFLAGS += -Wwrite-strings -Wshadow -Wpointer-arith -Wsign-compare
 CFLAGS += -Wundef -Wbad-function-cast -Winline -Wcast-align
-CFLAGS += -Wdeclaration-after-statement
+CFLAGS += -Wdeclaration-after-statement -Wno-pointer-sign
 CPPFLAGS += -DDEBUG
 endif
-if IS_GCC4
+if IS_COVERAGE
+CFLAGS += -g -O0 --coverage
+LDFLAGS += --coverage
+endif
 CPPFLAGS += -iquote.
-if IS_DEBUG
-CFLAGS += -Wno-pointer-sign
-endif
-else
-CPPFLAGS += -I. -I-
-endif
 endif
 
 # Set flags for Solaris.
@@ -60,8 +55,14 @@ if IS_SUNCC
 CFLAGS += -erroff=E_EMPTY_DECLARATION
 endif
 
+# Set _LINUX_SOURCE_COMPAT for AIX for mallocing 0 bytes
+if IS_AIX
+DEFS += -D_LINUX_SOURCE_COMPAT=1
+endif
+
 # List of sources.
 dist_tmux_SOURCES = \
+	alerts.c \
 	arguments.c \
 	attributes.c \
 	cfg.c \
@@ -77,10 +78,10 @@ dist_tmux_SOURCES = \
 	cmd-command-prompt.c \
 	cmd-confirm-before.c \
 	cmd-copy-mode.c \
-	cmd-delete-buffer.c \
 	cmd-detach-client.c \
 	cmd-display-message.c \
 	cmd-display-panes.c \
+	cmd-find.c \
 	cmd-find-window.c \
 	cmd-if-shell.c \
 	cmd-join-pane.c \
@@ -160,7 +161,6 @@ dist_tmux_SOURCES = \
 	screen.c \
 	server-client.c \
 	server-fn.c \
-	server-window.c \
 	server.c \
 	session.c \
 	signal.c \
@@ -252,18 +252,3 @@ install-exec-hook:
 if XTMUX
 nodist_tmux_SOURCES += xtmux.c
 endif
-
-# Update SF web site.
-upload-index.html: update-index.html
-	scp www/index.html www/main.css www/images/*.png \
-		${USER},tmux@web.sf.net:/home/groups/t/tm/tmux/htdocs
-	rm -f www/index.html www/images/small-*
-
-update-index.html:
-	(cd www/images && \
-		rm -f small-* && \
-		for i in *.png; do \
-			convert "$$i" -resize 200x150 "small-$$i"; \
-		done \
-	)
-	sed "s/%%RELEASE%%/${RELEASE}/g" www/index.html.in >www/index.html

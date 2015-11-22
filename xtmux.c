@@ -43,22 +43,22 @@ static void xt_expose(struct xtmux *, XExposeEvent *);
 #define XTMUX_NUM_COLORS 256
 
 static const struct colour_rgb xtmux_colors[16] = {
-	{0x00,0x00,0x00}, /* 0 black */
-	{0xCC,0x00,0x00}, /* 1 red */
-	{0x00,0xCC,0x00}, /* 2 green */
-	{0xCC,0xCC,0x00}, /* 3 yellow */
-	{0x00,0x00,0xCC}, /* 4 blue */
-	{0xCC,0x00,0xCC}, /* 5 magenta */
-	{0x00,0xCC,0xCC}, /* 6 cyan */
-	{0xCC,0xCC,0xCC}, /* 7 white */
-	{0x80,0x80,0x80}, /* 8 bright black */
-	{0xFF,0x00,0x00}, /* 9 bright red */
-	{0x00,0xFF,0x00}, /* 10 bright green */
-	{0xFF,0xFF,0x00}, /* 11 bright yellow */
-	{0x00,0x00,0xFF}, /* 12 bright blue */
-	{0xFF,0x00,0xFF}, /* 13 bright magenta */
-	{0x00,0xFF,0xFF}, /* 14 bright cyan */
-	{0xFF,0xFF,0xFF}, /* 15 bright white */
+	{ 0,0x00,0x00,0x00}, /* black */
+	{ 1,0xCC,0x00,0x00}, /* red */
+	{ 2,0x00,0xCC,0x00}, /* green */
+	{ 3,0xCC,0xCC,0x00}, /* yellow */
+	{ 4,0x00,0x00,0xCC}, /* blue */
+	{ 5,0xCC,0x00,0xCC}, /* magenta */
+	{ 6,0x00,0xCC,0xCC}, /* cyan */
+	{ 7,0xCC,0xCC,0xCC}, /* white */
+	{ 8,0x80,0x80,0x80}, /* bright black */
+	{ 9,0xFF,0x00,0x00}, /* bright red */
+	{10,0x00,0xFF,0x00}, /* bright green */
+	{11,0xFF,0xFF,0x00}, /* bright yellow */
+	{12,0x00,0x00,0xFF}, /* bright blue */
+	{13,0xFF,0x00,0xFF}, /* bright magenta */
+	{14,0x00,0xFF,0xFF}, /* bright cyan */
+	{15,0xFF,0xFF,0xFF}, /* bright white */
 };
 
 /* this is redundant with tty_acs_table ... */
@@ -259,15 +259,13 @@ xtmux_init(struct client *c, const char *display)
 static int
 xdisplay_error(Display *disp, XErrorEvent *e)
 {
-	u_int i;
 	struct client *c;
 	char msg[256] = "<unknown error>";
 
 	XGetErrorText(disp, e->error_code, msg, sizeof msg-1);
 	fprintf(stderr, "X11 error: %s %u,%u\n", msg, e->request_code, e->minor_code);
 
-	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
-		c = ARRAY_ITEM(&clients, i);
+	TAILQ_FOREACH(c, &clients, entry) {
 		if (!c || !c->tty.xtmux || c->tty.xtmux->display != disp)
 			continue;
 		c->flags |= CLIENT_EXIT;
@@ -284,8 +282,7 @@ xdisplay_ioerror(Display *disp)
 
 	fprintf(stderr, "X11 IO error\n");
 
-	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
-		c = ARRAY_ITEM(&clients, i);
+	TAILQ_FOREACH(c, &clients, entry) {
 		if (!c || !c->tty.xtmux || c->tty.xtmux->display != disp)
 			continue;
 		c->flags |= CLIENT_EXIT;
@@ -347,25 +344,6 @@ xdisplay_callback(unused int fd, unused short events, void *data)
 	XRETURN_();
 }
 
-static long
-event_mask(int mode)
-{
-	long m = KeyPressMask | ExposureMask | FocusChangeMask | StructureNotifyMask | ButtonPressMask;
-
-	if (mode & ALL_MOUSE_MODES)
-	{
-		m |= ButtonReleaseMask;
-		/* if (mode & MODE_MOUSE_ANY)
-			m |= PointerMotionMask;
-		else */ /* if (mode & MODE_MOUSE_BUTTON) */
-			/* as ButtonMotionMask cannot take effect while a button is down, 
-			 * which is how tmux uses it, we must always set it here */
-			m |= ButtonMotionMask;
-	}
-
-	return m;
-}
-
 static unsigned long
 xt_parse_color(struct xtmux *x, const char *s, unsigned long def)
 {
@@ -412,7 +390,7 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 		xt_fill_color(x, c, &xtmux_colors[c]);
 
 	for (; c < 256; c ++)
-		xt_fill_color(x, c, colour_rgb_lookup(c));
+		xt_fill_color(x, c, &colour_from_256[c]);
 
 	cn = s = xstrdup(colors);
 	while ((cs = strsep(&cn, ";, ")))
@@ -860,7 +838,7 @@ xtmux_open(struct tty *tty, char **cause)
 	
 	XDefineCursor(x->display, x->window, x->pointer);
 
-	XSelectInput(x->display, x->window, event_mask(tty->mode));
+	XSelectInput(x->display, x->window, KeyPressMask | ExposureMask | FocusChangeMask | StructureNotifyMask | ButtonPressMask | ButtonReleaseMask | ButtonMotionMask);
 
 	XMapWindow(x->display, x->window);
 
@@ -1263,7 +1241,7 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 
 	XENTRY();
 
-	if (tty->cstyle != s->cstyle)
+	if (s && tty->cstyle != s->cstyle)
 	{
 		xt_clear_cursor(x);
 		tty->cstyle = s->cstyle;
@@ -1272,14 +1250,8 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 
 	if (mode & MODE_CURSOR)
 		up = xt_move_cursor(x, tty->cx, tty->cy);
-	else if (!(s->mode & MODE_CURSOR))
+	else if (s && !(s->mode & MODE_CURSOR))
 		up = xt_clear_cursor(x);
-
-	if ((tty->mode ^ mode) & ALL_MOUSE_MODES)
-	{
-		XSelectInput(x->display, x->window, event_mask(mode));
-		up = 1;
-	}
 
 	tty->mode = mode;
 	if (up) XUPDATE();
@@ -1773,6 +1745,8 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 	struct xtmux *x = tty->xtmux;
 	XSelectionEvent r;
 	struct paste_buffer *pb;
+	const char *pbdata = NULL;
+	size_t pbsize;
 
 	if (xev->owner != x->window || xev->selection != XA_PRIMARY)
 		return;
@@ -1788,12 +1762,13 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 	r.time = xev->time;
 	r.property = None;
 
-	pb = paste_get_top();
+	if ((pb = paste_get_top(NULL)))
+		pbdata = paste_buffer_data(pb, &pbsize);
 
 	if (xev->target == XA_STRING)
 	{
-		if (pb && XChangeProperty(x->display, r.requestor, xev->property, 
-					XA_STRING, 8, PropModeReplace, pb->data, pb->size))
+		if (pbdata && XChangeProperty(x->display, r.requestor, xev->property, 
+					XA_STRING, 8, PropModeReplace, pbdata, pbsize))
 			r.property = xev->property;
 	}
 	else
@@ -1810,8 +1785,8 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 		}
 		else if (!strcmp(target, "TEXT"))
 		{
-			if (pb && XChangeProperty(x->display, r.requestor, xev->property, 
-						XA_STRING, 8, PropModeReplace, pb->data, pb->size))
+			if (pbdata && XChangeProperty(x->display, r.requestor, xev->property, 
+						XA_STRING, 8, PropModeReplace, pbdata, pbsize))
 				r.property = xev->property;
 		}
 		XFree(target);
@@ -1824,19 +1799,15 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 extern void cmd_paste_buffer_filter(struct window_pane *, const char *, size_t, const char *, int bracket);
 
 static void
-do_paste(const struct paste_ctx *p, const struct paste_buffer *pb)
+do_paste(const struct paste_ctx *p, const char *data, size_t size)
 {
-	if (p->sep)
-		paste_send_pane(pb, p->wp, p->sep, 0);
-	else
-		bufferevent_write(p->wp->event, pb->data, pb->size);
+	paste_send_pane(data, size, p->wp, p->sep, 0);
 }
 
 static int 
 xt_paste_property(struct xtmux *x, Window w, Atom p)
 {
 	XTextProperty t;
-	struct paste_buffer pb;
 
 	if (!XGetTextProperty(x->display, w, &t, p) || !t.value || t.format != 8)
 	{
@@ -1845,9 +1816,7 @@ xt_paste_property(struct xtmux *x, Window w, Atom p)
 	}
 
 	log_debug("pasting %lu characters", t.nitems);
-	pb.data = t.value;
-	pb.size = t.nitems;
-	do_paste(&x->paste, &pb);
+	do_paste(&x->paste, t.value, t.nitems);
 
 	x->paste.time = 0;
 	x->paste.wp = NULL;
@@ -1899,9 +1868,12 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 	if (XGetSelectionOwner(x->display, s) == x->window) 
 	{
 		/* short cut */
-		struct paste_buffer *pb = paste_get_top();
-		if (pb)
-			do_paste(&x->paste, pb);
+		struct paste_buffer *pb = paste_get_top(NULL);
+		if (pb) {
+			size_t size;
+			const char *data = paste_buffer_data(pb, &size);
+			do_paste(&x->paste, data, size);
+		}
 
 		x->paste.time = 0;
 		x->paste.wp = NULL;
@@ -2164,7 +2136,7 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 	}
 
 	if (x->prefix_mod >= 0 && xev->state & (1<<x->prefix_mod))
-		key |= KEYC_PREFIX;
+		server_client_key_table(tty->client, "prefix");
 
 	if (r < 0)
 		server_client_handle_key(tty->client, key);
@@ -2177,67 +2149,61 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
 	struct mouse_event *m = &tty->mouse;
+	int prefix;
 
 	m->lx = m->x;
 	m->ly = m->y;
 	m->x = xev->x / x->cw;
 	m->y = xev->y / x->ch;
+	prefix = xev->state & (x->prefix_mod >= 0 ? 1<<x->prefix_mod : ShiftMask);
 
 	switch (xev->type) {
 		case ButtonPress:
 			switch (xev->button)
 			{
-				case Button1: m->event = MOUSE_EVENT_DOWN; m->button = m->xb = 0; break;
-				case Button2: m->event = MOUSE_EVENT_DOWN; m->button = m->xb = 1; break;
-				case Button3: m->event = MOUSE_EVENT_DOWN; m->button = m->xb = 2; break;
-				case Button4: m->event = MOUSE_EVENT_WHEEL; m->wheel = MOUSE_WHEEL_UP; m->xb = 64; break;
-				case Button5: m->event = MOUSE_EVENT_WHEEL; m->wheel = MOUSE_WHEEL_DOWN; m->xb = 65; break;
+				case Button1: m->b = 0; break;
+				case Button2: m->b = 1; break;
+				case Button3: m->b = 2; break;
+				case Button4: m->b = MOUSE_MASK_WHEEL|0; break;
+				case Button5: m->b = MOUSE_MASK_WHEEL|1; break;
 				default: return;
 			}
-			if (m->event & MOUSE_EVENT_CLICK && m->sx == m->x && m->sy == m->y)
-				m->clicks = (m->clicks + 1) % 3;
-			else
-				m->clicks = 0;
-			m->sx = m->x;
-			m->sy = m->y;
 			break;
 		case ButtonRelease:
-			m->event = MOUSE_EVENT_UP;
-			if (m->event == MOUSE_EVENT_DOWN && m->sx == m->x && m->sy == m->y)
-				m->event |= MOUSE_EVENT_CLICK;
-			m->xb = 3;
+			m->b = 3;
 			break;
 		case MotionNotify:
-			if (!(tty->mode & (MODE_MOUSE_BUTTON /* | MODE_MOUSE_ANY */)))
+			if (!prefix && !(tty->mode & (MODE_MOUSE_BUTTON /* | MODE_MOUSE_ANY */)))
 				return;
 			if (m->x == m->lx && m->y == m->ly)
 				return;
-			m->event = MOUSE_EVENT_DRAG;
-			if (xev->state & Button1Mask) {
-				m->button = 0; m->xb = 32;
-			} else if (xev->state & Button2Mask) {
-				m->button = 1; m->xb = 33;
-			} else if (xev->state & Button3Mask) {
-				m->button = 2; m->xb = 34;
-			} else
+			m->b = MOUSE_MASK_DRAG;
+			if (xev->state & Button1Mask)
+				m->b |= 0;
+			else if (xev->state & Button2Mask)
+				m->b |= 1;
+			else if (xev->state & Button3Mask)
+				m->b |= 2;
+			else
 			{
 				/* if (!(tty->mode & MODE_MOUSE_ANY)) */
 					return;
-				m->event |= MOUSE_EVENT_UP;
-				m->xb = 35;
+				m->b |= 3;
 			}
 			break;
+		default:
+			return;
 	}
 
 	if (xev->state & ShiftMask)
-		m->xb |= 4;
+		m->b |= MOUSE_MASK_SHIFT;
 	if (xev->state & Mod4Mask) /* META */
-		m->xb |= 8;
+		m->b |= MOUSE_MASK_META;
 	if (xev->state & ControlMask)
-		m->xb |= 16;
+		m->b |= MOUSE_MASK_CTRL;
 
-	if (xev->state & (x->prefix_mod >= 0 ? 1<<x->prefix_mod : ShiftMask))
-		m->flags |= MOUSE_PREFIX;
+	if (prefix)
+		server_client_key_table(tty->client, "prefix");
 
 	server_client_handle_key(tty->client, KEYC_MOUSE);
 }

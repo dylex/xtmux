@@ -1,9 +1,7 @@
-# $Id$
+# configure.ac
 
-# Miscellaneous autofoo bullshit.
-AC_INIT(tmux, 2.0x)
-RELEASE=1.9ax
-AC_SUBST(RELEASE)
+# Miscellaneous bits.
+AC_INIT(tmux, 2.1x)
 
 AC_CONFIG_AUX_DIR(etc)
 AM_INIT_AUTOMAKE([foreign subdir-objects])
@@ -25,14 +23,22 @@ AC_PROG_INSTALL
 # Default tmux.conf goes in /etc not ${prefix}/etc.
 test "$sysconfdir" = '${prefix}/etc' && sysconfdir=/etc
 
-# Is this a debug build?
-found_debug=yes
+# Is this --enable-debug?
+#found_debug=yes
 AC_ARG_ENABLE(
 	debug,
-	AC_HELP_STRING(--enable-debug, create a debug build),
+	AC_HELP_STRING(--enable-debug, enable debug build flags),
 	found_debug=$enable_debug
 )
 AM_CONDITIONAL(IS_DEBUG, test "x$found_debug" = xyes)
+
+# Is this --enable-coverage?
+AC_ARG_ENABLE(
+	coverage,
+	AC_HELP_STRING(--enable-coverage, enable coverage build flags),
+	found_coverage=$enable_coverage
+)
+AM_CONDITIONAL(IS_COVERAGE, test "x$found_coverage" = xyes)
 
 # Is this a static build?
 AC_ARG_ENABLE(
@@ -46,19 +52,6 @@ fi
 
 # Is this gcc?
 AM_CONDITIONAL(IS_GCC, test "x$GCC" = xyes)
-AC_MSG_CHECKING(for gcc that whines about -I)
-AC_EGREP_CPP(
-	yes,
-	[
-		#if __GNUC__ > 3
-		yes
-		#endif
-	],
-	found_gcc4=yes,
-	found_gcc4=no
-)
-AM_CONDITIONAL(IS_GCC4, test "x$found_gcc4" = xyes)
-AC_MSG_RESULT($found_gcc4)
 
 # Is this Sun CC?
 AC_EGREP_CPP(
@@ -111,10 +104,12 @@ AC_CHECK_HEADERS(
 	]
 )
 
+# Look for library needed for flock.
+AC_SEARCH_LIBS(flock, bsd)
+
 # Check for some functions that are replaced or omitted.
 AC_CHECK_FUNCS(
 	[ \
-		bzero \
 		dirfd \
 		flock \
 		setproctitle \
@@ -339,22 +334,22 @@ if test "x$found_strtonum" = xyes; then
 fi
 AM_CONDITIONAL(NO_STRTONUM, [test "x$found_strtonum" = xno])
 
-# Look for strnvis, compat/{vis,unvis}.c used if missing.
-AC_CHECK_FUNC(strnvis, found_strnvis=yes, found_strnvis=no)
-if test "x$found_strnvis" = xyes; then
+# Look for stravis, compat/{vis,unvis}.c used if missing.
+AC_CHECK_FUNC(stravis, found_stravis=yes, found_stravis=no)
+if test "x$found_stravis" = xyes; then
 	AC_MSG_CHECKING(if strnvis is broken)
 	AC_EGREP_HEADER([strnvis\(char \*, const char \*, size_t, int\)],
 			vis.h,
 			AC_MSG_RESULT(no),
-			[found_strnvis=no])
-	if test "x$found_strnvis" = xno; then
+			[found_stravis=no])
+	if test "x$found_stravis" = xno; then
 		AC_MSG_RESULT(yes)
 	fi
 fi
-if test "x$found_strnvis" = xyes; then
+if test "x$found_stravis" = xyes; then
 	AC_DEFINE(HAVE_VIS)
 fi
-AM_CONDITIONAL(NO_VIS, [test "x$found_strnvis" = xno])
+AM_CONDITIONAL(NO_VIS, [test "x$found_stravis" = xno])
 
 # Look for cfmakeraw, compat/cfmakeraw.c used if missing.
 AC_CHECK_FUNC(cfmakeraw, found_cfmakeraw=yes, found_cfmakeraw=no)

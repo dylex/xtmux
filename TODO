@@ -1,14 +1,10 @@
 - command bits and pieces:
-	* why doesn't command-prompt work if made read-only?
 	* allow multiple targets: fnmatch for -t/-c, for example detach all
 	  clients with -t*
 	* add -c for new-session like new-window
-	* attach should take a pane and select it as well as attaching
 	* ' and " should be parsed the same (eg "\e" vs '\e') in config
 	  and command prompt
 	* last-pane across sessions
-	* exact match operator for targets (or break the substring match
-	  and require eg x* instead of just x)
 
 - make command sequences more usable
 	* don't require space after ;
@@ -19,10 +15,9 @@
 	* way to set socket path from config file
 
 - format improvements:
-	* last bits of status_replace into formats?
 	* option to quote format (#{session_name:quoted})
 	* formats need conditions for >0 (for #P)
-	* some way to pad # stuff with spaces, #!2T maybe
+	* some way to pad # stuff with spaces
 	* last window update time and format for it
 	* formats to show if a window is linked into multiple sessions, into
 	  multiple attached sessions, and is the active window in multiple
@@ -34,6 +29,9 @@
 	* flag to choose-* for sort order
 	* choose mode would be better per client than per window?
 	* two choices (first one then second, for swap-pane and join-pane)
+	* choose modes should ditch the key bindings and just have fixed keys, and
+          be more customized to their purpose (d to delete a buffer for choose-buffer,
+          a preview of buffer contents, etc)
 
 - improve monitor-*:
 	* straighten out rules for multiple clients
@@ -43,53 +41,33 @@
 
 - improve mouse support:
 	* bind commands to mouse in different areas? 
-	* more fine-grained options?
 	* commands executed when clicking on a pattern (URL)
-	* mouse-select-pane will screw up with !MODE_MOUSE_STANDARD (it sets
-	  the flag on w/o checking the others before calling tty_update_mode)
-	* mouse can be like normal key bindings?
-	      - {button-{1,2,3},wheel-{up,down}}-{status,pane,border} and
-	        drag-{start,end}-{status,pane,border} plus the modifiers
-	      - resize and copy can be special cases - once you call something
-	        like copy-mode -M or resize-pane -M to start the drag, it tracks
-	        mouse until you call -m to stop the drag. or just keep drags
-	        entirely special?
-	      - what happens with stuff that wants mouse inside? especially for
-	        pane clicks which need to run command AND pass event through
-	        (like mouse-select-pane). maybe just a flag to say whether it
-		always runs or only if pane hasn't taken mouse? or it could be
-		eg bind Button1Pane "select-pane -t=; send-keys -Mt='
-	      - also need a) some way to tell commands bound to key which
-	        window or pane the mouse key binding applies to (maybe a new
-	        special char in target, or pass targets through formats?) b) a
-	        way to bind repeat count to mode keys so that wheel up/down can
-	        do multiple lines c) send-keys -M to pass a mouse event through?
-	      - what does the mouse->KEYC_* conversion and find-the-pane bit?
-                server_client_handle_key?
 
 - hooks!
 
 - warts on current naming:
 	* display-time but message-fg/bg/attr
 	* list-* vs show-*
-	* split-window -> split-pane??
+	* split-window -> split-pane?
 
 - better UTF-8 support:
 	* window names and titles
 	* message display
 	* prompt input
 	* multibyte key input
+	* searching in copy mode
 
 - copy/paste improvements:
 	* incremental searching
-	* append to buffer
 	* paste w/o trailing whitespace
 	* command to toggle selection not to move it in copy-mode
+	* regex searching
+	* copy-pipe should have -x as well
 
 - layout stuff
 	* way to tag a layout as a number/name
 	* maybe keep last layout + size around and if size reverts just put it
-          back
+	  back
 	* revamp layouts: they are too complicated, should be more closely
 	  integrated, should support hints, layout sets should just be a
 	  special case of custom layouts, and we should support panes that are
@@ -98,15 +76,14 @@
 	* way to set hints/limits about pane size for resizing
 	* panning over window (window larger than visible)
 	* a mode where one application can cross two panes (ie x|y, width =
-          COLUMNS/2 but height = ROWS * 2)
-        * general key to space cells out evenly (horiz or vert) within their
-          parent cell (could replace even-vert/even-horiz layouts)
+	  COLUMNS/2 but height = ROWS * 2)
+	* general key to space cells out evenly (horiz or vert) within their
+	  parent cell (could replace even-vert/even-horiz layouts)
+	* separate active panes for different clients
 
 - terminfo bits
 	* use a better termcap internally instead of screen, perhaps xterm
 	* use screen-256color when started on 256 colour terminal?
-	* need a tmux terminfo entry to document the extensions we are using in
-	  upstream terminfo
 
 - code cleanup
 	* instead of separate window and session options, just one master
@@ -125,17 +102,13 @@
 	  know about the client, notably:
 		- is this the config file? (cmdq->c == NULL)
 		- is this a command client? (cmdq->c != NULL &&
-                  cmdq->c->session == NULL)
+		  cmdq->c->session == NULL)
 		- is this a control client?
 		- can i do stdin or stdout to this client?
 	  or even guarantee that cmdq->c != NULL and provide a better way to
 	  tell when in the config file - then we use cmdq->c if we need a
 	  client w/o a session else cmd_current_client
 	* optimize pane redraws, 20120318184853.GK10965@yelena.nicm.ath.cx
-	* cmd_find_* could be much simpler - parse everything the same, only
-          difference is what to choose when not given a ":" or "." (such as a
-          plain "0" could be session, window or pane). So just cmd_find_target
-          with a type (session, window, or pane)..
 
 - miscellaneous
 	* way to keep a job running just read its last line of output for #()
@@ -147,9 +120,7 @@
 	  jobs and run-shell and lock command all start with slightly different
 	  environments
 	* multiline status line?
-	* bind commands to key sequences -- make it so ALL keys go through a
-	  table, first an implicit table in which C-b is the only default
-	  binding to a command that says "next key from $othertable" and so
-	  on. means -n can go away as well
 	* customizable command aliases
-	* any remaining clients in wait-for should be woken when server exits
+	* automatic pane logging
+	* BCE? We are halfway there (output side is done for pane backgrounds),
+	  just need to change how screen/grid handles erase

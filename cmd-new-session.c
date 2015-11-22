@@ -37,11 +37,11 @@ enum cmd_retval	 cmd_new_session_exec(struct cmd *, struct cmd_q *);
 
 const struct cmd_entry cmd_new_session_entry = {
 	"new-session", "new",
-	"Ac:dDF:n:Ps:t:x:y:", 0, -1,
-	"[-AdDP] [-c start-directory] [-F format] [-n window-name] "
+	"Ac:dDEF:n:Ps:t:x:y:", 0, -1,
+	"[-AdDEP] [-c start-directory] [-F format] [-n window-name] "
 	"[-s session-name] " CMD_TARGET_SESSION_USAGE " [-x width] "
 	"[-y height] [command]",
-	CMD_STARTSERVER|CMD_CANTNEST,
+	CMD_STARTSERVER,
 	cmd_new_session_exec
 };
 
@@ -91,7 +91,8 @@ cmd_new_session_exec(struct cmd *self, struct cmd_q *cmdq)
 		if (session_find(newname) != NULL) {
 			if (args_has(args, 'A')) {
 				return (cmd_attach_session(cmdq, newname,
-				    args_has(args, 'D'), 0, NULL));
+				    args_has(args, 'D'), 0, NULL,
+				    args_has(args, 'E')));
 			}
 			cmdq_error(cmdq, "duplicate session: %s", newname);
 			return (CMD_RETURN_ERROR);
@@ -137,7 +138,7 @@ cmd_new_session_exec(struct cmd *self, struct cmd_q *cmdq)
 		cwd = fd;
 	} else if (c != NULL && c->session == NULL)
 		cwd = c->cwd;
-	else if ((c0 = cmd_current_client(cmdq)) != NULL)
+	else if ((c0 = cmd_find_client(cmdq, NULL, 1)) != NULL)
 		cwd = c0->session->cwd;
 	else {
 		fd = open(".", O_RDONLY);
@@ -145,13 +146,13 @@ cmd_new_session_exec(struct cmd *self, struct cmd_q *cmdq)
 	}
 
 	/*
-	 * Save the termios settings, part of which is used for new windows in
-	 * this session.
+	 * If this is a new client, check for nesting and save the termios
+	 * settings (part of which is used for new windows in this session).
 	 *
-	 * This is read again with tcgetattr() rather than using tty.tio as if
-	 * detached, tty_open won't be called. Because of this, it must be done
-	 * before opening the terminal as that calls tcsetattr() to prepare for
-	 * tmux taking over.
+	 * tcgetattr() is used rather than using tty.tio since if the client is
+	 * detached, tty_open won't be called. It must be done before opening
+	 * the terminal as that calls tcsetattr() to prepare for tmux taking
+	 * over.
 	 */
 	if (!detached && !already_attached && c->tty.fd != -1
 #ifdef XTMUX
@@ -161,6 +162,11 @@ cmd_new_session_exec(struct cmd *self, struct cmd_q *cmdq)
 			&& !c->tty.xtmux
 #endif
 	   ) {
+		if (server_client_check_nested(cmdq->client)) {
+			cmdq_error(cmdq, "sessions should be nested with care, "
+			    "unset $TMUX to force");
+			return (CMD_RETURN_ERROR);
+		}
 		if (tcgetattr(c->tty.fd, &tio) != 0)
 			fatal("tcgetattr failed");
 		tiop = &tio;
@@ -232,9 +238,11 @@ cmd_new_session_exec(struct cmd *self, struct cmd_q *cmdq)
 
 	/* Construct the environment. */
 	environ_init(&env);
-	update = options_get_string(&global_s_options, "update-environment");
-	if (c != NULL)
+	if (c != NULL && !args_has(args, 'E')) {
+		update = options_get_string(&global_s_options,
+		    "update-environment");
 		environ_update(update, &c->environ, &env);
+	}
 
 	/* Create the new session. */
 	idx = -1 - options_get_number(&global_s_options, "base-index");
@@ -261,7 +269,7 @@ cmd_new_session_exec(struct cmd *self, struct cmd_q *cmdq)
 	if (groupwith != NULL) {
 		session_group_add(groupwith, s);
 		session_group_synchronize_to(s);
-		session_select(s, RB_ROOT(&s->windows)->idx);
+		session_select(s, RB_MIN(winlinks, &s->windows)->idx);
 	}
 
 	/*
@@ -274,8 +282,10 @@ cmd_new_session_exec(struct cmd *self, struct cmd_q *cmdq)
 		else if (c->session != NULL)
 			c->last_session = c->session;
 		c->session = s;
+		status_timer_start(c);
 		notify_attached_session_changed(c);
-		session_update_activity(s);
+		session_update_activity(s, NULL);
+		gettimeofday(&s->last_attached_time, NULL);
 		server_redraw_client(c);
 	}
 	recalculate_sizes();

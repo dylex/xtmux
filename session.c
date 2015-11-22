@@ -26,11 +26,13 @@
 
 #include "tmux.h"
 
-/* Global session list. */
 struct sessions	sessions;
-struct sessions dead_sessions;
 u_int		next_session_id;
 struct session_groups session_groups;
+
+void	session_free(int, short, void *);
+
+void	session_lock_timer(int, short, void *);
 
 struct winlink *session_next_alert(struct winlink *);
 struct winlink *session_previous_alert(struct winlink *);
@@ -69,6 +71,22 @@ session_find(const char *name)
 	return (RB_FIND(sessions, &sessions, &s));
 }
 
+/* Find session by id parsed from a string. */
+struct session *
+session_find_by_id_str(const char *s)
+{
+	const char	*errstr;
+	u_int		 id;
+
+	if (*s != '$')
+		return (NULL);
+
+	id = strtonum(s + 1, 0, UINT_MAX, &errstr);
+	if (errstr != NULL)
+		return (NULL);
+	return (session_find_by_id(id));
+}
+
 /* Find session by id. */
 struct session *
 session_find_by_id(u_int id)
@@ -91,13 +109,9 @@ session_create(const char *name, int argc, char **argv, const char *path,
 	struct session	*s;
 	struct winlink	*wl;
 
-	s = xmalloc(sizeof *s);
-	s->references = 0;
+	s = xcalloc(1, sizeof *s);
+	s->references = 1;
 	s->flags = 0;
-
-	if (gettimeofday(&s->creation_time, NULL) != 0)
-		fatal("gettimeofday failed");
-	session_update_activity(s);
 
 	s->cwd = dup(cwd);
 
@@ -116,6 +130,10 @@ session_create(const char *name, int argc, char **argv, const char *path,
 		memcpy(s->tio, tio, sizeof *s->tio);
 	}
 
+	if (gettimeofday(&s->creation_time, NULL) != 0)
+		fatal("gettimeofday failed");
+	session_update_activity(s, &s->creation_time);
+
 	s->sx = sx;
 	s->sy = sy;
 
@@ -132,6 +150,10 @@ session_create(const char *name, int argc, char **argv, const char *path,
 	}
 	RB_INSERT(sessions, &sessions, s);
 
+	if (gettimeofday(&s->creation_time, NULL) != 0)
+		fatal("gettimeofday failed");
+	session_update_activity(s, &s->creation_time);
+
 	if (argc >= 0) {
 		wl = session_new(s, NULL, argc, argv, path, cwd, idx, cause);
 		if (wl == NULL) {
@@ -147,6 +169,31 @@ session_create(const char *name, int argc, char **argv, const char *path,
 	return (s);
 }
 
+/* Remove a reference from a session. */
+void
+session_unref(struct session *s)
+{
+	log_debug("session %s has %d references", s->name, s->references);
+
+	s->references--;
+	if (s->references == 0)
+		event_once(-1, EV_TIMEOUT, session_free, s, NULL);
+}
+
+/* Free session. */
+void
+session_free(unused int fd, unused short events, void *arg)
+{
+	struct session	*s = arg;
+
+	log_debug("session %s freed (%d references)", s->name, s->references);
+
+	if (s->references == 0) {
+		free(s->name);
+		free(s);
+	}
+}
+
 /* Destroy a session. */
 void
 session_destroy(struct session *s)
@@ -159,6 +206,9 @@ session_destroy(struct session *s)
 	notify_session_closed(s);
 
 	free(s->tio);
+
+	if (event_initialized(&s->lock_timer))
+		event_del(&s->lock_timer);
 
 	session_group_remove(s);
 	environ_free(&s->environ);
@@ -174,7 +224,7 @@ session_destroy(struct session *s)
 
 	close(s->cwd);
 
-	RB_INSERT(sessions, &dead_sessions, s);
+	session_unref(s);
 }
 
 /* Check a session name is valid: not empty and no colons or periods. */
@@ -184,12 +234,46 @@ session_check_name(const char *name)
 	return (*name != '\0' && name[strcspn(name, ":.")] == '\0');
 }
 
-/* Update session active time. */
+/* Lock session if it has timed out. */
 void
-session_update_activity(struct session *s)
+session_lock_timer(unused int fd, unused short events, void *arg)
 {
-	if (gettimeofday(&s->activity_time, NULL) != 0)
-		fatal("gettimeofday");
+	struct session	*s = arg;
+
+	if (s->flags & SESSION_UNATTACHED)
+		return;
+
+	log_debug("session %s locked, activity time %lld", s->name,
+	    (long long)s->activity_time.tv_sec);
+
+	server_lock_session(s);
+	recalculate_sizes();
+}
+
+/* Update activity time. */
+void
+session_update_activity(struct session *s, struct timeval *from)
+{
+	struct timeval	*last = &s->last_activity_time;
+	struct timeval	 tv;
+
+	memcpy(last, &s->activity_time, sizeof *last);
+	if (from == NULL)
+		gettimeofday(&s->activity_time, NULL);
+	else
+		memcpy(&s->activity_time, from, sizeof s->activity_time);
+
+	if (evtimer_initialized(&s->lock_timer))
+		evtimer_del(&s->lock_timer);
+	else
+		evtimer_set(&s->lock_timer, session_lock_timer, s);
+
+	if (~s->flags & SESSION_UNATTACHED) {
+		timerclear(&tv);
+		tv.tv_sec = options_get_number(&s->options, "lock-after-time");
+		if (tv.tv_sec != 0)
+			evtimer_add(&s->lock_timer, &tv);
+	}
 }
 
 /* Find the next usable session. */
@@ -308,16 +392,30 @@ session_detach(struct session *s, struct winlink *wl)
 }
 
 /* Return if session has window. */
-struct winlink *
+int
 session_has(struct session *s, struct window *w)
 {
 	struct winlink	*wl;
 
 	RB_FOREACH(wl, winlinks, &s->windows) {
 		if (wl->window == w)
-			return (wl);
+			return (1);
 	}
-	return (NULL);
+	return (0);
+}
+
+/*
+ * Return 1 if a window is linked outside this session (not including session
+ * groups). The window must be in this session!
+ */
+int
+session_is_linked(struct session *s, struct window *w)
+{
+	struct session_group	*sg;
+
+	if ((sg = session_group_find(s)) != NULL)
+		return (w->references != session_group_count(sg));
+	return (w->references != 1);
 }
 
 struct winlink *
@@ -420,6 +518,7 @@ session_set_current(struct session *s, struct winlink *wl)
 	winlink_stack_push(&s->lastw, s->curw);
 	s->curw = wl;
 	winlink_clear_flags(wl);
+	window_update_activity(wl->window);
 	return (0);
 }
 

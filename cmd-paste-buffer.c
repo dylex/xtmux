@@ -53,7 +53,9 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
 	struct window_pane	*wp;
 	struct session		*s;
 	struct paste_buffer	*pb;
-	const char		*sepstr, *bufname;
+	const char		*sepstr, *bufname, *bufdata;
+	size_t			 bufsize;
+	int			 bracket = args_has(args, 'p');
 
 	if (cmd_find_pane(cmdq, args_get(args, 't'), &s, &wp) == NULL)
 		return (CMD_RETURN_ERROR);
@@ -66,6 +68,10 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
 			sepstr = "\r";
 	}
 
+	bufname = NULL;
+	if (args_has(args, 'b'))
+		bufname = args_get(args, 'b');
+
 #ifdef XTMUX
 	if (args_has(args, 'x'))
 	{
@@ -74,16 +80,12 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
 			cmdq_error(cmdq, "not xtmux");
 			return (CMD_RETURN_ERROR);
 		}
-		return xtmux_paste(&cmdq->client->tty, wp, args_get(args, 'b'), sepstr);
+		return xtmux_paste(&cmdq->client->tty, wp, bufname, sepstr);
 	}
 #endif
 
-	bufname = NULL;
-	if (args_has(args, 'b'))
-		bufname = args_get(args, 'b');
-
 	if (bufname == NULL)
-		pb = paste_get_top();
+		pb = paste_get_top(NULL);
 	else {
 		pb = paste_get_name(bufname);
 		if (pb == NULL) {
@@ -93,16 +95,12 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
 	}
 
 	if (pb != NULL) {
-		paste_send_pane(pb, wp, sepstr, args_has(args, 'p'));
+		bufdata = paste_buffer_data(pb, &bufsize);
+		paste_send_pane(bufdata, bufsize, wp, sepstr, bracket);
 	}
 
-	/* Delete the buffer if -d. */
-	if (args_has(args, 'd')) {
-		if (bufname == NULL)
-			paste_free_top();
-		else
-			paste_free_name(bufname);
-	}
+	if (pb != NULL && args_has(args, 'd'))
+		paste_free(pb);
 
 	return (CMD_RETURN_NORMAL);
 }

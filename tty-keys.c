@@ -41,7 +41,6 @@ struct tty_key *tty_keys_find1(
 struct tty_key *tty_keys_find(struct tty *, const char *, size_t, size_t *);
 void		tty_keys_callback(int, short, void *);
 int		tty_keys_mouse(struct tty *, const char *, size_t, size_t *);
-int		tty_keys_device(struct tty *, const char *, size_t, size_t *);
 
 /* Default raw keys. */
 struct tty_default_key_raw {
@@ -482,17 +481,6 @@ tty_keys_next(struct tty *tty)
 		return (0);
 	log_debug("keys are %zu (%.*s)", len, (int) len, buf);
 
-	/* Is this device attributes response? */
-	switch (tty_keys_device(tty, buf, len, &size)) {
-	case 0:		/* yes */
-		key = KEYC_NONE;
-		goto complete_key;
-	case -1:	/* no, or not valid */
-		break;
-	case 1:		/* partial */
-		goto partial_key;
-	}
-
 	/* Is this a mouse key press? */
 	switch (tty_keys_mouse(tty, buf, len, &size)) {
 	case 0:		/* yes */
@@ -501,6 +489,7 @@ tty_keys_next(struct tty *tty)
 	case -1:	/* no, or not valid */
 		break;
 	case -2:	/* yes, but we don't care. */
+		key = KEYC_MOUSE;
 		goto discard_key;
 	case 1:		/* partial */
 		goto partial_key;
@@ -644,8 +633,8 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 {
 	struct mouse_event	*m = &tty->mouse;
 	struct utf8_data	 utf8data;
-	u_int			 i, value, x, y, b, sgr, sgr_b, sgr_rel;
-	unsigned char		 c;
+	u_int			 i, value, x, y, b, sgr_b;
+	u_char			 sgr_type, c;
 
 	/*
 	 * Standard mouse sequences are \033[M followed by three characters
@@ -661,7 +650,8 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 	 */
 
 	*size = 0;
-	x = y = b = sgr = sgr_b = sgr_rel = 0;
+	x = y = b = sgr_b = 0;
+	sgr_type = ' ';
 
 	/* First two bytes are always \033[. */
 	if (buf[0] != '\033')
@@ -708,7 +698,7 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 			else
 				y = value;
 		}
-		log_debug("mouse input: %.*s", (int) *size, buf);
+		log_debug("mouse input: %.*s", (int)*size, buf);
 
 		/* Check and return the mouse input. */
 		if (b < 32)
@@ -748,22 +738,26 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 		while (1) {
 			if (len <= *size)
 				return (1);
-			c = (u_char) buf[(*size)++];
+			c = (u_char)buf[(*size)++];
 			if (c == 'M' || c == 'm')
 				break;
 			if (c < '0' || c > '9')
 				return (-1);
 			y = 10 * y + (c - '0');
 		}
-		log_debug("mouse input (sgr): %.*s", (int) *size, buf);
+		log_debug("mouse input (SGR): %.*s", (int)*size, buf);
 
 		/* Check and return the mouse input. */
 		if (x < 1 || y < 1)
 			return (-1);
 		x--;
 		y--;
-		sgr = 1;
-		sgr_rel = (c == 'm');
+		b = sgr_b;
+
+		/* Type is M for press, m for release. */
+		sgr_type = c;
+		if (sgr_type == 'm')
+			b |= 3;
 
 		/*
 		 * Some terminals (like PuTTY 0.63) mistakenly send
@@ -771,121 +765,20 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 		 * Discard it before it reaches any program running inside
 		 * tmux.
 		 */
-		if (sgr_rel && (sgr_b & 64))
+		if (sgr_type == 'm' && (sgr_b & 64))
 		    return (-2);
-
-		/* Figure out what b would be in old format. */
-		b = sgr_b;
-		if (sgr_rel)
-			b |= 3;
 	} else
 		return (-1);
 
-	/* Fill in mouse structure. */
-	if (~m->event & MOUSE_EVENT_WHEEL) {
-		m->lx = m->x;
-		m->ly = m->y;
-	}
-	m->xb = b;
-	m->sgr = sgr;
-	m->sgr_xb = sgr_b;
-	m->sgr_rel = sgr_rel;
+	/* Fill mouse event. */
+	m->lx = m->x;
 	m->x = x;
+	m->ly = m->y;
 	m->y = y;
-	if (b & MOUSE_MASK_WHEEL) {
-		if (b & MOUSE_MASK_SHIFT)
-			m->scroll = 1;
-		else
-			m->scroll = MOUSE_WHEEL_SCALE;
-		if (b & MOUSE_MASK_META)
-			m->scroll *= MOUSE_WHEEL_SCALE;
-		if (b & MOUSE_MASK_CTRL)
-			m->scroll *= MOUSE_WHEEL_SCALE;
-
-		b &= MOUSE_MASK_BUTTONS;
-		if (b == 0)
-			m->wheel = MOUSE_WHEEL_UP;
-		else if (b == 1)
-			m->wheel = MOUSE_WHEEL_DOWN;
-		m->event = MOUSE_EVENT_WHEEL;
-
-		m->button = 3;
-	} else if ((b & MOUSE_MASK_BUTTONS) == 3) {
-		if (~m->event & MOUSE_EVENT_DRAG && x == m->sx && y == m->sy) {
-			m->event = MOUSE_EVENT_CLICK;
-			m->clicks = (m->clicks + 1) % 3;
-		} else
-			m->event = MOUSE_EVENT_DRAG;
-		m->event |= MOUSE_EVENT_UP;
-	} else {
-		if (b & MOUSE_MASK_DRAG)
-			m->event = MOUSE_EVENT_DRAG;
-		else {
-			m->event = MOUSE_EVENT_DOWN;
-			if (x != m->sx || y != m->sy)
-				m->clicks = 0;
-		}
-		m->button = (b & MOUSE_MASK_BUTTONS);
-	}
-	m->sx = x;
-	m->sy = y;
-
-	return (0);
-}
-
-/*
- * Handle device attributes input. Returns 0 for success, -1 for failure, 1 for
- * partial.
- */
-int
-tty_keys_device(struct tty *tty, const char *buf, size_t len, size_t *size)
-{
-	u_int i, class;
-	char  tmp[64], *endptr;
-
-	/*
-	 * Primary device attributes are \033[?a;b and secondary are
-	 * \033[>a;b;c.
-	 */
-
-	*size = 0;
-
-	/* First three bytes are always \033[?. */
-	if (buf[0] != '\033')
-		return (-1);
-	if (len == 1)
-		return (1);
-	if (buf[1] != '[')
-		return (-1);
-	if (len == 2)
-		return (1);
-	if (buf[2] != '>' && buf[2] != '?')
-		return (-1);
-	if (len == 3)
-		return (1);
-
-	/* Copy the rest up to a 'c'. */
-	for (i = 0; i < (sizeof tmp) - 1 && buf[3 + i] != 'c'; i++) {
-		if (3 + i == len)
-			return (1);
-		tmp[i] = buf[3 + i];
-	}
-	if (i == (sizeof tmp) - 1)
-		return (-1);
-	tmp[i] = '\0';
-	*size = 4 + i;
-
-	/* Only primary is of interest. */
-	if (buf[2] != '?')
-		return (0);
-
-	/* Convert service class. */
-	class = strtoul(tmp, &endptr, 10);
-	if (*endptr != ';')
-		class = 0;
-
-	log_debug("received service class %u", class);
-	tty_set_class(tty, class);
+	m->lb = m->b;
+	m->b = b;
+	m->sgr_type = sgr_type;
+	m->sgr_b = sgr_b;
 
 	return (0);
 }

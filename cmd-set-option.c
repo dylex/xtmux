@@ -91,7 +91,6 @@ cmd_set_option_exec(struct cmd *self, struct cmd_q *cmdq)
 	struct options				*oo;
 	struct window				*w;
 	const char				*optstr, *valstr;
-	u_int					 i;
 
 	/* Get the option name and value. */
 	optstr = args->argv[0];
@@ -111,8 +110,11 @@ cmd_set_option_exec(struct cmd *self, struct cmd_q *cmdq)
 	/* Find the option entry, try each table. */
 	table = oe = NULL;
 	if (options_table_find(optstr, &table, &oe) != 0) {
-		cmdq_error(cmdq, "ambiguous option: %s", optstr);
-		return (CMD_RETURN_ERROR);
+		if (!args_has(args, 'q')) {
+			cmdq_error(cmdq, "ambiguous option: %s", optstr);
+			return (CMD_RETURN_ERROR);
+		}
+		return (CMD_RETURN_NORMAL);
 	}
 	if (oe == NULL) {
 		if (!args_has(args, 'q')) {
@@ -183,23 +185,23 @@ cmd_set_option_exec(struct cmd *self, struct cmd_q *cmdq)
 			return (CMD_RETURN_ERROR);
 	}
 
-	/* Start or stop timers when automatic-rename changed. */
+	/* Start or stop timers if necessary. */
 	if (strcmp(oe->name, "automatic-rename") == 0) {
-		for (i = 0; i < ARRAY_LENGTH(&windows); i++) {
-			if ((w = ARRAY_ITEM(&windows, i)) == NULL)
-				continue;
+		RB_FOREACH(w, windows, &windows) {
 			if (options_get_number(&w->options, "automatic-rename"))
-				queue_window_name(w);
-			else if (event_initialized(&w->name_timer))
-				evtimer_del(&w->name_timer);
+				w->active->flags |= PANE_CHANGED;
 		}
 	}
+	if (strcmp(oe->name, "status") == 0 ||
+	    strcmp(oe->name, "status-interval") == 0)
+		status_timer_start_all();
+	if (strcmp(oe->name, "monitor-silence") == 0)
+		alerts_reset_all();
 
 	/* Update sizes and redraw. May not need it but meh. */
 	recalculate_sizes();
-	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
-		c = ARRAY_ITEM(&clients, i);
-		if (c != NULL && c->session != NULL) {
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (c->session != NULL) {
 			server_redraw_client(c);
 #ifdef XTMUX
 			if ((oo == &c->options || oo == &global_c_options) && c->tty.xtmux)
@@ -275,7 +277,6 @@ cmd_set_option_user(struct cmd *self, struct cmd_q *cmdq, const char *optstr,
 	return (CMD_RETURN_NORMAL);
 }
 
-
 /* Unset an option. */
 int
 cmd_set_option_unset(struct cmd *self, struct cmd_q *cmdq,
@@ -284,16 +285,25 @@ cmd_set_option_unset(struct cmd *self, struct cmd_q *cmdq,
 {
 	struct args	*args = self->args;
 
-	if (args_has(args, 'g')) {
-		cmdq_error(cmdq, "can't unset global option: %s", oe->name);
-		return (-1);
-	}
 	if (value != NULL) {
 		cmdq_error(cmdq, "value passed to unset option: %s", oe->name);
 		return (-1);
 	}
 
-	options_remove(oo, oe->name);
+	if (args_has(args, 'g') || oo == &global_options) {
+		switch (oe->type) {
+		case OPTIONS_TABLE_STRING:
+			options_set_string(oo, oe->name, "%s", oe->default_str);
+			break;
+		case OPTIONS_TABLE_STYLE:
+			options_set_style(oo, oe->name, oe->default_str, 0);
+			break;
+		default:
+			options_set_number(oo, oe->name, oe->default_num);
+			break;
+		}
+	} else
+		options_remove(oo, oe->name);
 	return (0);
 }
 
@@ -305,9 +315,15 @@ cmd_set_option_set(struct cmd *self, struct cmd_q *cmdq,
 {
 	struct options_entry	*o;
 
-	if (oe->type != OPTIONS_TABLE_FLAG && value == NULL) {
-		cmdq_error(cmdq, "empty value");
-		return (-1);
+	switch (oe->type) {
+	case OPTIONS_TABLE_FLAG:
+	case OPTIONS_TABLE_CHOICE:
+		break;
+	default:
+		if (value == NULL) {
+			cmdq_error(cmdq, "empty value");
+			return (-1);
+		}
 	}
 
 	o = NULL;
@@ -471,21 +487,27 @@ cmd_set_option_choice(unused struct cmd *self, struct cmd_q *cmdq,
 	const char	**choicep;
 	int		  n, choice = -1;
 
-	n = 0;
-	for (choicep = oe->choices; *choicep != NULL; choicep++) {
-		n++;
-		if (strncmp(*choicep, value, strlen(value)) != 0)
-			continue;
+	if (value == NULL) {
+		choice = options_get_number(oo, oe->name);
+		if (choice < 2)
+			choice = !choice;
+	} else {
+		n = 0;
+		for (choicep = oe->choices; *choicep != NULL; choicep++) {
+			n++;
+			if (strncmp(*choicep, value, strlen(value)) != 0)
+				continue;
 
-		if (choice != -1) {
-			cmdq_error(cmdq, "ambiguous value: %s", value);
+			if (choice != -1) {
+				cmdq_error(cmdq, "ambiguous value: %s", value);
+				return (NULL);
+			}
+			choice = n - 1;
+		}
+		if (choice == -1) {
+			cmdq_error(cmdq, "unknown value: %s", value);
 			return (NULL);
 		}
-		choice = n - 1;
-	}
-	if (choice == -1) {
-		cmdq_error(cmdq, "unknown value: %s", value);
-		return (NULL);
 	}
 
 	return (options_set_number(oo, oe->name, choice));
