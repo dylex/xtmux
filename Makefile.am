@@ -6,8 +6,8 @@ CLEANFILES = tmux.1.mdoc tmux.1.man
 
 # Distribution tarball options.
 EXTRA_DIST = \
-	CHANGES FAQ README TODO COPYING examples compat/*.[ch] \
-	array.h compat.h tmux.h osdep-*.c mdoc2man.awk tmux.1 \
+	CHANGES FAQ README TODO COPYING example_tmux.conf compat/*.[ch] \
+	array.h compat.h tmux.h osdep-*.c xmalloc.h mdoc2man.awk tmux.1 \
 	README.xtmux xtmux.c
 dist-hook:
 	make clean
@@ -31,7 +31,7 @@ CFLAGS += -Wno-long-long -Wall -W -Wnested-externs -Wformat=2
 CFLAGS += -Wmissing-prototypes -Wstrict-prototypes -Wmissing-declarations
 CFLAGS += -Wwrite-strings -Wshadow -Wpointer-arith -Wsign-compare
 CFLAGS += -Wundef -Wbad-function-cast -Winline -Wcast-align
-CFLAGS += -Wdeclaration-after-statement -Wno-pointer-sign
+CFLAGS += -Wdeclaration-after-statement -Wno-pointer-sign -Wno-attributes
 CPPFLAGS += -DDEBUG
 endif
 if IS_COVERAGE
@@ -55,7 +55,7 @@ if IS_SUNCC
 CFLAGS += -erroff=E_EMPTY_DECLARATION
 endif
 
-# Set _LINUX_SOURCE_COMPAT for AIX for mallocing 0 bytes
+# Set _LINUX_SOURCE_COMPAT for AIX for malloc(0).
 if IS_AIX
 DEFS += -D_LINUX_SOURCE_COMPAT=1
 endif
@@ -119,6 +119,7 @@ dist_tmux_SOURCES = \
 	cmd-send-keys.c \
 	cmd-set-buffer.c \
 	cmd-set-environment.c \
+	cmd-set-hook.c \
 	cmd-set-option.c \
 	cmd-show-environment.c \
 	cmd-show-messages.c \
@@ -137,9 +138,9 @@ dist_tmux_SOURCES = \
 	control-notify.c \
 	environ.c \
 	format.c \
-	grid-cell.c \
 	grid-view.c \
 	grid.c \
+	hooks.c \
 	input-keys.c \
 	input.c \
 	job.c \
@@ -155,6 +156,7 @@ dist_tmux_SOURCES = \
 	options-table.c \
 	options.c \
 	paste.c \
+	proc.c \
 	resize.c \
 	screen-redraw.c \
 	screen-write.c \
@@ -234,6 +236,9 @@ nodist_tmux_SOURCES += compat/cfmakeraw.c
 endif
 if NO_OPENAT
 nodist_tmux_SOURCES += compat/openat.c
+endif
+if NO_REALLOCARRAY
+nodist_tmux_SOURCES += compat/reallocarray.c
 endif
 
 # Install tmux.1 in the right format.

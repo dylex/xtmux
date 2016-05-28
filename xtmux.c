@@ -234,8 +234,8 @@ xtmux_init(struct client *c, const char *display)
 	c->tty.termname = xstrdup("xtmux");
 
 	/* update client environment to reflect current DISPLAY */
-	environ_set(&c->environ, "DISPLAY", display);
-	environ_unset(&c->environ, "WINDOWID"); /* will be set later when we know it */
+	environ_set(c->environ, "DISPLAY", "%s", display);
+	environ_unset(c->environ, "WINDOWID"); /* will be set later when we know it */
 
 	/* find a unique number to identify this client on this display, up to 999 */
 	dl = strlen(display);
@@ -313,7 +313,7 @@ xdisplay_connection_callback(int fd, short events, void *data)
 }
 
 static void
-xdisplay_connection_watch(unused Display *display, XPointer data, int fd, Bool opening, XPointer *watch_data)
+xdisplay_connection_watch(__unused Display *display, XPointer data, int fd, Bool opening, XPointer *watch_data)
 {
 	struct tty *tty = (struct tty *)data;
 	struct event *ev;
@@ -335,7 +335,7 @@ xdisplay_connection_watch(unused Display *display, XPointer data, int fd, Bool o
 }
 
 static void
-xdisplay_callback(unused int fd, unused short events, void *data)
+xdisplay_callback(__unused int fd, __unused short events, void *data)
 {
 	struct tty *tty = (struct tty *)data;
 
@@ -628,7 +628,7 @@ xt_size_hints(struct xtmux *x, XSizeHints *sh)
 static void
 xt_class_hints(struct tty *tty, XClassHint *ch)
 {
-	struct options *o = &tty->client->options;
+	struct options *o = tty->client->options;
 	memset(ch, 0, sizeof(*ch));
 
 	ch->res_name = options_get_string(o, "xtmux-name");
@@ -639,7 +639,7 @@ int
 xtmux_setup(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
-	struct options *o = &tty->client->options;
+	struct options *o = tty->client->options;
 	const char *font, *prefix;
 	KeySym pkey = NoSymbol;
 	XColor pfg, pbg;
@@ -755,7 +755,6 @@ xtmux_open(struct tty *tty, char **cause)
 	XClassHint class_hints;
 	XSizeHints size_hints;
 	XGCValues gc_values;
-	char windowid[16];
 
 	XSetErrorHandler(xdisplay_error);
 	XSetIOErrorHandler(xdisplay_ioerror);
@@ -798,8 +797,7 @@ xtmux_open(struct tty *tty, char **cause)
 	if (x->window == None)
 		FAIL("could not create X window");
 
-	snprintf(windowid, sizeof(windowid), "%u", (unsigned)x->window);
-	environ_set(&tty->client->environ, "WINDOWID", windowid);
+	environ_set(tty->client->environ, "WINDOWID", "%u", (unsigned)x->window);
 
 	x->xim = XOpenIM(x->display, NULL, NULL, NULL);
 	if (x->xim)
@@ -959,15 +957,14 @@ grid_attr_cmp(const struct grid_cell *a, const struct grid_cell *b)
 static u_int
 grid_char(const struct grid_cell *gc)
 {
-	struct utf8_data ud;
+	wchar_t c;
 
 	if (gc->flags & GRID_FLAG_PADDING)
 		return ' ';
-	grid_cell_get(gc, &ud);
 	/* XXX does ud.width matter? 0-width characters seem messed up */
-	if (ud.size != 1)
-		return utf8_combine(&ud);
-	return *ud.data;
+	if (gc->data.size != 1 && utf8_combine(&gc->data, &c) == UTF8_DONE)
+		return c;
+	return *gc->data.data;
 }
 
 void
@@ -1417,17 +1414,10 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 }
 
 static void
-xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const struct grid_cell *gc, size_t n, const struct grid_cell *ga)
+xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const wchar *c, size_t n, const struct grid_cell *ga)
 {
-	u_int i;
-	wchar c[n];
-
 	if (!n)
 		return;
-
-	for (i = 0; i < n; i ++)
-		c[i] = grid_char(&gc[i]);
-
 	xt_draw_chars(x, cx, cy, c, n, ga, !(x->cd && INSIDE(x->cx, x->cy, cx, cy, n, 1)));
 }
 
@@ -1492,7 +1482,9 @@ xtmux_putc(struct tty *tty, u_char c)
 void
 xtmux_pututf8(struct tty *tty, const struct utf8_data *gu)
 {
-	return xtmux_putwc(tty, utf8_combine(gu));
+	wchar_t c;
+	if (utf8_combine(gu, &c) == UTF8_DONE)
+		xtmux_putwc(tty, c);
 }
 
 void
@@ -1930,33 +1922,47 @@ xtmux_bell(struct tty *tty)
 static void
 xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int right, u_int ox, u_int oy)
 {
-	const struct grid_line *gl = &s->grid->linedata[s->grid->hsize+py];
-	struct grid_cell ga;
+	struct grid_line *gl = &s->grid->linedata[s->grid->hsize+py];
+	struct grid_cell ga = grid_default_cell;
+	wchar cl[right-left];
 	u_int sx = right;
-	u_int i, b;
+	u_int px, bx;
 
 	if (sx > gl->cellsize)
 		sx = gl->cellsize;
-	for (i = left, b = left; i < sx; i ++)
+	for (px = left, bx = left; px < sx; px ++)
 	{
-		struct grid_cell gc = gl->celldata[i];
+		struct grid_cell_entry *gce = &gl->celldata[px];
+		struct grid_cell gc;
 
-		if (screen_check_selection(s, i, py)) {
-			gc.attr = s->sel.cell.attr;
-			gc.flags &= ~(GRID_FLAG_FG256|GRID_FLAG_BG256);
-			gc.flags |= s->sel.cell.flags & (GRID_FLAG_FG256|GRID_FLAG_BG256);
-			gc.fg = s->sel.cell.fg;
-			gc.bg = s->sel.cell.bg;
+		if (gce->flags & GRID_FLAG_EXTENDED) {
+			if (gce->offset >= gl->extdsize) {
+				gc = grid_default_cell;
+				cl[px] = ' ';
+			}
+			else {
+				gc = gl->extddata[gce->offset];
+				cl[px] = grid_char(&gc);
+			}
+		} else {
+			gc.attr = gce->data.attr;
+			gc.fg = gce->data.fg;
+			gc.bg = gce->data.bg;
+			cl[px] = gce->data.data;
 		}
 
-		if (i == b || grid_attr_cmp(&gc, &ga))
+		if (screen_check_selection(s, px, py))
+			gc = s->sel.cell;
+
+		if (px == bx || grid_attr_cmp(&gc, &ga))
 		{
-			xt_draw_cells(x, ox+b, oy+py, &gl->celldata[b], i-b, &ga);
-			b = i;
+			xt_draw_cells(x, ox+bx, oy+py, &cl[bx], px-bx, &ga);
+			bx = px;
 			ga = gc;
 		}
 	}
-	xt_draw_cells(x, ox+b, oy+py, &gl->celldata[b], i-b, &ga);
+	xt_draw_cells(x, ox+bx, oy+py, &cl[bx], px-bx, &ga);
+	/* XXX do we need to clear from px to right? */
 }
 
 void
@@ -2019,7 +2025,7 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 	if (!c->session)
 		return;
 
-	if (bot >= (int)tty->sy && (c->message_string || c->prompt_string || options_get_number(&c->session->options, "status")))
+	if (bot >= (int)tty->sy && (c->message_string || c->prompt_string || options_get_number(c->session->options, "status")))
 	{
 		/* fake status pane */
 		struct window_pane swp;
@@ -2045,7 +2051,8 @@ static void
 xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
-	int r, i, key;
+	key_code key;
+	int r, i;
 	static unsigned char buf[32];
 	KeySym xks = 0;
 
@@ -2054,7 +2061,7 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 	else
 		r = XLookupString(xev, buf, sizeof buf, &xks, &x->compose);
 	if (r > (int)sizeof buf)
-		log_fatalx("FIXME: xtmux LookupString result too large for buffer: %d", r);
+		fatalx("FIXME: xtmux LookupString result too large for buffer: %d", r);
 	if (x->prefix_key && xks == x->prefix_key)
 		key = KEYC_PREFIX;
 	else switch (xks)
@@ -2136,7 +2143,7 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 	}
 
 	if (x->prefix_mod >= 0 && xev->state & (1<<x->prefix_mod))
-		server_client_key_table(tty->client, "prefix");
+		server_client_set_key_table(tty->client, "prefix");
 
 	if (r < 0)
 		server_client_handle_key(tty->client, key);
@@ -2203,7 +2210,7 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 		m->b |= MOUSE_MASK_CTRL;
 
 	if (prefix)
-		server_client_key_table(tty->client, "prefix");
+		server_client_set_key_table(tty->client, "prefix");
 
 	server_client_handle_key(tty->client, KEYC_MOUSE);
 }
