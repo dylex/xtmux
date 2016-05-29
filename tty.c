@@ -1991,3 +1991,13 @@ tty_default_colours(struct grid_cell *gc, const struct window_pane *wp)
 		}
 	}
 }
+
+void
+tty_bell(struct tty *tty)
+{
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_bell(tty);
+#endif
+	tty_putcode(tty, TTYC_BEL);
+}
