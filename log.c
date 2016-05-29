@@ -71,11 +71,6 @@ log_open(const char *name)
 	if (log_file == NULL)
 		return;
 
-#if LIBEVENT_VERSION_NUMBER >= 0x02000400
-	if (log_level > 1)
-		event_enable_debug_mode();
-#endif
-
 	setvbuf(log_file, NULL, _IOLBF, 0);
 	event_set_log_callback(log_event_cb);
 }

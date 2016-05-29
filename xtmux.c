@@ -992,9 +992,7 @@ xtmux_attributes(struct tty *tty, const struct grid_cell *gc)
 	if (!grid_attr_cmp(&tty->cell, gc))
 		return;
 
-	XENTRY();
 	tty->cell = *gc;
-	XRETURN();
 }
 
 void
@@ -1968,6 +1966,7 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 				cl[px] = grid_char(&gc);
 			}
 		} else {
+			gc.flags = gce->flags;
 			gc.attr = gce->data.attr;
 			gc.fg = gce->data.fg;
 			gc.bg = gce->data.bg;
