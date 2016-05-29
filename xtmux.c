@@ -539,7 +539,7 @@ xt_load_font(struct xtmux *x, enum font_type type, const char *name)
 		x->cw = fs->max_bounds.width;
 		x->ch = fs->ascent + fs->descent;
 	}
-	else if (x->cw != fs->max_bounds.width || 
+	else if (x->cw != fs->max_bounds.width ||
 			x->ch != fs->ascent + fs->descent)
 	{
 		fprintf(stderr, "font extents mismatch: %s\n", name);
@@ -566,9 +566,9 @@ xt_load_font(struct xtmux *x, enum font_type type, const char *name)
 		for (c = fs->min_char_or_byte2; c <= fs->max_char_or_byte2; c ++)
 		{
 			XCharStruct *cs = &fs->per_char[i++];
-			if (!fs->per_char || 
-					cs->lbearing != 0 || cs->rbearing != 0 || 
-					cs->width != 0 || 
+			if (!fs->per_char ||
+					cs->lbearing != 0 || cs->rbearing != 0 ||
+					cs->width != 0 ||
 					cs->ascent != 0 || cs->descent != 0)
 			{
 				w = (r << 8) + c;
@@ -655,7 +655,7 @@ xtmux_setup(struct tty *tty)
 	}
 
 	font = options_get_string(o, "xtmux-font");
-	if (xt_load_font(x, 0, font) > 0 || 
+	if (xt_load_font(x, 0, font) > 0 ||
 			(!x->font->fid && xt_load_font(x, 0, "fixed") > 0))
 	{
 		if (x->window)
@@ -709,15 +709,15 @@ xtmux_setup(struct tty *tty)
 	x->prefix_mod = -1;
 	if (strlen(prefix) == 4 && !strncasecmp(prefix, "mod", 3) && prefix[3] >= '1' && prefix[3] <= '5')
 		x->prefix_mod = Mod1MapIndex + prefix[3] - '1';
-	else if (!strcasecmp(prefix, "meta")) 
+	else if (!strcasecmp(prefix, "meta"))
 		pkey = XK_Meta_L;
-	else if (!strcasecmp(prefix, "alt")) 
+	else if (!strcasecmp(prefix, "alt"))
 		pkey = XK_Alt_L;
-	else if (!strcasecmp(prefix, "super")) 
+	else if (!strcasecmp(prefix, "super"))
 		pkey = XK_Super_L;
-	else if (!strcasecmp(prefix, "hyper")) 
+	else if (!strcasecmp(prefix, "hyper"))
 		pkey = XK_Hyper_L;
-	else if (!strcasecmp(prefix, "control") || !strcasecmp(prefix, "ctrl")) 
+	else if (!strcasecmp(prefix, "control") || !strcasecmp(prefix, "ctrl"))
 		pkey = XK_Control_L;
 	else if (*prefix)
 		pkey = XStringToKeysym(prefix);
@@ -755,6 +755,16 @@ xtmux_open(struct tty *tty, char **cause)
 	XClassHint class_hints;
 	XSizeHints size_hints;
 	XGCValues gc_values;
+	XVisualInfo visual_mask = {
+		.depth = 24,
+		.class = TrueColor,
+		.red_mask   = 0xff0000,
+		.green_mask = 0x00ff00,
+		.blue_mask  = 0x0000ff
+	};
+	XVisualInfo *visual;
+	int n;
+	XSetWindowAttributes attr;
 
 	XSetErrorHandler(xdisplay_error);
 	XSetIOErrorHandler(xdisplay_ioerror);
@@ -791,9 +801,18 @@ xtmux_open(struct tty *tty, char **cause)
 	if (!tty->sy)
 		tty->sx = 24;
 
-	x->window = XCreateSimpleWindow(x->display, DefaultRootWindow(x->display),
+	visual_mask.screen = XSCREEN;
+	visual = XGetVisualInfo(x->display, VisualScreenMask | VisualDepthMask | VisualClassMask | VisualRedMaskMask | VisualGreenMaskMask | VisualBlueMaskMask, &visual_mask, &n);
+
+	attr.background_pixel = x->bg;
+	x->window = XCreateWindow(x->display, DefaultRootWindow(x->display),
 			0, 0, C2W(tty->sx), C2H(tty->sy),
-			0, 0, x->bg);
+			0, visual ? visual->depth : CopyFromParent, InputOutput,
+			visual ? visual->visual : CopyFromParent,
+			CWBackPixel, &attr);
+	if (visual)
+		XFree(visual);
+	/* else should not use RGB... */
 	if (x->window == None)
 		FAIL("could not create X window");
 
@@ -847,7 +866,7 @@ xtmux_open(struct tty *tty, char **cause)
 	XRETURN_(0);
 }
 
-void 
+void
 xtmux_close(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
@@ -857,7 +876,7 @@ xtmux_close(struct tty *tty)
 
 	event_del(&x->event);
 
-	/* Must be careful here if we got an IO error: 
+	/* Must be careful here if we got an IO error:
 	 * want to free resources without using the connection */
 
 	if (x->xic)
@@ -924,7 +943,7 @@ xtmux_close(struct tty *tty)
 	}
 }
 
-void 
+void
 xtmux_free(struct tty *tty)
 {
 	free(tty->xtmux->display_name);
@@ -948,9 +967,9 @@ static inline int
 grid_attr_cmp(const struct grid_cell *a, const struct grid_cell *b)
 {
 	/* could be more aggressive here with UTF8 and ' ', but good enough for now */
-	return !(a->attr == b->attr && 
-			a->flags == b->flags && 
-			a->fg == b->fg && 
+	return !(a->attr == b->attr &&
+			a->flags == b->flags &&
+			a->fg == b->fg &&
 			a->bg == b->bg);
 }
 
@@ -1290,18 +1309,22 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 		case 2: cleared = 0;
 	}
 
-	if (fgc >= 90 && fgc <= 97 && !(gc->flags & GRID_FLAG_FG256))
+	if (fgc >= 90 && fgc <= 97 && !(gc->flags & (GRID_FLAG_FG256|GRID_FLAG_FGRGB)))
 		fgc -= 90 - 8;
-	if (bgc >= 100 && bgc <= 107 && !(gc->flags & GRID_FLAG_BG256))
+	if (bgc >= 100 && bgc <= 107 && !(gc->flags & (GRID_FLAG_BG256|GRID_FLAG_BGRGB)))
 		bgc -= 100 - 8;
 
-	if (fgc == 8 && !(gc->flags & GRID_FLAG_FG256))
+	if (fgc == 8 && !(gc->flags & (GRID_FLAG_FG256|GRID_FLAG_FGRGB)))
 		fg = x->fg;
+	else if (gc->flags & GRID_FLAG_FGRGB)
+		fg = gc->fg_rgb.r << 16 | gc->fg_rgb.g << 8 | gc->fg_rgb.b;
 	else
 		fg = x->colors[fgc];
 
-	if (bgc == 8 && !(gc->flags & GRID_FLAG_BG256))
+	if (bgc == 8 && !(gc->flags & (GRID_FLAG_BG256|GRID_FLAG_BGRGB)))
 		bg = x->bg;
+	else if (gc->flags & GRID_FLAG_BGRGB)
+		bg = gc->bg_rgb.r << 16 | gc->bg_rgb.g << 8 | gc->bg_rgb.b;
 	else
 		bg = x->colors[bgc];
 
@@ -1311,16 +1334,16 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 		XCHG(fgc, bgc);
 	}
 
-	if (gc->attr & GRID_ATTR_ITALICS && gc->attr & GRID_ATTR_BRIGHT && 
+	if (gc->attr & GRID_ATTR_ITALICS && gc->attr & GRID_ATTR_BRIGHT &&
 			x->font[ft = FONT_TYPE_BOLD_ITALIC].fid);
-	else if (gc->attr & GRID_ATTR_ITALICS && 
+	else if (gc->attr & GRID_ATTR_ITALICS &&
 			x->font[ft = FONT_TYPE_ITALIC].fid);
-	else if (gc->attr & GRID_ATTR_BRIGHT && 
+	else if (gc->attr & GRID_ATTR_BRIGHT &&
 			x->font[ft = FONT_TYPE_BOLD].fid);
 	else ft = 0;
 
 	/* TODO: configurable BRIGHT semantics */
-	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && (fg == bg || !(ft & FONT_TYPE_BOLD)))
+	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && !(gc->flags & (GRID_FLAG_FG256|GRID_FLAG_FGRGB)) && (fg == bg || !(ft & FONT_TYPE_BOLD)))
 		fg = x->colors[fgc += 8];
 
 	/* TODO: DIM, maybe only for TrueColor? */
@@ -1358,7 +1381,7 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 			{
 				wchar c = cp[i];
 
-				if (gc->attr & GRID_ATTR_CHARSET) 
+				if (gc->attr & GRID_ATTR_CHARSET)
 				{
 					if (c >= '`' && c <= '~' && xt_font_pick(x, ft, c-('`'-1)) != FONT_TYPE_NONE)
 						c -= '`'-1;
@@ -1400,7 +1423,7 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 		if (x->font[ft].descent > 1)
 			y ++;
 		XSetForeground(x->display, x->gc, fg);
-		XDrawLine(x->display, x->window, x->gc, 
+		XDrawLine(x->display, x->window, x->gc,
 				px, y,
 				px + wx - 1, y);
 	}
@@ -1455,7 +1478,7 @@ xtmux_putwc(struct tty *tty, u_int c)
 
 	if (b->n &&
 			(b->n == PUTC_BUF_LEN ||
-			 b->x+b->n != tty->cx || 
+			 b->x+b->n != tty->cx ||
 			 b->y != tty->cy ||
 			 grid_attr_cmp(&b->cell, &tty->cell)))
 		xt_putc_flush(x);
@@ -1518,7 +1541,7 @@ xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 	XENTRY();
 
 	xt_copy(x,
-			PANE_X(dx), PANE_CY, 
+			PANE_X(dx), PANE_CY,
 			PANE_CX, PANE_CY,
 			screen_size_x(s) - dx, 1);
 	xt_clear(x,
@@ -1731,7 +1754,7 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 	XRETURN();
 }
 
-static void 
+static void
 xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
@@ -1759,7 +1782,7 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 
 	if (xev->target == XA_STRING)
 	{
-		if (pbdata && XChangeProperty(x->display, r.requestor, xev->property, 
+		if (pbdata && XChangeProperty(x->display, r.requestor, xev->property,
 					XA_STRING, 8, PropModeReplace, pbdata, pbsize))
 			r.property = xev->property;
 	}
@@ -1771,13 +1794,13 @@ xtmux_selection_request(struct tty *tty, XSelectionRequestEvent *xev)
 			/* silly, but easy enough */
 			Atom targets[] = { XA_STRING, xev->target };
 
-			if (XChangeProperty(x->display, r.requestor, xev->property, XA_ATOM, 32, PropModeReplace, 
+			if (XChangeProperty(x->display, r.requestor, xev->property, XA_ATOM, 32, PropModeReplace,
 						(unsigned char *)targets, nitems(targets)))
 				r.property = xev->property;
 		}
 		else if (!strcmp(target, "TEXT"))
 		{
-			if (pbdata && XChangeProperty(x->display, r.requestor, xev->property, 
+			if (pbdata && XChangeProperty(x->display, r.requestor, xev->property,
 						XA_STRING, 8, PropModeReplace, pbdata, pbsize))
 				r.property = xev->property;
 		}
@@ -1796,7 +1819,7 @@ do_paste(const struct paste_ctx *p, const char *data, size_t size)
 	paste_send_pane(data, size, p->wp, p->sep, 0);
 }
 
-static int 
+static int
 xt_paste_property(struct xtmux *x, Window w, Atom p)
 {
 	XTextProperty t;
@@ -1857,7 +1880,7 @@ xtmux_paste(struct tty *tty, struct window_pane *wp, const char *which, const ch
 		XRETURN(CMD_RETURN_NORMAL);
 	}
 
-	if (XGetSelectionOwner(x->display, s) == x->window) 
+	if (XGetSelectionOwner(x->display, s) == x->window)
 	{
 		/* short cut */
 		struct paste_buffer *pb = paste_get_top(NULL);
@@ -1887,7 +1910,7 @@ xtmux_selection_notify(struct tty *tty, XSelectionEvent *xev)
 	struct winlink		*wl;
 	struct window_pane	*wp;
 
-	if (!(xev->requestor == x->window && 
+	if (!(xev->requestor == x->window &&
 				x->paste.wp &&
 				xev->time == x->paste.time &&
 				xev->target == XA_STRING &&
@@ -2215,7 +2238,7 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 	server_client_handle_key(tty->client, KEYC_MOUSE);
 }
 
-static void 
+static void
 xtmux_configure_notify(struct tty *tty, XConfigureEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
