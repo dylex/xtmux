@@ -49,13 +49,13 @@ set_signals(void (*handler)(int, short, void *), void *arg)
 		if (sigaction(SIGHUP, &sigact, NULL) != 0)
 			fatal("sigaction failed");
 
-		signal_set(&ev_sigint, SIGINT, handler, NULL);
+		signal_set(&ev_sigint, SIGINT, handler, arg);
 		signal_add(&ev_sigint, NULL);
-		signal_set(&ev_sigchld, SIGCHLD, handler, NULL);
+		signal_set(&ev_sigchld, SIGCHLD, handler, arg);
 		signal_add(&ev_sigchld, NULL);
-		signal_set(&ev_sigcont, SIGCONT, handler, NULL);
+		signal_set(&ev_sigcont, SIGCONT, handler, arg);
 		signal_add(&ev_sigcont, NULL);
-		signal_set(&ev_sigterm, SIGTERM, handler, NULL);
+		signal_set(&ev_sigterm, SIGTERM, handler, arg);
 		signal_add(&ev_sigterm, NULL);
 		return;
 	}
