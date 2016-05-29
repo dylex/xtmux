@@ -390,7 +390,7 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 		xt_fill_color(x, c, &xtmux_colors[c]);
 
 	for (; c < 256; c ++)
-		xt_fill_color(x, c, &colour_from_256[c]);
+		xt_fill_color(x, c, &colour_from_256[c-16]);
 
 	cn = s = xstrdup(colors);
 	while ((cs = strsep(&cn, ";, ")))
