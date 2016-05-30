@@ -403,7 +403,7 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 
 		if ((ci = colour_fromstring(cs)) < 0)
 			continue;
-		x->colors[ci & 0xff] = xt_parse_color(x, es, x->colors[ci]);
+		x->colors[ci & 0xff] = xt_parse_color(x, es, x->colors[ci & 0xff]);
 	}
 	free(s);
 }

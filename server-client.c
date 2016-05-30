@@ -641,7 +641,7 @@ server_client_handle_key(struct client *c, key_code key)
 		m->key = key;
 
 		if (!options_get_number(s->options, "mouse") &&
-				strcmp(table->name, "prefix"))
+				strcmp(c->keytable->name, "prefix"))
 			goto forward;
 	} else
 		m->valid = 0;
