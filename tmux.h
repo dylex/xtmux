@@ -38,7 +38,6 @@
 #include "compat.h"
 #include "xmalloc.h"
 
-extern char    *__progname;
 extern char   **environ;
 
 struct client;
@@ -63,14 +62,17 @@ struct tmuxproc;
 #define NAME_INTERVAL 500000
 
 /*
- * READ_SIZE is the maximum size of data to hold from a pty (the event high
- * watermark). READ_BACKOFF is the amount of data waiting to be output to a tty
- * before pty reads will be backed off. READ_TIME is how long to back off
- * before the next read (in microseconds) if a tty is above READ_BACKOFF.
+ * Event watermarks. We start with FAST then if we hit full size for HITS reads
+ * in succession switch to SLOW, and return when we hit EMPTY the same number
+ * of times.
  */
-#define READ_SIZE 1024
-#define READ_BACKOFF 512
-#define READ_TIME 100
+#define READ_FAST_SIZE 4096
+#define READ_SLOW_SIZE 128
+
+#define READ_FULL_SIZE (4096 - 16)
+#define READ_EMPTY_SIZE 16
+
+#define READ_CHANGE_HITS 3
 
 /* Attribute to make gcc check printf-like arguments. */
 #define printflike(a, b) __attribute__ ((format (printf, a, b)))
@@ -538,12 +540,14 @@ enum mode_key_cmd {
 	MODEKEYCOPY_LEFT,
 	MODEKEYCOPY_MIDDLELINE,
 	MODEKEYCOPY_NEXTPAGE,
+	MODEKEYCOPY_NEXTPARAGRAPH,
 	MODEKEYCOPY_NEXTSPACE,
 	MODEKEYCOPY_NEXTSPACEEND,
 	MODEKEYCOPY_NEXTWORD,
 	MODEKEYCOPY_NEXTWORDEND,
 	MODEKEYCOPY_OTHEREND,
 	MODEKEYCOPY_PREVIOUSPAGE,
+	MODEKEYCOPY_PREVIOUSPARAGRAPH,
 	MODEKEYCOPY_PREVIOUSSPACE,
 	MODEKEYCOPY_PREVIOUSWORD,
 	MODEKEYCOPY_RECTANGLETOGGLE,
@@ -574,6 +578,7 @@ struct mode_key_data {
 /* Binding between a key and a command. */
 struct mode_key_binding {
 	key_code			 key;
+	u_int				 repeat;
 
 	int				 mode;
 	enum mode_key_cmd		 cmd;
@@ -633,6 +638,10 @@ enum utf8_state {
 	UTF8_ERROR
 };
 
+/* Colour flags. */
+#define COLOUR_FLAG_256 0x01000000
+#define COLOUR_FLAG_RGB 0x02000000
+
 /* Grid attributes. */
 #define GRID_ATTR_BRIGHT 0x1
 #define GRID_ATTR_DIM 0x2
@@ -648,31 +657,18 @@ enum utf8_state {
 #define GRID_FLAG_BG256 0x2
 #define GRID_FLAG_PADDING 0x4
 #define GRID_FLAG_EXTENDED 0x8
-#define GRID_FLAG_FGRGB 0x10
-#define GRID_FLAG_BGRGB 0x20
+#define GRID_FLAG_SELECTED 0x10
 
 /* Grid line flags. */
 #define GRID_LINE_WRAPPED 0x1
-
-/* Grid cell RGB colours. */
-struct grid_cell_rgb {
-	u_char	r;
-	u_char	g;
-	u_char	b;
-};
+#define GRID_LINE_EXTENDED 0x2
 
 /* Grid cell data. */
 struct grid_cell {
 	u_char			flags;
 	u_char			attr;
-	union {
-		u_char		fg;
-		struct grid_cell_rgb	fg_rgb;
-	};
-	union {
-		u_char		bg;
-		struct grid_cell_rgb	bg_rgb;
-	};
+	int			fg;
+	int			bg;
 	struct utf8_data	data;
 
 };
@@ -708,6 +704,7 @@ struct grid {
 	u_int			 sx;
 	u_int			 sy;
 
+	u_int			 hscrolled;
 	u_int			 hsize;
 	u_int			 hlimit;
 
@@ -787,30 +784,38 @@ struct screen_sel {
 
 /* Virtual screen. */
 struct screen {
-	char		*title;
+	char			*title;
 
-	struct grid	*grid;		/* grid data */
+	struct grid		*grid;		/* grid data */
 
-	u_int		 cx;		/* cursor x */
-	u_int		 cy;		/* cursor y */
+	u_int			 cx;		/* cursor x */
+	u_int			 cy;		/* cursor y */
 
-	u_int		 cstyle;	/* cursor style */
-	char		*ccolour;	/* cursor colour string */
+	u_int			 cstyle;	/* cursor style */
+	char			*ccolour;	/* cursor colour string */
 
-	u_int		 rupper;	/* scroll region top */
-	u_int		 rlower;	/* scroll region bottom */
+	u_int			 rupper;	/* scroll region top */
+	u_int		 	 rlower;	/* scroll region bottom */
 
-	int		 mode;
+	int			 mode;
 
-	bitstr_t	*tabs;
+	bitstr_t		*tabs;
 
-	struct screen_sel sel;
+	bitstr_t		*dirty;
+	u_int			 dirtysize;
+
+	struct screen_sel	 sel;
 };
 
 /* Screen write context. */
 struct screen_write_ctx {
-	struct window_pane *wp;
-	struct screen	*s;
+	struct window_pane	*wp;
+	struct screen		*s;
+	u_int			 dirty;
+
+	u_int			 cells;
+	u_int			 written;
+	u_int			 skipped;
 };
 
 /* Screen size. */
@@ -830,6 +835,7 @@ struct window_mode {
 	void	(*key)(struct window_pane *, struct client *, struct session *,
 		    key_code, struct mouse_event *);
 };
+#define WINDOW_MODE_TIMEOUT 180
 
 /* Structures for choose mode. */
 struct window_choose_data {
@@ -889,7 +895,11 @@ struct window_pane {
 
 	int		 fd;
 	struct bufferevent *event;
-	struct event	 timer;
+
+	struct event	 resize_timer;
+
+	u_int		 wmark_size;
+	u_int		 wmark_hits;
 
 	struct input_ctx *ictx;
 
@@ -902,6 +912,9 @@ struct window_pane {
 	struct screen	*screen;
 	struct screen	 base;
 
+	struct screen	 status_screen;
+	size_t		 status_size;
+
 	/* Saved in alternative screen mode. */
 	u_int		 saved_cx;
 	u_int		 saved_cy;
@@ -910,6 +923,8 @@ struct window_pane {
 
 	const struct window_mode *mode;
 	void		*modedata;
+	struct event	 modetimer;
+	time_t		 modelast;
 
 	TAILQ_ENTRY(window_pane) entry;
 	RB_ENTRY(window_pane) tree_entry;
@@ -949,9 +964,13 @@ struct window {
 #define WINDOW_ZOOMED 0x1000
 #define WINDOW_FORCEWIDTH 0x2000
 #define WINDOW_FORCEHEIGHT 0x4000
+#define WINDOW_STYLECHANGED 0x8000
 #define WINDOW_ALERTFLAGS (WINDOW_BELL|WINDOW_ACTIVITY|WINDOW_SILENCE)
 
 	struct options	*options;
+
+	struct grid_cell style;
+	struct grid_cell active_style;
 
 	u_int		 references;
 
@@ -1207,7 +1226,6 @@ struct tty_ctx {
 
 	/* Saved last cell on line. */
 	struct grid_cell last_cell;
-	u_int		 last_width;
 };
 
 /* Saved message entry. */
@@ -1275,6 +1293,8 @@ struct client {
 	struct key_table *keytable;
 
 	struct event	 identify_timer;
+	void		(*identify_callback)(struct client *, struct window_pane *);
+	void		*identify_callback_data;
 
 	char		*message_string;
 	struct event	 message_timer;
@@ -1564,7 +1584,7 @@ extern int cfg_finished;
 extern int cfg_references;
 extern struct client *cfg_client;
 void		 start_cfg(void);
-int		 load_cfg(const char *, struct cmd_q *, char **);
+int		 load_cfg(const char *, struct cmd_q *, int);
 void		 set_cfg_file(const char *);
 void printflike(1, 2) cfg_add_cause(const char *, ...);
 void		 cfg_print_causes(struct cmd_q *);
@@ -1635,7 +1655,7 @@ const struct mode_key_table *mode_key_findtable(const char *);
 void	mode_key_init_trees(void);
 void	mode_key_init(struct mode_key_data *, struct mode_key_tree *);
 enum mode_key_cmd mode_key_lookup(struct mode_key_data *, key_code,
-	    const char **);
+	    const char **, u_int *);
 
 /* notify.c */
 void	notify_enable(void);
@@ -1696,6 +1716,7 @@ void	environ_put(struct environ *, const char *);
 void	environ_unset(struct environ *, const char *);
 void	environ_update(const char *, struct environ *, struct environ *);
 void	environ_push(struct environ *);
+void	environ_log(struct environ *, const char *);
 
 /* tty.c */
 void	tty_create_log(void);
@@ -1734,7 +1755,6 @@ void	tty_close(struct tty *);
 void	tty_free(struct tty *);
 void	tty_write(void (*)(struct tty *, const struct tty_ctx *),
 	    struct tty_ctx *);
-int	tty_client_ready(struct client *, struct window_pane *wp);
 void	tty_cmd_alignmenttest(struct tty *, const struct tty_ctx *);
 void	tty_cmd_cell(struct tty *, const struct tty_ctx *);
 void	tty_cmd_clearendofline(struct tty *, const struct tty_ctx *);
@@ -1940,7 +1960,7 @@ void	 server_destroy_session_group(struct session *);
 void	 server_destroy_session(struct session *);
 void	 server_check_unattached(void);
 void	 server_set_identify(struct client *);
-void	 server_clear_identify(struct client *);
+void	 server_clear_identify(struct client *, struct window_pane *);
 int	 server_set_stdin_callback(struct client *, void (*)(struct client *,
 	     int, void *), void *, char **);
 void	 server_unzoom_window(struct window *);
@@ -1982,10 +2002,10 @@ int	 xterm_keys_find(const char *, size_t, size_t *, key_code *);
 
 /* colour.c */
 int	 colour_find_rgb(u_char, u_char, u_char);
-void	 colour_set_fg(struct grid_cell *, int);
-void	 colour_set_bg(struct grid_cell *, int);
+int	 colour_join_rgb(u_char, u_char, u_char);
+void	 colour_split_rgb(int, u_char *, u_char *, u_char *);
 const char *colour_tostring(int);
-int	 colour_fromstring(const char *);
+int	 colour_fromstring(const char *s);
 u_char	 colour_256to16(u_char);
 
 /* attributes.c */
@@ -1994,6 +2014,7 @@ int	 attributes_fromstring(const char *);
 
 /* grid.c */
 extern const struct grid_cell grid_default_cell;
+int	 grid_cells_equal(const struct grid_cell *, const struct grid_cell *);
 struct grid *grid_create(u_int, u_int, u_int);
 void	 grid_destroy(struct grid *);
 int	 grid_compare(struct grid *, struct grid *);
@@ -2038,15 +2059,15 @@ void	 screen_write_stop(struct screen_write_ctx *);
 void	 screen_write_reset(struct screen_write_ctx *);
 size_t printflike(1, 2) screen_write_cstrlen(const char *, ...);
 void printflike(4, 5) screen_write_cnputs(struct screen_write_ctx *,
-	     ssize_t, struct grid_cell *, const char *, ...);
+	     ssize_t, const struct grid_cell *, const char *, ...);
 size_t printflike(1, 2) screen_write_strlen(const char *, ...);
 void printflike(3, 4) screen_write_puts(struct screen_write_ctx *,
-	     struct grid_cell *, const char *, ...);
+	     const struct grid_cell *, const char *, ...);
 void printflike(4, 5) screen_write_nputs(struct screen_write_ctx *,
-	     ssize_t, struct grid_cell *, const char *, ...);
+	     ssize_t, const struct grid_cell *, const char *, ...);
 void	 screen_write_vnputs(struct screen_write_ctx *, ssize_t,
-	     struct grid_cell *, const char *, va_list);
-void	 screen_write_putc(struct screen_write_ctx *, struct grid_cell *,
+	     const struct grid_cell *, const char *, va_list);
+void	 screen_write_putc(struct screen_write_ctx *, const struct grid_cell *,
 	     u_char);
 void	 screen_write_copy(struct screen_write_ctx *, struct screen *, u_int,
 	     u_int, u_int, u_int);
@@ -2137,7 +2158,8 @@ int		 window_has_pane(struct window *, struct window_pane *);
 int		 window_set_active_pane(struct window *, struct window_pane *);
 void		 window_redraw_active_switch(struct window *,
 		     struct window_pane *);
-struct window_pane *window_add_pane(struct window *, u_int);
+struct window_pane *window_add_pane(struct window *, struct window_pane *,
+		     u_int);
 void		 window_resize(struct window *, u_int, u_int);
 int		 window_zoom(struct window_pane *);
 int		 window_unzoom(struct window *);
@@ -2186,7 +2208,7 @@ u_int		 layout_count_cells(struct layout_cell *);
 struct layout_cell *layout_create_cell(struct layout_cell *);
 void		 layout_free_cell(struct layout_cell *);
 void		 layout_print_cell(struct layout_cell *, const char *, u_int);
-void		 layout_destroy_cell(struct layout_cell *,
+void		 layout_destroy_cell(struct window *, struct layout_cell *,
 		     struct layout_cell **);
 void		 layout_set_size(struct layout_cell *, u_int, u_int, u_int,
 		     u_int);
@@ -2194,9 +2216,8 @@ void		 layout_make_leaf(struct layout_cell *, struct window_pane *);
 void		 layout_make_node(struct layout_cell *, enum layout_type);
 void		 layout_fix_offsets(struct layout_cell *);
 void		 layout_fix_panes(struct window *, u_int, u_int);
-u_int		 layout_resize_check(struct layout_cell *, enum layout_type);
-void		 layout_resize_adjust(struct layout_cell *, enum layout_type,
-		     int);
+void		 layout_resize_adjust(struct window *, struct layout_cell *,
+		     enum layout_type, int);
 void		 layout_init(struct window *, struct window_pane *);
 void		 layout_free(struct window *);
 void		 layout_resize(struct window *, u_int, u_int);
@@ -2206,7 +2227,7 @@ void		 layout_resize_pane_to(struct window_pane *, enum layout_type,
 		     u_int);
 void		 layout_assign_pane(struct layout_cell *, struct window_pane *);
 struct layout_cell *layout_split_pane(struct window_pane *, enum layout_type,
-		     int, int);
+		     int, int, int);
 void		 layout_close_pane(struct window_pane *);
 
 /* layout-custom.c */
@@ -2229,7 +2250,7 @@ void		 window_copy_init_from_pane(struct window_pane *, int);
 void		 window_copy_init_for_output(struct window_pane *);
 void printflike(2, 3) window_copy_add(struct window_pane *, const char *, ...);
 void		 window_copy_vadd(struct window_pane *, const char *, va_list);
-void		 window_copy_pageup(struct window_pane *);
+void		 window_copy_pageup(struct window_pane *, int);
 void		 window_copy_start_drag(struct client *, struct mouse_event *);
 int		 window_copy_scroll_position(struct window_pane *);
 

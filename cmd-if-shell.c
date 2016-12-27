@@ -81,7 +81,7 @@ cmd_if_shell_exec(struct cmd *self, struct cmd_q *cmdq)
 		cwd = NULL;
 
 	ft = format_create(cmdq, 0);
-	format_defaults(ft, NULL, s, wl, wp);
+	format_defaults(ft, cmdq->state.c, s, wl, wp);
 	shellcmd = format_expand(ft, args->argv[0]);
 	format_free(ft);
 
@@ -157,6 +157,7 @@ cmd_if_shell_callback(struct job *job)
 	}
 
 	cmdq1 = cmdq_new(cmdq->client);
+	cmdq1->flags |= cmdq->flags & CMD_Q_NOHOOKS;
 	cmdq1->emptyfn = cmd_if_shell_done;
 	cmdq1->data = cdata;
 

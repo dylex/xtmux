@@ -38,6 +38,9 @@ screen_init(struct screen *s, u_int sx, u_int sy, u_int hlimit)
 	s->ccolour = xstrdup("");
 	s->tabs = NULL;
 
+	s->dirty = NULL;
+	s->dirtysize = 0;
+
 	screen_reinit(s);
 }
 
@@ -64,6 +67,7 @@ screen_reinit(struct screen *s)
 void
 screen_free(struct screen *s)
 {
+	free(s->dirty);
 	free(s->tabs);
 	free(s->title);
 	free(s->ccolour);
@@ -146,7 +150,7 @@ screen_resize_x(struct screen *s, u_int sx)
 	/*
 	 * Treat resizing horizontally simply: just ensure the cursor is
 	 * on-screen and change the size. Don't bother to truncate any lines -
-	 * then the data should be accessible if the size is then incrased.
+	 * then the data should be accessible if the size is then increased.
 	 *
 	 * The only potential wrinkle is if UTF-8 double-width characters are
 	 * left in the last column, but UTF-8 terminals should deal with this
@@ -173,8 +177,9 @@ screen_resize_y(struct screen *s, u_int sy)
 	 * If the height is decreasing, delete lines from the bottom until
 	 * hitting the cursor, then push lines from the top into the history.
 	 *
-	 * When increasing, pull as many lines as possible from the history to
-	 * the top, then fill the remaining with blanks at the bottom.
+	 * When increasing, pull as many lines as possible from scrolled
+	 * history (not explicitly cleared from view) to the top, then fill the
+	 * remaining with blanks at the bottom.
 	 */
 
 	/* Size decreasing. */
@@ -196,9 +201,10 @@ screen_resize_y(struct screen *s, u_int sy)
 		 * lines from the top.
 		 */
 		available = s->cy;
-		if (gd->flags & GRID_HISTORY)
+		if (gd->flags & GRID_HISTORY) {
+			gd->hscrolled += needed;
 			gd->hsize += needed;
-		else if (needed > 0 && available > 0) {
+		} else if (needed > 0 && available > 0) {
 			if (available > needed)
 				available = needed;
 			grid_view_delete_lines(gd, 0, available);
@@ -215,13 +221,14 @@ screen_resize_y(struct screen *s, u_int sy)
 		needed = sy - oldy;
 
 		/*
-		 * Try to pull as much as possible out of the history, if is
+		 * Try to pull as much as possible out of scrolled history, if is
 		 * is enabled.
 		 */
-		available = gd->hsize;
+		available = gd->hscrolled;
 		if (gd->flags & GRID_HISTORY && available > 0) {
 			if (available > needed)
 				available = needed;
+			gd->hscrolled -= available;
 			gd->hsize -= available;
 			s->cy += available;
 		} else
