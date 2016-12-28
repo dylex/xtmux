@@ -1,6 +1,6 @@
 # configure.ac
 
-AC_INIT(tmux, 2.2x)
+AC_INIT(tmux, 2.3x)
 
 AC_CONFIG_AUX_DIR(etc)
 AM_INIT_AUTOMAKE([foreign subdir-objects])
@@ -40,6 +40,14 @@ AC_ARG_ENABLE(
 )
 AM_CONDITIONAL(IS_COVERAGE, test "x$found_coverage" = xyes)
 
+# Is this --enable-profile?
+AC_ARG_ENABLE(
+	profile,
+	AC_HELP_STRING(--enable-profile, enable profile build flags),
+	found_profile=$enable_profile
+)
+AM_CONDITIONAL(IS_PROFILE, test "x$found_profile" = xyes)
+
 # Is this a static build?
 AC_ARG_ENABLE(
 	static,
@@ -48,7 +56,7 @@ AC_ARG_ENABLE(
 )
 if test "x$found_static" = xyes; then
 	LDFLAGS="$LDFLAGS -static"
-	PKG_CONFIG="pkg-config --static"
+	test "x$PKG_CONFIG" != x && PKG_CONFIG="$PKG_CONFIG --static"
 fi
 
 # Is this gcc?
@@ -87,12 +95,10 @@ AC_MSG_RESULT($found_glibc)
 AC_CHECK_HEADERS(
 	[ \
 		bitstring.h \
-		curses.h \
 		dirent.h \
 		fcntl.h \
 		inttypes.h \
 		libutil.h \
-		ncurses.h \
 		ndir.h \
 		paths.h \
 		pty.h \
@@ -113,7 +119,7 @@ AC_CHECK_FUNCS(
 	[ \
 		dirfd \
 		flock \
-		setproctitle \
+		prctl \
 		sysconf \
 		cfmakeraw \
 	]
@@ -140,30 +146,60 @@ PKG_CHECK_MODULES(
 		)
 	]
 )
+AC_CHECK_HEADER(
+	event.h,
+	,
+	found_libevent=no
+)
 if test "x$found_libevent" = xno; then
 	AC_MSG_ERROR("libevent not found")
 fi
 
-# Look for ncurses
+# Look for ncurses.
 PKG_CHECK_MODULES(
 	LIBNCURSES,
 	ncurses,
 	[
 		CPPFLAGS="$LIBNCURSES_CFLAGS $CPPFLAGS"
 		LIBS="$LIBNCURSES_LIBS $LIBS"
-		found_curses=yes
+		found_ncurses=yes
 	],
-	[
-		AC_SEARCH_LIBS(
-			setupterm,
-			[ncurses curses terminfo],
-			found_curses=yes,
-			found_curses=no
-		)
-	]
+	found_ncurses=no
 )
-if test "x$found_curses" = xno; then
-	AC_MSG_ERROR("curses not found")
+if test "x$found_ncurses" = xno; then
+	# pkg-config didn't work, try ncurses.
+	AC_CHECK_LIB(
+		ncurses,
+		setupterm,
+		found_ncurses=yes,
+		found_ncurses=no
+	)
+	AC_CHECK_HEADER(
+		ncurses.h,
+		,
+		found_ncurses=no)
+fi
+if test "x$found_ncurses" = xyes; then
+	LIBS="$LIBS -lncurses"
+	AC_DEFINE(HAVE_NCURSES_H)
+else
+	# No ncurses, try curses.
+	AC_CHECK_LIB(
+		curses,
+		setupterm,
+		found_curses=yes,
+		found_curses=no
+	)
+	AC_CHECK_HEADER(
+		curses.h,
+		,
+		found_curses=no)
+	if test "x$found_curses" = xyes; then
+		LIBS="$LIBS -lcurses"
+		AC_DEFINE(HAVE_CURSES_H)
+	else
+		AC_MSG_ERROR("curses or ncurses not found")
+	fi
 fi
 
 # Look for utempter.
@@ -187,6 +223,29 @@ if test "x$found_utempter" = xyes; then
 		fi
 	fi
 fi
+
+# Look for utf8proc.
+AC_ARG_ENABLE(
+	utf8proc,
+	AC_HELP_STRING(--enable-utf8proc, use utf8proc if it is installed),
+	found_utf8proc=$enable_utf8proc,
+	found_utf8proc=no
+)
+if test "x$found_utf8proc" = xyes; then
+	AC_CHECK_HEADER(utf8proc.h, found_utf8proc=yes, found_utf8proc=no)
+	if test "x$found_utf8proc" = xyes; then
+		AC_SEARCH_LIBS(
+			utf8proc_charwidth,
+			utf8proc,
+			found_utf8proc=yes,
+			found_utf8proc=no
+		)
+		if test "x$found_utf8proc" = xyes; then
+			AC_DEFINE(HAVE_UTF8PROC)
+		fi
+	fi
+fi
+AM_CONDITIONAL(HAVE_UTF8PROC, [test "x$found_utf8proc" = xyes])
 
 # Check for b64_ntop.
 AC_MSG_CHECKING(for b64_ntop)
@@ -297,6 +356,20 @@ if test "x$found_daemon" = xyes; then
 	AC_DEFINE(HAVE_DAEMON)
 fi
 AM_CONDITIONAL(NO_DAEMON, [test "x$found_daemon" = xno])
+
+# Look for getprogname, compat/getprogname.c used if missing.
+AC_CHECK_FUNC(getprogname, found_getprogname=yes, found_getprogname=no)
+if test "x$found_getprogname" = xyes; then
+	AC_DEFINE(HAVE_GETPROGNAME)
+fi
+AM_CONDITIONAL(NO_GETPROGNAME, [test "x$found_getprogname" = xno])
+
+# Look for setproctitle, compat/setproctitle.c used if missing.
+AC_CHECK_FUNC(setproctitle, found_setproctitle=yes, found_setproctitle=no)
+if test "x$found_setproctitle" = xyes; then
+	AC_DEFINE(HAVE_SETPROCTITLE)
+fi
+AM_CONDITIONAL(NO_SETPROCTITLE, [test "x$found_setproctitle" = xno])
 
 # Look for setenv, compat/setenv.c used if missing.
 AC_CHECK_FUNC(setenv, found_setenv=yes, found_setenv=no)
@@ -473,6 +546,31 @@ AC_LINK_IFELSE([AC_LANG_SOURCE(
 	])],
 	[AC_DEFINE(HAVE___PROGNAME) AC_MSG_RESULT(yes)],
 	AC_MSG_RESULT(no)
+)
+
+# Look for program_invocation_short_name.
+AC_MSG_CHECKING(for program_invocation_short_name)
+AC_LINK_IFELSE([AC_LANG_SOURCE(
+	[
+		#include <stdio.h>
+		#include <stdlib.h>
+		extern char *program_invocation_short_name;
+		int main(void) {
+			const char *cp = program_invocation_short_name;
+			printf("%s\n", cp);
+			exit(0);
+		}
+	])],
+	[AC_DEFINE(HAVE_PROGRAM_INVOCATION_SHORT_NAME) AC_MSG_RESULT(yes)],
+	AC_MSG_RESULT(no)
+)
+
+# Look for prctl(PR_SET_NAME).
+AC_CHECK_DECL(
+	PR_SET_NAME,
+	AC_DEFINE(HAVE_PR_SET_NAME),
+	,
+	[#include <sys/prctl.h>]
 )
 
 # Look for fcntl(F_CLOSEM).

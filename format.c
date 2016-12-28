@@ -485,6 +485,7 @@ struct format_tree *
 format_create(struct cmd_q *cmdq, int flags)
 {
 	struct format_tree	*ft;
+	struct cmd		*cmd;
 
 	if (!event_initialized(&format_job_event)) {
 		evtimer_set(&format_job_event, format_job_timer, NULL);
@@ -503,6 +504,10 @@ format_create(struct cmd_q *cmdq, int flags)
 
 	if (cmdq != NULL && cmdq->cmd != NULL)
 		format_add(ft, "command_name", "%s", cmdq->cmd->entry->name);
+	if (cmdq != NULL && cmdq->parent != NULL) {
+		cmd = cmdq->parent->cmd;
+		format_add(ft, "command_hooked", "%s", cmd->entry->name);
+	}
 
 	return (ft);
 }
@@ -862,27 +867,18 @@ fail:
 char *
 format_expand_time(struct format_tree *ft, const char *fmt, time_t t)
 {
-	char		*tmp, *expanded;
-	size_t		 tmplen;
 	struct tm	*tm;
+	char		 s[2048];
 
 	if (fmt == NULL || *fmt == '\0')
 		return (xstrdup(""));
 
 	tm = localtime(&t);
 
-	tmp = NULL;
-	tmplen = strlen(fmt);
+	if (strftime(s, sizeof s, fmt, tm) == 0)
+		return (xstrdup(""));
 
-	do {
-		tmp = xreallocarray(tmp, 2, tmplen);
-		tmplen *= 2;
-	} while (strftime(tmp, tmplen, fmt, tm) == 0);
-
-	expanded = format_expand(ft, tmp);
-	free(tmp);
-
-	return (expanded);
+	return (format_expand(ft, s));
 }
 
 /* Expand keys in a template. */

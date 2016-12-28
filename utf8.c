@@ -18,6 +18,7 @@
 
 #include <sys/types.h>
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -30,16 +31,10 @@ static int	utf8_width(wchar_t);
 void
 utf8_set(struct utf8_data *ud, u_char ch)
 {
-	u_int	i;
+	static const struct utf8_data empty = { { 0 }, 1, 1, 1 };
 
+	memcpy(ud, &empty, sizeof *ud);
 	*ud->data = ch;
-	ud->have = 1;
-	ud->size = 1;
-
-	ud->width = 1;
-
-	for (i = ud->size; i < sizeof ud->data; i++)
-		ud->data[i] = '\0';
 }
 
 /* Copy UTF-8 character. */
@@ -114,9 +109,29 @@ utf8_width(wchar_t wc)
 {
 	int	width;
 
+#ifdef HAVE_UTF8PROC
+	width = utf8proc_wcwidth(wc);
+#else
 	width = wcwidth(wc);
-	if (width < 0 || width > 0xff)
+#endif
+	if (width < 0 || width > 0xff) {
+		log_debug("Unicode %04x, wcwidth() %d", wc, width);
+
+#ifndef __OpenBSD__
+		/*
+		 * Many platforms (particularly and inevitably OS X) have no
+		 * width for relatively common characters (wcwidth() returns
+		 * -1); assume width 1 in this case. This will be wrong for
+		 * genuinely nonprintable characters, but they should be
+		 * rare. We may pass through stuff that ideally we would block,
+		 * but this is no worse than sending the same to the terminal
+		 * without tmux.
+		 */
+		if (width < 0)
+			return (1);
+#endif
 		return (-1);
+	}
 	return (width);
 }
 
@@ -124,8 +139,14 @@ utf8_width(wchar_t wc)
 enum utf8_state
 utf8_combine(const struct utf8_data *ud, wchar_t *wc)
 {
+#ifdef HAVE_UTF8PROC
+	switch (utf8proc_mbtowc(wc, ud->data, ud->size)) {
+#else
 	switch (mbtowc(wc, ud->data, ud->size)) {
+#endif
 	case -1:
+		log_debug("UTF-8 %.*s, mbtowc() %d", (int)ud->size, ud->data,
+		    errno);
 		mbtowc(NULL, NULL, MB_CUR_MAX);
 		return (UTF8_ERROR);
 	case 0:
@@ -142,7 +163,11 @@ utf8_split(wchar_t wc, struct utf8_data *ud)
 	char	s[MB_LEN_MAX];
 	int	slen;
 
+#ifdef HAVE_UTF8PROC
+	slen = utf8proc_wctomb(s, wc);
+#else
 	slen = wctomb(s, wc);
+#endif
 	if (slen <= 0 || slen > (int)sizeof ud->data)
 		return (UTF8_ERROR);
 

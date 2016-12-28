@@ -124,7 +124,7 @@ join_pane(struct cmd *self, struct cmd_q *cmdq, int not_same_window)
 		else
 			size = (dst_wp->sx * percentage) / 100;
 	}
-	lc = layout_split_pane(dst_wp, type, size, args_has(args, 'b'));
+	lc = layout_split_pane(dst_wp, type, size, args_has(args, 'b'), 0);
 	if (lc == NULL) {
 		cmdq_error(cmdq, "create pane failed: pane too small");
 		return (CMD_RETURN_ERROR);
@@ -134,11 +134,6 @@ join_pane(struct cmd *self, struct cmd_q *cmdq, int not_same_window)
 
 	window_lost_pane(src_w, src_wp);
 	TAILQ_REMOVE(&src_w->panes, src_wp, entry);
-
-	if (window_count_panes(src_w) == 0)
-		server_kill_window(src_w);
-	else
-		notify_window_layout_changed(src_w);
 
 	src_wp->window = dst_w;
 	TAILQ_INSERT_AFTER(&dst_w->panes, dst_wp, src_wp, entry);
@@ -156,6 +151,11 @@ join_pane(struct cmd *self, struct cmd_q *cmdq, int not_same_window)
 	} else
 		server_status_session(dst_s);
 
+	if (window_count_panes(src_w) == 0)
+		server_kill_window(src_w);
+	else
+		notify_window_layout_changed(src_w);
 	notify_window_layout_changed(dst_w);
+
 	return (CMD_RETURN_NORMAL);
 }

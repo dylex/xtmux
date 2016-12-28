@@ -42,25 +42,6 @@ static void xt_expose(struct xtmux *, XExposeEvent *);
 
 #define XTMUX_NUM_COLORS 256
 
-static const struct colour_rgb xtmux_colors[16] = {
-	{ 0,0x00,0x00,0x00}, /* black */
-	{ 1,0xCC,0x00,0x00}, /* red */
-	{ 2,0x00,0xCC,0x00}, /* green */
-	{ 3,0xCC,0xCC,0x00}, /* yellow */
-	{ 4,0x00,0x00,0xCC}, /* blue */
-	{ 5,0xCC,0x00,0xCC}, /* magenta */
-	{ 6,0x00,0xCC,0xCC}, /* cyan */
-	{ 7,0xCC,0xCC,0xCC}, /* white */
-	{ 8,0x80,0x80,0x80}, /* bright black */
-	{ 9,0xFF,0x00,0x00}, /* bright red */
-	{10,0x00,0xFF,0x00}, /* bright green */
-	{11,0xFF,0xFF,0x00}, /* bright yellow */
-	{12,0x00,0x00,0xFF}, /* bright blue */
-	{13,0xFF,0x00,0xFF}, /* bright magenta */
-	{14,0x00,0xFF,0xFF}, /* bright cyan */
-	{15,0xFF,0xFF,0xFF}, /* bright white */
-};
-
 /* this is redundant with tty_acs_table ... */
 static const unsigned short xtmux_acs[128] = {
 	['+'] = 0x2192, /* RARROW */
@@ -369,12 +350,14 @@ xt_parse_color(struct xtmux *x, const char *s, unsigned long def)
 }
 
 static void
-xt_fill_color(struct xtmux *x, u_int i, const struct colour_rgb *rgb)
+xt_fill_color(struct xtmux *x, u_int i)
 {
 	XColor c;
-	c.red   = rgb->r << 8 | rgb->r;
-	c.green = rgb->g << 8 | rgb->g;
-	c.blue  = rgb->b << 8 | rgb->b;
+	u_char r, g, b;
+	colour_256rgb(i, &r, &g, &b);
+	c.red   = r << 8 | r;
+	c.green = g << 8 | g;
+	c.blue  = b << 8 | b;
 	if (!XAllocColor(x->display, XCOLORMAP, &c))
 		c.pixel = (i & 1) ? WhitePixel(x->display, XSCREEN) : BlackPixel(x->display, XSCREEN);
 	x->colors[i] = c.pixel;
@@ -386,11 +369,8 @@ xt_fill_colors(struct xtmux *x, const char *colors)
 	u_int c;
 	char *s, *cs, *cn;
 
-	for (c = 0; c < 16; c ++)
-		xt_fill_color(x, c, &xtmux_colors[c]);
-
-	for (; c < 256; c ++)
-		xt_fill_color(x, c, &colour_from_256[c-16]);
+	for (c = 0; c < 256; c ++)
+		xt_fill_color(x, c);
 
 	cn = s = xstrdup(colors);
 	while ((cs = strsep(&cn, ";, ")))
@@ -1291,11 +1271,18 @@ xt_font_pick(const struct xtmux *x, enum font_type type, wchar c)
 	return FONT_TYPE_NONE;
 }
 
+static int
+xt_get_color(struct xtmux *x, int c) {
+	return c & COLOUR_FLAG_RGB
+		? c & 0xffffff
+		: x->colors[c & 0xff];
+}
+
 static void
 xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, const struct grid_cell *gc, int cleared)
 {
 	u_int			i, px = C2X(cx), py = C2Y(cy), wx = C2W(n), hy = C2H(1);
-	u_char			fgc = gc->fg, bgc = gc->bg;
+	int			fgc = gc->fg, bgc = gc->bg;
 	unsigned long		fg, bg;
 	enum font_type 		ft;
 
@@ -1307,24 +1294,20 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 		case 2: cleared = 0;
 	}
 
-	if (fgc >= 90 && fgc <= 97 && !(gc->flags & (GRID_FLAG_FG256|GRID_FLAG_FGRGB)))
+	if (fgc >= 90 && fgc <= 97)
 		fgc -= 90 - 8;
-	if (bgc >= 100 && bgc <= 107 && !(gc->flags & (GRID_FLAG_BG256|GRID_FLAG_BGRGB)))
+	if (bgc >= 100 && bgc <= 107)
 		bgc -= 100 - 8;
 
-	if (fgc == 8 && !(gc->flags & (GRID_FLAG_FG256|GRID_FLAG_FGRGB)))
+	if (fgc == 8)
 		fg = x->fg;
-	else if (gc->flags & GRID_FLAG_FGRGB)
-		fg = gc->fg_rgb.r << 16 | gc->fg_rgb.g << 8 | gc->fg_rgb.b;
-	else
-		fg = x->colors[fgc];
+	else 
+		fg = xt_get_color(x, fgc);
 
-	if (bgc == 8 && !(gc->flags & (GRID_FLAG_BG256|GRID_FLAG_BGRGB)))
+	if (bgc == 8)
 		bg = x->bg;
-	else if (gc->flags & GRID_FLAG_BGRGB)
-		bg = gc->bg_rgb.r << 16 | gc->bg_rgb.g << 8 | gc->bg_rgb.b;
 	else
-		bg = x->colors[bgc];
+		bg = xt_get_color(x, bgc);
 
 	if (gc->attr & GRID_ATTR_REVERSE)
 	{
@@ -1341,7 +1324,7 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 	else ft = 0;
 
 	/* TODO: configurable BRIGHT semantics */
-	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && !(gc->flags & (GRID_FLAG_FG256|GRID_FLAG_FGRGB)) && (fg == bg || !(ft & FONT_TYPE_BOLD)))
+	if (gc->attr & GRID_ATTR_BRIGHT && fgc < 8 && (fg == bg || !(ft & FONT_TYPE_BOLD)))
 		fg = x->colors[fgc += 8];
 
 	/* TODO: DIM, maybe only for TrueColor? */
@@ -1970,6 +1953,12 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 			gc.attr = gce->data.attr;
 			gc.fg = gce->data.fg;
 			gc.bg = gce->data.bg;
+			if (gc.flags & GRID_FLAG_FG256)
+				gc.fg |= COLOUR_FLAG_256;
+			gc.flags &= ~GRID_FLAG_FG256;
+			if (gc.flags & GRID_FLAG_BG256)
+				gc.bg |= COLOUR_FLAG_256;
+			gc.flags &= ~GRID_FLAG_BG256;
 			cl[px] = gce->data.data;
 		}
 

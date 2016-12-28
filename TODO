@@ -7,6 +7,7 @@
 	* last-pane across sessions
 	* list-keys should quote output so that bindings can just be used in
           config file as-is
+	* resize-pane -p to match split-window -p
 
 - make command sequences more usable
 	* don't require space after ;
@@ -44,8 +45,6 @@
 	* bind commands to mouse in different areas? 
 	* commands executed when clicking on a pattern (URL)
 
-- hooks!
-
 - warts on current naming:
 	* display-time but message-fg/bg/attr
 	* list-* vs show-*
@@ -72,10 +71,10 @@
           table() cb to give the table name ("vi" or "emacs"). anything in the
           table fires the command, anything not in the table is injected as a
           key
-	* searching in copy mode should unwrap lines, so if you seach for "foobar"
+	* searching in copy mode should unwrap lines, so if you search for "foobar"
           then it should be found even if it is now "foo\nbar" (if the WRAP flag
           is set on the line)
-	* {} to go to next/previous blank line in copy mode
+	* capture-pane option to preserve spaces but not join lines
 
 - layout stuff
 	* way to tag a layout as a number/name
@@ -121,7 +120,12 @@
 	  or even guarantee that cmdq->c != NULL and provide a better way to
 	  tell when in the config file - then we use cmdq->c if we need a
 	  client w/o a session else cmd_current_client
-	* optimize pane redraws, 20120318184853.GK10965@yelena.nicm.ath.cx
+	* we do more work than we should if a single read() contains operations
+          that cancel each other out: for example, writing twice to the same
+          cell, or writing and then clearing a line; it would be nice to
+          optimize these. would it mean processing the entire read() data first
+          then applying changes? or an initial optimization step? or something
+          else?
 
 - miscellaneous
 	* way to keep a job running just read its last line of output for #()

@@ -50,10 +50,6 @@ char		*xdisplay = NULL;
 __dead void	 usage(void);
 static char	*make_label(const char *);
 
-#ifndef HAVE___PROGNAME
-char      *__progname = (char *) "tmux";
-#endif
-
 __dead void
 usage(void)
 {
@@ -64,7 +60,7 @@ usage(void)
 #endif
 	                       "] [-c shell-command] [-f file] [-L socket-name]\n"
 	    "            [-S socket-path] [command [flags]]\n",
-	    __progname);
+	    getprogname());
 	exit(1);
 }
 
@@ -106,7 +102,7 @@ areshell(const char *shell)
 		ptr++;
 	else
 		ptr = shell;
-	progname = __progname;
+	progname = getprogname();
 	if (*progname == '-')
 		progname++;
 	if (strcmp(ptr, progname) == 0)
@@ -204,8 +200,7 @@ main(int argc, char **argv)
 		if (setlocale(LC_CTYPE, "") == NULL)
 			errx(1, "invalid LC_ALL, LC_CTYPE or LANG");
 		s = nl_langinfo(CODESET);
-		if (strcasecmp(s, "UTF-8") != 0 &&
-		    strcasecmp(s, "UTF8") != 0)
+		if (strcasecmp(s, "UTF-8") != 0 && strcasecmp(s, "UTF8") != 0)
 			errx(1, "need UTF-8 locale (LC_CTYPE) but have %s", s);
 	}
 
@@ -238,7 +233,7 @@ main(int argc, char **argv)
 				flags |= CLIENT_CONTROL;
 			break;
 		case 'V':
-			printf("%s %s\n", __progname, VERSION);
+			printf("%s %s\n", getprogname(), VERSION);
 			exit(0);
 		case 'f':
 			set_cfg_file(optarg);
@@ -361,5 +356,5 @@ main(int argc, char **argv)
 	free(label);
 
 	/* Pass control to the client. */
-	exit(client_main(event_init(), argc, argv, flags, shellcmd));
+	exit(client_main(osdep_event_init(), argc, argv, flags, shellcmd));
 }

@@ -33,19 +33,17 @@ the source tree with:
 
 	$ nroff -mdoc tmux.1|less
 
-Some common questions are answered in the FAQ file and a more extensive (but
-slightly out of date) guide is available in the OpenBSD FAQ at
-http://www.openbsd.org/faq/faq7.html#tmux. A rough todo list is in the TODO
-file and an example configuration in example_tmux.conf.
+Some common questions are answered in the FAQ file, a rough todo list is in the
+TODO file and an example configuration in example_tmux.conf.
 
 A vim(1) syntax file is available at:
 
-   https://github.com/keith/tmux.vim
-   https://raw.githubusercontent.com/keith/tmux.vim/master/syntax/tmux.vim
+	https://github.com/keith/tmux.vim
+	https://raw.githubusercontent.com/keith/tmux.vim/master/syntax/tmux.vim
 
 And a bash(1) completion file at:
 
-   https://github.com/przepompownia/tmux-bash-completion
+	https://github.com/imomaliev/tmux-bash-completion
 
 For debugging, running tmux with -v or -vv will generate server and client log
 files in the current directory.
@@ -57,6 +55,8 @@ tmux mailing lists are available. For general discussion and bug reports:
 And for Git commit emails:
 
 	https://groups.google.com/forum/#!forum/tmux-git
+
+Subscribe by sending an email to <tmux-users+subscribe@googlegroups.com>.
 
 Bug reports, feature suggestions and especially code contributions are most
 welcome. Please send by email to:

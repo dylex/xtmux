@@ -782,7 +782,9 @@ section.
 If
 .Ar target-session
 is specified, list only clients connected to that session.
-.It Ic list-commands
+.It Xo Ic list-commands
+.Op Fl F Ar format
+.Xc
 .D1 (alias: Ic lscm )
 List the syntax of all commands supported by
 .Nm .
@@ -922,10 +924,18 @@ display the log for
 and
 .Fl T
 show debugging information about jobs and terminals.
-.It Ic source-file Ar path
+.It Xo Ic source-file
+.Op Fl q
+.Ar path
+.Xc
 .D1 (alias: Ic source )
 Execute commands from
 .Ar path .
+If
+.Fl q
+is given, no error will be returned if
+.Ar path
+does not exist.
 .It Ic start-server
 .D1 (alias: Ic start )
 Start the
@@ -986,7 +996,7 @@ bind-key -Troot   a switch-client -Ttable1
 .Sh WINDOWS AND PANES
 A
 .Nm
-window may be in one of several modes.
+window may be in one of two modes.
 The default permits direct access to the terminal attached to the window.
 The other is copy mode, which permits a section of a window or its
 history to be copied to a
@@ -1034,6 +1044,7 @@ The following keys are supported as appropriate for the mode:
 .It Li "Jump to backward" Ta "T" Ta ""
 .It Li "Jump to forward" Ta "t" Ta ""
 .It Li "Next page" Ta "C-f" Ta "Page down"
+.It Li "Next paragraph" Ta "}" Ta "M-}"
 .It Li "Next space" Ta "W" Ta ""
 .It Li "Next space, end of word" Ta "E" Ta ""
 .It Li "Next word" Ta "w" Ta ""
@@ -1041,6 +1052,7 @@ The following keys are supported as appropriate for the mode:
 .It Li "Other end of selection" Ta "o" Ta ""
 .It Li "Paste buffer" Ta "p" Ta "C-y"
 .It Li "Previous page" Ta "C-b" Ta "Page up"
+.It Li "Previous paragraph" Ta "{" Ta "M-{"
 .It Li "Previous space" Ta "B" Ta ""
 .It Li "Previous word" Ta "b" Ta "M-b"
 .It Li "Quit mode" Ta "q" Ta "Escape"
@@ -1455,7 +1467,11 @@ flag, see the
 .Sx FORMATS
 section.
 This command works only if at least one client is attached.
-.It Ic display-panes Op Fl t Ar target-client
+.It Xo
+.Ic display-panes
+.Op Fl t Ar target-client
+.Op Ar template
+.Xc
 .D1 (alias: Ic displayp )
 Display a visible indicator of each pane shown by
 .Ar target-client .
@@ -1465,11 +1481,18 @@ See the
 and
 .Ic display-panes-active-colour
 session options.
-While the indicator is on screen, a pane may be selected with the
+While the indicator is on screen, a pane may be chosen with the
 .Ql 0
 to
 .Ql 9
-keys.
+keys, which will cause
+.Ar template
+to be executed as a command with
+.Ql %%
+substituted by the pane ID.
+The default
+.Ar template
+is "select-pane -t '%%'".
 .It Xo Ic find-window
 .Op Fl CNT
 .Op Fl F Ar format
@@ -1997,6 +2020,13 @@ The
 .Fl b
 option causes the new pane to be created to the left of or above
 .Ar target-pane .
+The
+.Fl f
+option creates a new pane spanning the full window height (with
+.Fl h )
+or full window width (with
+.Fl v ) ,
+instead of splitting the active pane.
 All other options have the same meaning as for the
 .Ic new-window
 command.
@@ -2112,6 +2142,7 @@ Commands related to key bindings are as follows:
 .Bl -tag -width Ds
 .It Xo Ic bind-key
 .Op Fl cnr
+.Op Fl R Ar repeat-count
 .Op Fl t Ar mode-table
 .Op Fl T Ar key-table
 .Ar key Ar command Op Ar arguments
@@ -2170,6 +2201,14 @@ is bound in
 the binding for command mode with
 .Fl c
 or for normal mode without.
+For keys in the
+.Em vi-copy
+or
+.Em emacs-copy
+tables,
+.Fl R
+specifies how many times the command should be repeated.
+.Pp
 See the
 .Sx WINDOWS AND PANES
 section and the
@@ -2797,19 +2836,17 @@ will be passed through
 and formats (see
 .Sx FORMATS )
 will be expanded.
-It may also contain any of the following special character sequences:
-.Bl -column "Character pair" "Replaced with" -offset indent
-.It Sy "Character pair" Ta Sy "Replaced with"
-.It Li "#[attributes]" Ta "Colour or attribute change"
-.It Li "##" Ta "A literal" Ql #
-.El
+It may also contain the special character sequence #[] to change the colour
+or attributes, for example
+.Ql #[fg=red,bright]
+to set a bright red foreground.
+See the
+.Ic message-command-style
+option for a description of colours and attributes.
 .Pp
 For details on how the names and titles can be set see the
 .Sx "NAMES AND TITLES"
 section.
-For a list of allowed attributes see the
-.Ic message-command-style
-option.
 .Pp
 Examples are:
 .Bd -literal -offset indent
@@ -3198,6 +3235,14 @@ Like
 .Ic base-index ,
 but set the starting index for pane numbers.
 .Pp
+.It Ic pane-border-format Ar format
+Set the text shown in pane border status lines.
+.Pp
+.It Xo Ic pane-border-status
+.Op Ic off | top | bottom
+.Xc
+Turn pane border status lines off or set their position.
+.Pp
 .It Ic pane-border-style Ar style
 Set the pane border style for panes aside from the active pane.
 For how to specify
@@ -3354,9 +3399,35 @@ shows only the option value, not the name.
 .Nm
 allows commands to run on various triggers, called
 .Em hooks .
-Each hook has a
-.Em name .
-The following hooks are available:
+Each
+.Nm
+command has a
+.Em before
+hook and an
+.Em after
+hook and there are a number of hooks not associated with commands.
+.Pp
+A command's before hook is run before the command is executed and its after
+hook is run afterwards, except when the command is run as part of a hook
+itself.
+Before hooks are named using the
+.Ql before-
+prefix and after hooks the
+.Ql after-
+prefix.
+For example, the following command adds a hook to select the even-vertical
+layout after every
+.Ic split-window :
+.Bd -literal -offset indent
+set-hook after-split-window "selectl even-vertical"
+.Ed
+.Pp
+Or to write when each new window is created to a file:
+.Bd -literal -offset indent
+set-hook before-new-window 'run "date >>/tmp/log"'
+.Ed
+.Pp
+In addition, the following hooks are available:
 .Bl -tag -width "XXXXXXXXXXXXXXXX"
 .It alert-activity
 Run when a window has activity.
@@ -3567,6 +3638,7 @@ The following variables are available, where appropriate:
 .It Li "alternate_on" Ta "" Ta "If pane is in alternate screen"
 .It Li "alternate_saved_x" Ta "" Ta "Saved cursor X in alternate screen"
 .It Li "alternate_saved_y" Ta "" Ta "Saved cursor Y in alternate screen"
+.It Li "buffer_name" Ta "" Ta "Name of buffer"
 .It Li "buffer_sample" Ta "" Ta "Sample of start of buffer"
 .It Li "buffer_size" Ta "" Ta "Size of the specified buffer in bytes"
 .It Li "client_activity" Ta "" Ta "Integer time client last had activity"
@@ -3583,7 +3655,11 @@ The following variables are available, where appropriate:
 .It Li "client_tty" Ta "" Ta "Pseudo terminal of client"
 .It Li "client_utf8" Ta "" Ta "1 if client supports utf8"
 .It Li "client_width" Ta "" Ta "Width of client"
+.It Li "command_hooked" Ta "" Ta "Name of command hooked, if any"
 .It Li "command_name" Ta "" Ta "Name of command in use, if any"
+.It Li "command_list_name" Ta "" Ta "Command name if listing commands"
+.It Li "command_list_alias" Ta "" Ta "Command alias if listing commands"
+.It Li "command_list_usage" Ta "" Ta "Command usage if listing commands"
 .It Li "cursor_flag" Ta "" Ta "Pane cursor flag"
 .It Li "cursor_x" Ta "" Ta "Cursor X position in pane"
 .It Li "cursor_y" Ta "" Ta "Cursor Y position in pane"
@@ -3637,9 +3713,10 @@ The following variables are available, where appropriate:
 .It Li "session_name" Ta "#S" Ta "Name of session"
 .It Li "session_width" Ta "" Ta "Width of session"
 .It Li "session_windows" Ta "" Ta "Number of windows in session"
-.It Li "socket_path" Ta "" "Server socket path"
+.It Li "socket_path" Ta "" Ta "Server socket path"
 .It Li "start_time" Ta "" Ta "Server start time"
 .It Li "window_activity" Ta "" Ta "Integer time of window last activity"
+.It Li "window_activity_flag" Ta "" Ta "1 if window has activity"
 .It Li "window_active" Ta "" Ta "1 if window active"
 .It Li "window_bell_flag" Ta "" Ta "1 if window has bell"
 .It Li "window_find_matches" Ta "" Ta "Matched data from the find-window"
@@ -3875,9 +3952,7 @@ Before the command is executed, the first occurrence of the string
 .Ql %%
 and all occurrences of
 .Ql %1
-are replaced by the response to the first prompt, the second
-.Ql %%
-and all
+are replaced by the response to the first prompt, all
 .Ql %2
 are replaced with the response to the second prompt, and so on for further
 prompts.
@@ -3950,7 +4025,7 @@ and so on.
 When the
 .Ic buffer-limit
 option is reached, the oldest automatically named buffer is deleted.
-Explicitly named are not subject to
+Explicitly named buffers are not subject to
 .Ic buffer-limit
 and may be deleted with
 .Ic delete-buffer

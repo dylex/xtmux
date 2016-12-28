@@ -188,6 +188,7 @@ server_client_lost(struct client *c)
 
 	c->flags |= CLIENT_DEAD;
 
+	server_clear_identify(c, NULL);
 	status_prompt_clear(c);
 	status_message_clear(c);
 
@@ -612,16 +613,16 @@ server_client_handle_key(struct client *c, key_code key)
 			return;
 		window_unzoom(w);
 		wp = window_pane_at_index(w, key - '0');
-		if (wp != NULL && window_pane_visible(wp))
-			window_set_active_pane(w, wp);
-		server_clear_identify(c);
+		if (wp != NULL && !window_pane_visible(wp))
+			wp = NULL;
+		server_clear_identify(c, wp);
 		return;
 	}
 
 	/* Handle status line. */
 	if (!(c->flags & CLIENT_READONLY)) {
 		status_message_clear(c);
-		server_clear_identify(c);
+		server_clear_identify(c, NULL);
 	}
 	if (c->prompt_string != NULL) {
 		if (!(c->flags & CLIENT_READONLY))
@@ -772,11 +773,13 @@ server_client_loop(void)
 	}
 }
 
-/* Check if pane should be resized. */
-void
-server_client_check_resize(struct window_pane *wp)
+static void
+server_client_resize_event(__unused int fd, __unused short events, void *data)
 {
-	struct winsize	ws;
+	struct window_pane	*wp = data;
+	struct winsize		 ws;
+
+	evtimer_del(&wp->resize_timer);
 
 	if (!(wp->flags & PANE_RESIZE))
 		return;
@@ -799,6 +802,36 @@ server_client_check_resize(struct window_pane *wp)
 	}
 
 	wp->flags &= ~PANE_RESIZE;
+}
+
+/* Check if pane should be resized. */
+void
+server_client_check_resize(struct window_pane *wp)
+{
+	struct timeval	 tv = { .tv_usec = 250000 };
+
+	if (!(wp->flags & PANE_RESIZE))
+		return;
+
+	if (!event_initialized(&wp->resize_timer))
+		evtimer_set(&wp->resize_timer, server_client_resize_event, wp);
+
+	/*
+	 * The first resize should happen immediately, so if the timer is not
+	 * running, do it now.
+	 */
+	if (!evtimer_pending(&wp->resize_timer, NULL))
+		server_client_resize_event(-1, 0, wp);
+
+	/*
+	 * If the pane is in the alternate screen, let the timer expire and
+	 * resize to give the application a chance to redraw. If not, keep
+	 * pushing the timer back.
+	 */
+	if (wp->saved_grid != NULL && evtimer_pending(&wp->resize_timer, NULL))
+		return;
+	evtimer_del(&wp->resize_timer);
+	evtimer_add(&wp->resize_timer, &tv);
 }
 
 /* Check whether pane should be focused. */
@@ -872,10 +905,7 @@ server_client_reset_state(struct client *c)
 	struct options		*oo = c->session->options;
 	int			 status, mode, o;
 
-	if (c->flags & CLIENT_SUSPENDED)
-		return;
-
-	if (c->flags & CLIENT_CONTROL)
+	if (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED))
 		return;
 
 	tty_region(&c->tty, 0, c->tty.sy - 1);
@@ -939,7 +969,7 @@ server_client_check_redraw(struct client *c)
 	struct session		*s = c->session;
 	struct tty		*tty = &c->tty;
 	struct window_pane	*wp;
-	int		 	 flags, redraw;
+	int		 	 flags, masked, redraw;
 
 	if (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED)
 		|| c->tty.flags & TTY_UNMAPPED)
@@ -980,15 +1010,15 @@ server_client_check_redraw(struct client *c)
 		}
 	}
 
-	if (c->flags & CLIENT_BORDERS) {
+	masked = c->flags & (CLIENT_BORDERS|CLIENT_STATUS);
+	if (masked != 0)
 		tty_update_mode(tty, tty->mode, NULL);
+	if (masked == CLIENT_BORDERS)
 		screen_redraw_screen(c, 0, 0, 1);
-	}
-
-	if (c->flags & CLIENT_STATUS) {
-		tty_update_mode(tty, tty->mode, NULL);
+	else if (masked == CLIENT_STATUS)
 		screen_redraw_screen(c, 0, 1, 0);
-	}
+	else if (masked != 0)
+		screen_redraw_screen(c, 0, 1, 1);
 
 	tty->flags = (tty->flags & ~(TTY_FREEZE|TTY_NOCURSOR)) | flags;
 	tty_update_mode(tty, tty->mode, NULL);
@@ -1116,12 +1146,13 @@ server_client_dispatch(struct imsg *imsg, void *arg)
 
 		if (gettimeofday(&c->activity_time, NULL) != 0)
 			fatal("gettimeofday failed");
-		if (s != NULL)
-			session_update_activity(s, &c->activity_time);
 
 		tty_start_tty(&c->tty);
 		server_redraw_client(c);
 		recalculate_sizes();
+
+		if (s != NULL)
+			session_update_activity(s, &c->activity_time);
 		break;
 	case MSG_SHELL:
 		if (datalen != 0)
