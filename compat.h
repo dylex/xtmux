@@ -17,6 +17,14 @@
 #ifndef COMPAT_H
 #define COMPAT_H
 
+#include <sys/types.h>
+#include <sys/uio.h>
+
+#include <limits.h>
+#include <stdio.h>
+#include <termios.h>
+#include <wchar.h>
+
 #ifndef __GNUC__
 #define __attribute__(a)
 #endif
@@ -43,11 +51,13 @@
 #include <sys/filio.h>
 #endif
 
-#ifndef HAVE_BSD_TYPES
-typedef uint8_t u_int8_t;
-typedef uint16_t u_int16_t;
-typedef uint32_t u_int32_t;
-typedef uint64_t u_int64_t;
+#ifdef HAVE_ERR_H
+#include <err.h>
+#else
+void	err(int, const char *, ...);
+void	errx(int, const char *, ...);
+void	warn(const char *, ...);
+void	warnx(const char *, ...);
 #endif
 
 #ifndef HAVE_PATHS_H
@@ -56,6 +66,16 @@ typedef uint64_t u_int64_t;
 #define _PATH_DEVNULL	"/dev/null"
 #define _PATH_TTY	"/dev/tty"
 #define _PATH_DEV	"/dev/"
+#endif
+
+#ifndef __OpenBSD__
+#define pledge(s, p) (0)
+#endif
+
+#ifdef HAVE_STDINT_H
+#include <stdint.h>
+#else
+#include <inttypes.h>
 #endif
 
 #ifdef HAVE_QUEUE_H
@@ -102,12 +122,6 @@ typedef uint64_t u_int64_t;
 #include <imsg.h>
 #else
 #include "compat/imsg.h"
-#endif
-
-#ifdef HAVE_STDINT_H
-#include <stdint.h>
-#else
-#include <inttypes.h>
 #endif
 
 #ifdef BROKEN_CMSG_FIRSTHDR
@@ -196,6 +210,16 @@ typedef uint64_t u_int64_t;
 #define flock(fd, op) (0)
 #endif
 
+#ifndef HAVE_EXPLICIT_BZERO
+/* explicit_bzero.c */
+void		 explicit_bzero(void *, size_t);
+#endif
+
+#ifndef HAVE_GETDTABLECOUNT
+/* getdtablecount.c */
+int		 getdtablecount(void);
+#endif
+
 #ifndef HAVE_CLOSEFROM
 /* closefrom.c */
 void		 closefrom(int);
@@ -226,6 +250,16 @@ size_t	 	 strlcpy(char *, const char *, size_t);
 size_t	 	 strlcat(char *, const char *, size_t);
 #endif
 
+#ifndef HAVE_STRNLEN
+/* strnlen.c */
+size_t		 strnlen(const char *, size_t);
+#endif
+
+#ifndef HAVE_STRNDUP
+/* strndup.c */
+char		*strndup(const char *, size_t);
+#endif
+
 #ifndef HAVE_DAEMON
 /* daemon.c */
 int	 	 daemon(int, int);
@@ -242,9 +276,11 @@ void		 setproctitle(const char *, ...);
 #endif
 
 #ifndef HAVE_B64_NTOP
-/* b64_ntop.c */
-#undef b64_ntop /* for Cygwin */
+/* base64.c */
+#undef b64_ntop
+#undef b64_pton
 int		 b64_ntop(const char *, size_t, char *, size_t);
+int		 b64_pton(const char *, u_char *, size_t);
 #endif
 
 #ifndef HAVE_FORKPTY
@@ -279,15 +315,19 @@ int		 unsetenv(const char *);
 void		 cfmakeraw(struct termios *);
 #endif
 
-#ifndef HAVE_OPENAT
-/* openat.c */
-#define AT_FDCWD -100
-int		 openat(int, const char *, int, ...);
+#ifndef HAVE_FREEZERO
+/* freezero.c */
+void		 freezero(void *, size_t);
 #endif
 
 #ifndef HAVE_REALLOCARRAY
 /* reallocarray.c */
 void		*reallocarray(void *, size_t, size_t);
+#endif
+
+#ifndef HAVE_RECALLOCARRAY
+/* recallocarray.c */
+void		*recallocarray(void *, size_t, size_t, size_t);
 #endif
 
 #ifdef HAVE_UTF8PROC

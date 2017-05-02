@@ -19,7 +19,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#include <err.h>
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
@@ -43,11 +42,15 @@ struct hooks	*global_hooks;
 
 struct timeval	 start_time;
 const char	*socket_path;
+int		 ptm_fd = -1;
 
-__dead void	 usage(void);
-static char	*make_label(const char *);
+static __dead void	 usage(void);
+static char		*make_label(const char *);
 
-__dead void
+static const char	*getshell(void);
+static int		 checkshell(const char *);
+
+static __dead void
 usage(void)
 {
 	fprintf(stderr,
@@ -57,7 +60,7 @@ usage(void)
 	exit(1);
 }
 
-const char *
+static const char *
 getshell(void)
 {
 	struct passwd	*pw;
@@ -74,10 +77,10 @@ getshell(void)
 	return (_PATH_BSHELL);
 }
 
-int
+static int
 checkshell(const char *shell)
 {
-	if (shell == NULL || *shell == '\0' || *shell != '/')
+	if (shell == NULL || *shell != '/')
 		return (0);
 	if (areshell(shell))
 		return (0);
@@ -108,18 +111,17 @@ make_label(const char *label)
 {
 	char		*base, resolved[PATH_MAX], *path, *s;
 	struct stat	 sb;
-	u_int		 uid;
+	uid_t		 uid;
 	int		 saved_errno;
 
 	if (label == NULL)
 		label = "default";
-
 	uid = getuid();
 
 	if ((s = getenv("TMUX_TMPDIR")) != NULL && *s != '\0')
 		xasprintf(&base, "%s/tmux-%u", s, uid);
 	else
-		xasprintf(&base, "%s/tmux-%u", _PATH_TMP, uid);
+		xasprintf(&base, "%s/tmux-%ld", _PATH_TMP, (long)uid);
 
 	if (mkdir(base, S_IRWXU) != 0 && errno != EEXIST)
 		goto fail;
@@ -138,6 +140,8 @@ make_label(const char *label)
 	if (realpath(base, resolved) == NULL)
 		strlcpy(resolved, base, sizeof resolved);
 	xasprintf(&path, "%s/%s", resolved, label);
+
+	free(base);
 	return (path);
 
 fail:
@@ -185,9 +189,11 @@ find_home(void)
 int
 main(int argc, char **argv)
 {
-	char		*path, *label, **var, tmp[PATH_MAX], *shellcmd = NULL;
-	const char	*s;
-	int		 opt, flags, keys;
+	char					*path, *label, tmp[PATH_MAX];
+	char					*shellcmd = NULL, **var;
+	const char				*s, *shell;
+	int					 opt, flags, keys;
+	const struct options_table_entry	*oe;
 
 	if (setlocale(LC_CTYPE, "en_US.UTF-8") == NULL) {
 		if (setlocale(LC_CTYPE, "") == NULL)
@@ -256,11 +262,11 @@ main(int argc, char **argv)
 	if (shellcmd != NULL && argc != 0)
 		usage();
 
-#ifdef __OpenBSD__
+	if (pty_open(&ptm_fd) != 0)
+		errx(1, "open(\"/dev/ptm\"");
 	if (pledge("stdio rpath wpath cpath flock fattr unix getpw sendfd "
 	    "recvfd proc exec tty ps", NULL) != 0)
 		err(1, "pledge");
-#endif
 
 	/*
 	 * tmux is a UTF-8 terminal, so if TMUX is set, assume UTF-8.
@@ -293,17 +299,26 @@ main(int argc, char **argv)
 		environ_set(global_environ, "PWD", "%s", tmp);
 
 	global_options = options_create(NULL);
-	options_table_populate_tree(OPTIONS_TABLE_SERVER, global_options);
-
 	global_s_options = options_create(NULL);
-	options_table_populate_tree(OPTIONS_TABLE_SESSION, global_s_options);
-	options_set_string(global_s_options, "default-shell", "%s", getshell());
-
 	global_w_options = options_create(NULL);
-	options_table_populate_tree(OPTIONS_TABLE_WINDOW, global_w_options);
-
 	global_c_options = options_create(NULL);
-	options_table_populate_tree(OPTIONS_TABLE_CLIENT, global_c_options);
+	for (oe = options_table; oe->name != NULL; oe++) {
+		if (oe->scope == OPTIONS_TABLE_SERVER)
+			options_default(global_options, oe);
+		if (oe->scope == OPTIONS_TABLE_SESSION)
+			options_default(global_s_options, oe);
+		if (oe->scope == OPTIONS_TABLE_WINDOW)
+			options_default(global_w_options, oe);
+		if (oe->scope == OPTIONS_TABLE_CLIENT)
+			options_default(global_c_options, oe);
+	}
+
+	/*
+	 * The default shell comes from SHELL or from the user's passwd entry
+	 * if available.
+	 */
+	shell = getshell();
+	options_set_string(global_s_options, "default-shell", 0, "%s", shell);
 
 	/* Override keys to vi if VISUAL or EDITOR are set. */
 	if ((s = getenv("VISUAL")) != NULL || (s = getenv("EDITOR")) != NULL) {
@@ -326,7 +341,7 @@ main(int argc, char **argv)
 		s = getenv("TMUX");
 		if (s != NULL && *s != '\0' && *s != ',') {
 			path = xstrdup(s);
-			path[strcspn (path, ",")] = '\0';
+			path[strcspn(path, ",")] = '\0';
 		}
 	}
 	if (path == NULL && (path = make_label(label)) == NULL) {

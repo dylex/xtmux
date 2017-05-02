@@ -138,6 +138,7 @@ fatal(const char *msg, ...)
 	if (asprintf(&fmt, "fatal: %s: %s", msg, strerror(errno)) == -1)
 		exit(1);
 	log_vwrite(fmt, ap);
+	va_end(ap);
 	exit(1);
 }
 
@@ -152,5 +153,6 @@ fatalx(const char *msg, ...)
 	if (asprintf(&fmt, "fatal: %s", msg) == -1)
 		exit(1);
 	log_vwrite(fmt, ap);
+	va_end(ap);
 	exit(1);
 }

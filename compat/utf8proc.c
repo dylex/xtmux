@@ -18,7 +18,7 @@
 
 #include <utf8proc.h>
 
-#include "tmux.h"
+#include "compat.h"
 
 int
 utf8proc_wcwidth(wchar_t wc)
@@ -31,10 +31,6 @@ utf8proc_wcwidth(wchar_t wc)
 		 * The private use category is where powerline and similar
 		 * codepoints are stored, they have "ambiguous" width - use 1.
 		 */
-		return (1);
-	}
-	if (cat == UTF8PROC_CATEGORY_SO) {
-		/* Symbols, like emoji, should always use width 1. */
 		return (1);
 	}
 	return (utf8proc_charwidth(wc));

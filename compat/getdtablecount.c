@@ -1,7 +1,5 @@
-/* $OpenBSD$ */
-
 /*
- * Copyright (c) 2009 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2017 Nicholas Marriott <nicholas.marriott@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -18,38 +16,40 @@
 
 #include <sys/types.h>
 
-#include "tmux.h"
+#include <glob.h>
+#include <unistd.h>
 
-/*
- * Clear pane history.
- */
+#include "compat.h"
 
-enum cmd_retval	 cmd_clear_history_exec(struct cmd *, struct cmd_q *);
+void fatal(const char *, ...);
+void fatalx(const char *, ...);
 
-const struct cmd_entry cmd_clear_history_entry = {
-	.name = "clear-history",
-	.alias = "clearhist",
-
-	.args = { "t:", 0, 0 },
-	.usage = CMD_TARGET_PANE_USAGE,
-
-	.tflag = CMD_PANE,
-
-	.flags = 0,
-	.exec = cmd_clear_history_exec
-};
-
-enum cmd_retval
-cmd_clear_history_exec(__unused struct cmd *self, struct cmd_q *cmdq)
+#ifdef HAVE_PROC_PID
+int
+getdtablecount(void)
 {
-	struct window_pane	*wp = cmdq->state.tflag.wp;
-	struct grid		*gd;
+	char	path[PATH_MAX];
+	glob_t	g;
+	int	n;
 
-	gd = cmdq->state.tflag.wp->base.grid;
-
-	if (wp->mode == &window_copy_mode)
-		window_pane_reset_mode(wp);
-	grid_clear_history(gd);
-
-	return (CMD_RETURN_NORMAL);
+	if (snprintf(path, sizeof path, "/proc/%ld/fd/*", (long)getpid()) < 0)
+		fatal("snprintf overflow");
+	switch (glob(path, 0, NULL, &g)) {
+	case GLOB_NOMATCH:
+		return (0);
+	case 0:
+		break;
+	default:
+		fatal("glob(\"%s\") failed", path);
+	}
+	n = g.gl_pathc;
+	globfree(&g);
+	return (n);
 }
+#else
+int
+getdtablecount(void)
+{
+	return (0);
+}
+#endif
