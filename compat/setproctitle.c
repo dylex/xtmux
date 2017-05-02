@@ -16,9 +16,10 @@
 
 #include <sys/types.h>
 
+#include <stdarg.h>
 #include <string.h>
 
-#include "tmux.h"
+#include "compat.h"
 
 #if defined(HAVE_PRCTL) && defined(HAVE_PR_SET_NAME)
 
@@ -45,7 +46,7 @@ setproctitle(const char *fmt, ...)
 }
 #else
 void
-setproctitle(const char *fmt, ...)
+setproctitle(__unused const char *fmt, ...)
 {
 }
 #endif

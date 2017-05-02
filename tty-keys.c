@@ -44,13 +44,15 @@ static int	tty_keys_next1(struct tty *, const char *, size_t, key_code *,
 		    size_t *, int);
 static void	tty_keys_callback(int, short, void *);
 static int	tty_keys_mouse(struct tty *, const char *, size_t, size_t *);
+static int	tty_keys_device_attributes(struct tty *, const char *, size_t,
+		    size_t *);
 
 /* Default raw keys. */
 struct tty_default_key_raw {
 	const char	       *string;
 	key_code	 	key;
 };
-const struct tty_default_key_raw tty_default_raw_keys[] = {
+static const struct tty_default_key_raw tty_default_raw_keys[] = {
 	/*
 	 * Numeric keypad. Just use the vt100 escape sequences here and always
 	 * put the terminal into keypad_xmit mode. Translation of numbers
@@ -170,7 +172,7 @@ struct tty_default_key_code {
 	enum tty_code_code	code;
 	key_code	 	key;
 };
-const struct tty_default_key_code tty_default_code_keys[] = {
+static const struct tty_default_key_code tty_default_code_keys[] = {
 	/* Function keys. */
 	{ TTYC_KF1, KEYC_F1 },
 	{ TTYC_KF2, KEYC_F2 },
@@ -468,21 +470,22 @@ static int
 tty_keys_next1(struct tty *tty, const char *buf, size_t len, key_code *key,
     size_t *size, int expired)
 {
+	struct client		*c = tty->client;
 	struct tty_key		*tk, *tk1;
 	struct utf8_data	 ud;
 	enum utf8_state		 more;
 	u_int			 i;
 	wchar_t			 wc;
 
-	log_debug("next key is %zu (%.*s) (expired=%d)", len, (int)len, buf,
-	    expired);
+	log_debug("%s: next key is %zu (%.*s) (expired=%d)", c->name, len,
+	    (int)len, buf, expired);
 
 	/* Is this a known key? */
 	tk = tty_keys_find(tty, buf, len, size);
 	if (tk != NULL && tk->key != KEYC_UNKNOWN) {
 		tk1 = tk;
 		do
-			log_debug("keys in list: %#llx", tk1->key);
+			log_debug("%s: keys in list: %#llx", c->name, tk1->key);
 		while ((tk1 = tk1->next) != NULL);
 		if (tk->next != NULL && !expired)
 			return (1);
@@ -508,7 +511,8 @@ tty_keys_next1(struct tty *tty, const char *buf, size_t len, key_code *key,
 			return (-1);
 		*key = wc;
 
-		log_debug("UTF-8 key %.*s %#llx", (int)ud.size, buf, *key);
+		log_debug("%s: UTF-8 key %.*s %#llx", c->name, (int)ud.size,
+		    buf, *key);
 		return (0);
 	}
 
@@ -522,6 +526,7 @@ tty_keys_next1(struct tty *tty, const char *buf, size_t len, key_code *key,
 key_code
 tty_keys_next(struct tty *tty)
 {
+	struct client	*c = tty->client;
 	struct timeval	 tv;
 	const char	*buf;
 	size_t		 len, size;
@@ -530,12 +535,23 @@ tty_keys_next(struct tty *tty)
 	key_code	 key;
 
 	/* Get key buffer. */
-	buf = EVBUFFER_DATA(tty->event->input);
-	len = EVBUFFER_LENGTH(tty->event->input);
+	buf = EVBUFFER_DATA(tty->in);
+	len = EVBUFFER_LENGTH(tty->in);
 
 	if (len == 0)
 		return (0);
-	log_debug("keys are %zu (%.*s)", len, (int)len, buf);
+	log_debug("%s: keys are %zu (%.*s)", c->name, len, (int)len, buf);
+
+	/* Is this a device attributes response? */
+	switch (tty_keys_device_attributes(tty, buf, len, &size)) {
+	case 0:		/* yes */
+		key = KEYC_UNKNOWN;
+		goto complete_key;
+	case -1:	/* no, or not valid */
+		break;
+	case 1:		/* partial */
+		goto partial_key;
+	}
 
 	/* Is this a mouse key press? */
 	switch (tty_keys_mouse(tty, buf, len, &size)) {
@@ -593,7 +609,7 @@ first_key:
 	goto complete_key;
 
 partial_key:
-	log_debug("partial key %.*s", (int)len, buf);
+	log_debug("%s: partial key %.*s", c->name, (int)len, buf);
 
 	/* If timer is going, check for expiration. */
 	if (tty->flags & TTY_TIMER) {
@@ -620,7 +636,7 @@ partial_key:
 	return (0);
 
 complete_key:
-	log_debug("complete key %.*s %#llx", (int)size, buf, key);
+	log_debug("%s: complete key %.*s %#llx", c->name, (int)size, buf, key);
 
 	/*
 	 * Check for backspace key using termios VERASE - the terminfo
@@ -632,7 +648,7 @@ complete_key:
 		key = (key & KEYC_MASK_MOD) | KEYC_BSPACE;
 
 	/* Remove data from buffer. */
-	evbuffer_drain(tty->event->input, size);
+	evbuffer_drain(tty->in, size);
 
 	/* Remove key timer. */
 	if (event_initialized(&tty->key_timer))
@@ -655,10 +671,10 @@ complete_key:
 	return (1);
 
 discard_key:
-	log_debug("discard key %.*s %#llx", (int)size, buf, key);
+	log_debug("%s: discard key %.*s %#llx", c->name, (int)size, buf, key);
 
 	/* Remove data from buffer. */
-	evbuffer_drain(tty->event->input, size);
+	evbuffer_drain(tty->in, size);
 
 	return (1);
 }
@@ -682,9 +698,10 @@ tty_keys_callback(__unused int fd, __unused short events, void *data)
 static int
 tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 {
+	struct client		*c = tty->client;
 	struct mouse_event	*m = &tty->mouse;
 	u_int			 i, x, y, b, sgr_b;
-	u_char			 sgr_type, c;
+	u_char			 sgr_type, ch;
 
 	/*
 	 * Standard mouse sequences are \033[M followed by three characters
@@ -723,15 +740,15 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 		for (i = 0; i < 3; i++) {
 			if (len <= *size)
 				return (1);
-			c = (u_char)buf[(*size)++];
+			ch = (u_char)buf[(*size)++];
 			if (i == 0)
-				b = c;
+				b = ch;
 			else if (i == 1)
-				x = c;
+				x = ch;
 			else
-				y = c;
+				y = ch;
 		}
-		log_debug("mouse input: %.*s", (int)*size, buf);
+		log_debug("%s: mouse input: %.*s", c->name, (int)*size, buf);
 
 		/* Check and return the mouse input. */
 		if (b < 32)
@@ -751,34 +768,35 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 		while (1) {
 			if (len <= *size)
 				return (1);
-			c = (u_char)buf[(*size)++];
-			if (c == ';')
+			ch = (u_char)buf[(*size)++];
+			if (ch == ';')
 				break;
-			if (c < '0' || c > '9')
+			if (ch < '0' || ch > '9')
 				return (-1);
-			sgr_b = 10 * sgr_b + (c - '0');
+			sgr_b = 10 * sgr_b + (ch - '0');
 		}
 		while (1) {
 			if (len <= *size)
 				return (1);
-			c = (u_char)buf[(*size)++];
-			if (c == ';')
+			ch = (u_char)buf[(*size)++];
+			if (ch == ';')
 				break;
-			if (c < '0' || c > '9')
+			if (ch < '0' || ch > '9')
 				return (-1);
-			x = 10 * x + (c - '0');
+			x = 10 * x + (ch - '0');
 		}
 		while (1) {
 			if (len <= *size)
 				return (1);
-			c = (u_char)buf[(*size)++];
-			if (c == 'M' || c == 'm')
+			ch = (u_char)buf[(*size)++];
+			if (ch == 'M' || ch == 'm')
 				break;
-			if (c < '0' || c > '9')
+			if (ch < '0' || ch > '9')
 				return (-1);
-			y = 10 * y + (c - '0');
+			y = 10 * y + (ch - '0');
 		}
-		log_debug("mouse input (SGR): %.*s", (int)*size, buf);
+		log_debug("%s: mouse input (SGR): %.*s", c->name, (int)*size,
+		    buf);
 
 		/* Check and return the mouse input. */
 		if (x < 1 || y < 1)
@@ -788,7 +806,7 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 		b = sgr_b;
 
 		/* Type is M for press, m for release. */
-		sgr_type = c;
+		sgr_type = ch;
 		if (sgr_type == 'm')
 			b |= 3;
 
@@ -813,5 +831,84 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size)
 	m->sgr_type = sgr_type;
 	m->sgr_b = sgr_b;
 
+	return (0);
+}
+
+/*
+ * Handle device attributes input. Returns 0 for success, -1 for failure, 1 for
+ * partial.
+ */
+static int
+tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
+    size_t *size)
+{
+	struct client		*c = tty->client;
+	u_int			 i, a, b;
+	char			 tmp[64], *endptr;
+	static const char	*types[] = TTY_TYPES;
+	int			 type;
+
+	*size = 0;
+
+	/* First three bytes are always \033[?. */
+	if (buf[0] != '\033')
+		return (-1);
+	if (len == 1)
+		return (1);
+	if (buf[1] != '[')
+		return (-1);
+	if (len == 2)
+		return (1);
+	if (buf[2] != '?')
+		return (-1);
+	if (len == 3)
+		return (1);
+
+	/* Copy the rest up to a 'c'. */
+	for (i = 0; i < (sizeof tmp) - 1 && buf[3 + i] != 'c'; i++) {
+		if (3 + i == len)
+			return (1);
+		tmp[i] = buf[3 + i];
+	}
+	if (i == (sizeof tmp) - 1)
+		return (-1);
+	tmp[i] = '\0';
+	*size = 4 + i;
+
+	/* Convert version numbers. */
+	a = strtoul(tmp, &endptr, 10);
+	if (*endptr == ';') {
+		b = strtoul(endptr + 1, &endptr, 10);
+		if (*endptr != '\0' && *endptr != ';')
+			b = 0;
+	} else
+		a = b = 0;
+
+	/* Store terminal type. */
+	type = TTY_UNKNOWN;
+	switch (a) {
+	case 1:
+		if (b == 2)
+			type = TTY_VT100;
+		else if (b == 0)
+			type = TTY_VT101;
+		break;
+	case 6:
+		type = TTY_VT102;
+		break;
+	case 62:
+		type = TTY_VT220;
+		break;
+	case 63:
+		type = TTY_VT320;
+		break;
+	case 64:
+		type = TTY_VT420;
+		break;
+	}
+	tty_set_type(tty, type);
+
+	log_debug("%s: received DA %.*s (%s)", c->name, (int)*size, buf,
+	    types[type]);
 	return (0);
 }

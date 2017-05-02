@@ -27,10 +27,7 @@
  * Paste paste buffer if present.
  */
 
-enum cmd_retval	 cmd_paste_buffer_exec(struct cmd *, struct cmd_q *);
-
-void	cmd_paste_buffer_filter(struct window_pane *,
-	    const char *, size_t, const char *, int);
+static enum cmd_retval	cmd_paste_buffer_exec(struct cmd *, struct cmdq_item *);
 
 #ifdef XTMUX
 #define X_OPT	"x"
@@ -48,15 +45,15 @@ const struct cmd_entry cmd_paste_buffer_entry = {
 
 	.tflag = CMD_PANE,
 
-	.flags = 0,
+	.flags = CMD_AFTERHOOK,
 	.exec = cmd_paste_buffer_exec
 };
 
-enum cmd_retval
-cmd_paste_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
+static enum cmd_retval
+cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
 {
 	struct args		*args = self->args;
-	struct window_pane	*wp = cmdq->state.tflag.wp;
+	struct window_pane	*wp = item->state.tflag.wp;
 	struct paste_buffer	*pb;
 	const char		*sepstr, *bufname, *bufdata;
 	size_t			 bufsize;
@@ -77,12 +74,12 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
 #ifdef XTMUX
 	if (args_has(args, 'x'))
 	{
-		if (!(cmdq->client && cmdq->client->tty.xtmux))
+		if (!(item->client && item->client->tty.xtmux))
 		{
-			cmdq_error(cmdq, "not xtmux");
+			cmdq_error(item, "not xtmux");
 			return (CMD_RETURN_ERROR);
 		}
-		return xtmux_paste(&cmdq->client->tty, wp, bufname, sepstr);
+		return xtmux_paste(&item->client->tty, wp, bufname, sepstr);
 	}
 #endif
 
@@ -91,7 +88,7 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmd_q *cmdq)
 	else {
 		pb = paste_get_name(bufname);
 		if (pb == NULL) {
-			cmdq_error(cmdq, "no buffer %s", bufname);
+			cmdq_error(item, "no buffer %s", bufname);
 			return (CMD_RETURN_ERROR);
 		}
 	}

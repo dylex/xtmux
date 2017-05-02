@@ -211,8 +211,8 @@ xtmux_init(struct client *c, const char *display)
 	c->tty.xtmux = xcalloc(1, sizeof *c->tty.xtmux);
 	c->tty.xtmux->display_name = xstrdup(display);
 
-	free(c->tty.termname);
-	c->tty.termname = xstrdup("xtmux");
+	free(c->tty.term_name);
+	c->tty.term_name = xstrdup("xtmux");
 
 	/* update client environment to reflect current DISPLAY */
 	environ_set(c->environ, "DISPLAY", "%s", display);
@@ -228,8 +228,7 @@ xtmux_init(struct client *c, const char *display)
 		if (!cmd_lookup_client(path))
 			break;
 	}
-	free(c->tty.path);
-	c->tty.path = path;
+	c->name = path;
 
 	if (!c->tty.ccolour)
 		c->tty.ccolour = xstrdup("");
