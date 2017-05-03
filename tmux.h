@@ -2357,6 +2357,7 @@ void	xtmux_cmd_clearendofline(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_clearstartofline(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_reverseindex(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_linefeed(struct tty *, const struct tty_ctx *);
+void	xtmux_cmd_scrollup(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_clearendofscreen(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_clearstartofscreen(struct tty *, const struct tty_ctx *);
 void	xtmux_cmd_clearscreen(struct tty *, const struct tty_ctx *);

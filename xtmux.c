@@ -1650,6 +1650,23 @@ xtmux_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 }
 
 void
+xtmux_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
+{
+	struct xtmux 		*x = tty->xtmux;
+	struct screen		*s = ctx->wp->screen;
+
+	XENTRY();
+
+	xt_scroll(x,
+			PANE_X(0), PANE_Y(ctx->orupper),
+			screen_size_x(s), ctx->orlower+1-ctx->orupper,
+			-ctx->num);
+
+	XUPDATE();
+	XRETURN();
+}
+
+void
 xtmux_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
