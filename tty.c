@@ -84,8 +84,12 @@ static void	tty_default_attributes(struct tty *, const struct window_pane *,
 	((tty)->term->flags)
 #endif
 
-#define tty_pane_full_width(tty, ctx)					\
+#define tty_pane_full_width(tty, ctx) \
 	((ctx)->xoff == 0 && screen_size_x((ctx)->wp->screen) >= (tty)->sx)
+
+#define TTY_BLOCK_INTERVAL (100000 /* 100 milliseconds */)
+#define TTY_BLOCK_START(tty) (1 + ((tty)->sx * (tty)->sy) * 8)
+#define TTY_BLOCK_STOP(tty) (1 + ((tty)->sx * (tty)->sy) / 8)
 
 void
 tty_create_log(void)
@@ -180,6 +184,51 @@ tty_read_callback(__unused int fd, __unused short events, void *data)
 }
 
 static void
+tty_timer_callback(__unused int fd, __unused short events, void *data)
+{
+	struct tty	*tty = data;
+	struct client	*c = tty->client;
+	struct timeval	 tv = { .tv_usec = TTY_BLOCK_INTERVAL };
+
+	log_debug("%s: %zu discarded", c->name, tty->discarded);
+
+	c->flags |= CLIENT_REDRAW;
+	c->discarded += tty->discarded;
+
+	if (tty->discarded < TTY_BLOCK_STOP(tty)) {
+		tty->flags &= ~TTY_BLOCK;
+		tty_invalidate(tty);
+		return;
+	}
+	tty->discarded = 0;
+	evtimer_add(&tty->timer, &tv);
+}
+
+static int
+tty_block_maybe(struct tty *tty)
+{
+	struct client	*c = tty->client;
+	size_t		 size = EVBUFFER_LENGTH(tty->out);
+	struct timeval	 tv = { .tv_usec = TTY_BLOCK_INTERVAL };
+
+	if (size < TTY_BLOCK_START(tty))
+		return (0);
+
+	if (tty->flags & TTY_BLOCK)
+		return (1);
+	tty->flags |= TTY_BLOCK;
+
+	log_debug("%s: can't keep up, %zu discarded", c->name, size);
+
+	evbuffer_drain(tty->out, size);
+	c->discarded += size;
+
+	tty->discarded = 0;
+	evtimer_add(&tty->timer, &tv);
+	return (1);
+}
+
+static void
 tty_write_callback(__unused int fd, __unused short events, void *data)
 {
 	struct tty	*tty = data;
@@ -191,6 +240,16 @@ tty_write_callback(__unused int fd, __unused short events, void *data)
 	if (nwrite == -1)
 		return;
 	log_debug("%s: wrote %d bytes (of %zu)", c->name, nwrite, size);
+
+	if (c->redraw > 0) {
+		if ((size_t)nwrite >= c->redraw)
+			c->redraw = 0;
+		else
+			c->redraw -= nwrite;
+		log_debug("%s: waiting for redraw, %zu bytes left", c->name,
+		    c->redraw);
+	} else if (tty_block_maybe(tty))
+		return;
 
 	if (EVBUFFER_LENGTH(tty->out) != 0)
 		event_add(&tty->event_out, NULL);
@@ -211,7 +270,7 @@ tty_open(struct tty *tty, char **cause)
 	}
 	tty->flags |= TTY_OPENED;
 
-	tty->flags &= ~(TTY_NOCURSOR|TTY_FREEZE);
+	tty->flags &= ~(TTY_NOCURSOR|TTY_FREEZE|TTY_BLOCK|TTY_TIMER);
 
 	event_set(&tty->event_in, tty->fd, EV_PERSIST|EV_READ,
 	    tty_read_callback, tty);
@@ -219,6 +278,8 @@ tty_open(struct tty *tty, char **cause)
 
 	event_set(&tty->event_out, tty->fd, EV_WRITE, tty_write_callback, tty);
 	tty->out = evbuffer_new();
+
+	evtimer_set(&tty->timer, tty_timer_callback, tty);
 
 	tty_start_tty(tty);
 
@@ -290,6 +351,9 @@ tty_stop_tty(struct tty *tty)
 	if (!(tty->flags & TTY_STARTED))
 		return;
 	tty->flags &= ~TTY_STARTED;
+
+	event_del(&tty->timer);
+	tty->flags &= ~TTY_BLOCK;
 
 	event_del(&tty->event_in);
 	event_del(&tty->event_out);
@@ -467,9 +531,14 @@ tty_add(struct tty *tty, const char *buf, size_t len)
 	}
 #endif
 
+	if (tty->flags & TTY_BLOCK) {
+		tty->discarded += len;
+		return;
+	}
+
 	evbuffer_add(tty->out, buf, len);
-	log_debug("%s: %.*s", c->name, (int)len, (const char *)buf);
-	tty->written += len;
+	log_debug("%s: %.*s", c->name, (int)len, buf);
+	c->written += len;
 
 	if (tty_log_fd != -1)
 		write(tty_log_fd, buf, len);
@@ -525,9 +594,13 @@ static void
 tty_putn(struct tty *tty, const void *buf, size_t len, u_int width)
 {
 	tty_add(tty, buf, len);
-	if (tty->cx + width > tty->sx)
-		tty->cx = tty->cy = UINT_MAX;
-	else
+	if (tty->cx + width > tty->sx) {
+		tty->cx = (tty->cx + width) - tty->sx;
+		if (tty->cx <= tty->sx)
+			tty->cy++;
+		else
+			tty->cx = tty->cy = UINT_MAX;
+	} else
 		tty->cx += width;
 }
 
@@ -783,24 +856,36 @@ tty_draw_line(struct tty *tty, const struct window_pane *wp,
 	tty_region_off(tty);
 	tty_margin_off(tty);
 
+	/*
+	 * Clamp the width to cellsize - note this is not cellused, because
+	 * there may be empty background cells after it (from BCE).
+	 */
 	sx = screen_size_x(s);
-	if (sx > s->grid->linedata[s->grid->hsize + py].cellused)
-		sx = s->grid->linedata[s->grid->hsize + py].cellused;
+	if (sx > s->grid->linedata[s->grid->hsize + py].cellsize)
+		sx = s->grid->linedata[s->grid->hsize + py].cellsize;
 	if (sx > tty->sx)
 		sx = tty->sx;
 
-	if (screen_size_x(s) < tty->sx &&
-	    ox == 0 &&
-	    sx != screen_size_x(s) &&
-	    tty_term_has(tty->term, TTYC_EL1) &&
-	    !tty_fake_bce(tty, wp, 8)) {
-		tty_default_attributes(tty, wp, 8);
-		tty_cursor(tty, screen_size_x(s) - 1, oy + py);
-		tty_putcode(tty, TTYC_EL1);
-		cleared = 1;
-	}
-	if (sx != 0)
-		tty_cursor(tty, ox, oy + py);
+	if (wp == NULL ||
+	    py == 0 ||
+	    (~s->grid->linedata[s->grid->hsize + py - 1].flags & GRID_LINE_WRAPPED) ||
+	    ox != 0 ||
+	    tty->cx < tty->sx ||
+	    screen_size_x(s) < tty->sx) {
+		if (screen_size_x(s) < tty->sx &&
+		    ox == 0 &&
+		    sx != screen_size_x(s) &&
+		    tty_term_has(tty->term, TTYC_EL1) &&
+		    !tty_fake_bce(tty, wp, 8)) {
+			tty_default_attributes(tty, wp, 8);
+			tty_cursor(tty, screen_size_x(s) - 1, oy + py);
+			tty_putcode(tty, TTYC_EL1);
+			cleared = 1;
+		}
+		if (sx != 0)
+			tty_cursor(tty, ox, oy + py);
+	} else
+		log_debug("%s: wrapped line %u", __func__, oy + py);
 
 	memcpy(&last, &grid_default_cell, sizeof last);
 	len = 0;
@@ -968,7 +1053,7 @@ tty_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 void
 tty_cmd_clearcharacter(struct tty *tty, const struct tty_ctx *ctx)
 {
-	tty_attributes(tty, &grid_default_cell, ctx->wp);
+	tty_default_attributes(tty, ctx->wp, ctx->bg);
 
 	tty_cursor_pane(tty, ctx, ctx->ocx, ctx->ocy);
 
@@ -1006,6 +1091,7 @@ tty_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 	tty_cursor_pane(tty, ctx, ctx->ocx, ctx->ocy);
 
 	tty_emulate_repeat(tty, TTYC_IL, TTYC_IL1, ctx->num);
+	tty->cx = tty->cy = UINT_MAX;
 }
 
 void
@@ -1031,6 +1117,7 @@ tty_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 	tty_cursor_pane(tty, ctx, ctx->ocx, ctx->ocy);
 
 	tty_emulate_repeat(tty, TTYC_DL, TTYC_DL1, ctx->num);
+	tty->cx = tty->cy = UINT_MAX;
 }
 
 void
@@ -1174,7 +1261,7 @@ void
 tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct window_pane	*wp = ctx->wp;
-	u_int			 i;
+	u_int			 i, lines;
 
 #ifdef XTMUX
 	if (tty->xtmux)
@@ -1193,12 +1280,21 @@ tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 	tty_region_pane(tty, ctx, ctx->orupper, ctx->orlower);
 	tty_margin_pane(tty, ctx);
 
-	if (ctx->num == 1 || !tty_term_has(tty->term, TTYC_INDN)) {
+	/*
+	 * Konsole has a bug where it will ignore SU if the parameter is more
+	 * than the height of the scroll region. Clamping the parameter doesn't
+	 * hurt in any case.
+	 */
+	lines = tty->rlower - tty->rupper;
+	if (lines > ctx->num)
+		lines = ctx->num;
+
+	if (lines == 1 || !tty_term_has(tty->term, TTYC_INDN)) {
 		tty_cursor(tty, tty->rright, tty->rlower);
-		for (i = 0; i < ctx->num; i++)
+		for (i = 0; i < lines; i++)
 			tty_putc(tty, '\n');
 	} else
-		tty_putcode1(tty, TTYC_INDN, ctx->num);
+		tty_putcode1(tty, TTYC_INDN, lines);
 }
 
 void
@@ -1307,6 +1403,7 @@ tty_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 	tty_margin_off(tty);
 
 	if (tty_pane_full_width(tty, ctx) &&
+	    ctx->yoff + wp->sy >= tty->sy - 1 &&
 	    status_at_line(tty->client) <= 0 &&
 	    tty_term_has(tty->term, TTYC_ED)) {
 		tty_cursor_pane(tty, ctx, 0, 0);
@@ -1584,7 +1681,8 @@ static void
 tty_cursor_pane_unless_wrap(struct tty *tty, const struct tty_ctx *ctx,
     u_int cx, u_int cy)
 {
-	if (!tty_pane_full_width(tty, ctx) ||
+	if (!ctx->wrapped ||
+	    !tty_pane_full_width(tty, ctx) ||
 	    (tty_term_flags(tty) & TERM_EARLYWRAP) ||
 	    ctx->xoff + cx != 0 ||
 	    ctx->yoff + cy != tty->cy + 1 ||

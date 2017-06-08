@@ -84,7 +84,7 @@ key_bindings_unref_table(struct key_table *table)
 }
 
 void
-key_bindings_add(const char *name, key_code key, int can_repeat,
+key_bindings_add(const char *name, key_code key, int repeat,
     struct cmd_list *cmdlist)
 {
 	struct key_table	*table;
@@ -92,7 +92,7 @@ key_bindings_add(const char *name, key_code key, int can_repeat,
 
 	table = key_bindings_get_table(name, 1);
 
-	bd_find.key = key;
+	bd_find.key = (key & ~KEYC_XTERM);
 	bd = RB_FIND(key_bindings, &table->key_bindings, &bd_find);
 	if (bd != NULL) {
 		RB_REMOVE(key_bindings, &table->key_bindings, bd);
@@ -100,11 +100,12 @@ key_bindings_add(const char *name, key_code key, int can_repeat,
 		free(bd);
 	}
 
-	bd = xmalloc(sizeof *bd);
+	bd = xcalloc(1, sizeof *bd);
 	bd->key = key;
 	RB_INSERT(key_bindings, &table->key_bindings, bd);
 
-	bd->can_repeat = can_repeat;
+	if (repeat)
+		bd->flags |= KEY_BINDING_REPEAT;
 	bd->cmdlist = cmdlist;
 }
 
@@ -118,7 +119,7 @@ key_bindings_remove(const char *name, key_code key)
 	if (table == NULL)
 		return;
 
-	bd_find.key = key;
+	bd_find.key = (key & ~KEYC_XTERM);
 	bd = RB_FIND(key_bindings, &table->key_bindings, &bd_find);
 	if (bd == NULL)
 		return;
@@ -415,7 +416,8 @@ key_bindings_dispatch(struct key_binding *bd, struct client *c,
 		cmdq_append(c, cmdq_get_callback(key_bindings_read_only, NULL));
 	else {
 		item = cmdq_get_command(bd->cmdlist, fs, m, 0);
-		item->repeat = bd->can_repeat;
+		if (bd->flags & KEY_BINDING_REPEAT)
+			item->shared->flags |= CMDQ_SHARED_REPEAT;
 		cmdq_append(c, item);
 	}
 }

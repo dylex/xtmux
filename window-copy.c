@@ -105,6 +105,8 @@ static void	window_copy_move_mouse(struct mouse_event *);
 static void	window_copy_drag_update(struct client *, struct mouse_event *);
 
 const struct window_mode window_copy_mode = {
+	.name = "copy-mode",
+
 	.init = window_copy_init,
 	.free = window_copy_free,
 	.resize = window_copy_resize,
@@ -1643,7 +1645,7 @@ window_copy_copy_pipe(struct window_pane *wp, struct session *s,
 		return;
 	expanded = format_single(NULL, arg, NULL, s, NULL, wp);
 
-	job = job_run(expanded, s, NULL, NULL, NULL, NULL);
+	job = job_run(expanded, s, NULL, NULL, NULL, NULL, NULL);
 	bufferevent_write(job->event, buf, len);
 
 	free(expanded);
@@ -2481,4 +2483,17 @@ window_copy_drag_update(__unused struct client *c, struct mouse_event *m)
 	window_copy_update_cursor(wp, x, y);
 	if (window_copy_update_selection(wp, 1))
 		window_copy_redraw_selection(wp, old_cy);
+}
+
+const char *
+window_copy_search_string(struct window_pane *wp)
+{
+	struct window_copy_mode_data	*data;
+
+	if (wp->mode != &window_copy_mode)
+		return ("");
+	data = wp->modedata;
+	if (data->searchtype == WINDOW_COPY_OFF || data->searchstr == NULL)
+		return ("");
+	return (data->searchstr);
 }

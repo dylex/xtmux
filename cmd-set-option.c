@@ -45,7 +45,7 @@ const struct cmd_entry cmd_set_option_entry = {
 	.args = { "acgoqst:uw", 1, 2 },
 	.usage = "[-acgosquw] [-t target-window] option [value]",
 
-	.tflag = CMD_WINDOW_CANFAIL,
+	.target = { 't', CMD_FIND_WINDOW, CMD_FIND_CANFAIL },
 
 	.flags = CMD_AFTERHOOK,
 	.exec = cmd_set_option_exec
@@ -58,7 +58,7 @@ const struct cmd_entry cmd_set_window_option_entry = {
 	.args = { "agoqt:u", 1, 2 },
 	.usage = "[-agoqu] " CMD_TARGET_WINDOW_USAGE " option [value]",
 
-	.tflag = CMD_WINDOW_CANFAIL,
+	.target = { 't', CMD_FIND_WINDOW, CMD_FIND_CANFAIL },
 
 	.flags = CMD_AFTERHOOK,
 	.exec = cmd_set_option_exec
@@ -69,7 +69,7 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 {
 	struct args			*args = self->args;
 	int				 append = args_has(args, 'a');
-	struct cmd_find_state		*fs = &item->state.tflag;
+	struct cmd_find_state		*fs = &item->target;
 	struct session			*s = fs->s;
 	struct winlink			*wl = fs->wl;
 	struct window			*w;
@@ -77,7 +77,8 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 	enum options_table_scope	 scope;
 	struct options			*oo;
 	struct options_entry		*parent, *o;
-	const char			*name, *value, *target;
+	char				*name;
+	const char			*value, *target;
 	int				 window, idx, already, error, ambiguous;
 	char				*cause;
 
@@ -123,7 +124,7 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 			return (CMD_RETURN_NORMAL);
 		cmdq_error(item, "%s", cause);
 		free(cause);
-		return (CMD_RETURN_ERROR);
+		goto fail;
 	}
 
 	/* Which table should this option go into? */
@@ -138,7 +139,7 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 				cmdq_error(item, "no such session: %s", target);
 			else
 				cmdq_error(item, "no current session");
-			return (CMD_RETURN_ERROR);
+			goto fail;
 		} else
 			oo = s->options;
 	} else if (scope == OPTIONS_TABLE_WINDOW) {
@@ -150,7 +151,7 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 				cmdq_error(item, "no such window: %s", target);
 			else
 				cmdq_error(item, "no current window");
-			return (CMD_RETURN_ERROR);
+			goto fail;
 		} else
 			oo = wl->window->options;
 	} else if (scope == OPTIONS_TABLE_CLIENT) {
@@ -170,7 +171,7 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 	if (idx != -1) {
 		if (*name == '@' || options_array_size(parent, NULL) == -1) {
 			cmdq_error(item, "not an array: %s", args->argv[0]);
-			return (CMD_RETURN_ERROR);
+			goto fail;
 		}
 	}
 
@@ -188,14 +189,14 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 			if (args_has(args, 'q'))
 				return (CMD_RETURN_NORMAL);
 			cmdq_error(item, "already set: %s", args->argv[0]);
-			return (CMD_RETURN_ERROR);
+			goto fail;
 		}
 	}
 
 	/* Change the option. */
 	if (args_has(args, 'u')) {
 		if (o == NULL)
-			return (CMD_RETURN_NORMAL);
+			goto fail;
 		if (idx == -1) {
 			if (oo == global_options ||
 			    oo == global_s_options ||
@@ -208,17 +209,17 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 	} else if (*name == '@') {
 		if (value == NULL) {
 			cmdq_error(item, "empty value");
-			return (CMD_RETURN_ERROR);
+			goto fail;
 		}
 		options_set_string(oo, name, append, "%s", value);
 	} else if (idx == -1 && options_array_size(parent, NULL) == -1) {
 		error = cmd_set_option_set(self, item, oo, parent, value);
 		if (error != 0)
-			return (CMD_RETURN_ERROR);
+			goto fail;
 	} else {
 		if (value == NULL) {
 			cmdq_error(item, "empty value");
-			return (CMD_RETURN_ERROR);
+			goto fail;
 		}
 		if (o == NULL)
 			o = options_empty(oo, options_table_entry(parent));
@@ -228,7 +229,7 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 			options_array_assign(o, value);
 		} else if (options_array_set(o, idx, value, append) != 0) {
 			cmdq_error(item, "invalid index: %s", args->argv[0]);
-			return (CMD_RETURN_ERROR);
+			goto fail;
 		}
 	}
 
@@ -277,7 +278,12 @@ cmd_set_option_exec(struct cmd *self, struct cmdq_item *item)
 		}
 	}
 
+	free(name);
 	return (CMD_RETURN_NORMAL);
+
+fail:
+	free(name);
+	return (CMD_RETURN_ERROR);
 }
 
 static int

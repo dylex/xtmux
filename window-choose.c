@@ -57,6 +57,8 @@ enum window_choose_input_type {
 };
 
 const struct window_mode window_choose_mode = {
+	.name = "choose-mode",
+
 	.init = window_choose_init,
 	.free = window_choose_free,
 	.resize = window_choose_resize,
@@ -202,7 +204,7 @@ window_choose_data_create(int type, struct client *c, struct session *s)
 	wcd = xmalloc(sizeof *wcd);
 	wcd->type = type;
 
-	wcd->ft = format_create(NULL, FORMAT_NONE, 0);
+	wcd->ft = format_create(c, NULL, FORMAT_NONE, 0);
 	wcd->ft_template = NULL;
 
 	wcd->command = NULL;
@@ -225,10 +227,10 @@ static void
 window_choose_data_free(struct window_choose_data *wcd)
 {
 	server_client_unref(wcd->start_client);
-	session_unref(wcd->start_session);
+	session_remove_ref(wcd->start_session, __func__);
 
 	if (wcd->tree_session != NULL)
-		session_unref(wcd->tree_session);
+		session_remove_ref(wcd->tree_session, __func__);
 
 	free(wcd->ft_template);
 	format_free(wcd->ft);

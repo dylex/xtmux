@@ -1308,7 +1308,8 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_ECH:
-		screen_write_clearcharacter(sctx, input_get(ictx, 0, 1, 1));
+		screen_write_clearcharacter(sctx, input_get(ictx, 0, 1, 1),
+		    ictx->cell.cell.bg);
 		break;
 	case INPUT_CSI_DCH:
 		screen_write_deletecharacter(sctx, input_get(ictx, 0, 1, 1),
@@ -2011,7 +2012,7 @@ input_utf8_close(struct input_ctx *ictx)
 	    (int)ud->size, ud->data, ud->width);
 
 	utf8_copy(&ictx->cell.cell.data, ud);
-	screen_write_cell(&ictx->ctx, &ictx->cell.cell);
+	screen_write_collect_add(&ictx->ctx, &ictx->cell.cell);
 
 	return (0);
 }

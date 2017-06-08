@@ -9,8 +9,6 @@ EXTRA_DIST = \
 	CHANGES FAQ README TODO COPYING example_tmux.conf compat/*.[ch] \
 	osdep-*.c mdoc2man.awk tmux.1 \
 	README.xtmux xtmux.c
-dist-hook:
-	grep "^#enable_debug=" configure
 
 # Preprocessor flags.
 AM_CPPFLAGS += @XOPEN_DEFINES@ -DTMUX_CONF="\"$(sysconfdir)/tmux.conf\""
@@ -154,7 +152,6 @@ dist_tmux_SOURCES = \
 	options.c \
 	paste.c \
 	proc.c \
-	pty.c \
 	resize.c \
 	screen-redraw.c \
 	screen-write.c \

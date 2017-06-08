@@ -519,9 +519,9 @@ status_replace(struct client *c, struct winlink *wl, const char *fmt, time_t t)
 	else
 		tag = FORMAT_NONE;
 	if (c->flags & CLIENT_STATUSFORCE)
-		ft = format_create(NULL, tag, FORMAT_STATUS|FORMAT_FORCE);
+		ft = format_create(c, NULL, tag, FORMAT_STATUS|FORMAT_FORCE);
 	else
-		ft = format_create(NULL, tag, FORMAT_STATUS);
+		ft = format_create(c, NULL, tag, FORMAT_STATUS);
 	format_defaults(ft, c, NULL, wl, NULL);
 
 	expanded = format_expand_time(ft, fmt, t);
@@ -661,9 +661,9 @@ status_prompt_set(struct client *c, const char *msg, const char *input,
 {
 	struct format_tree	*ft;
 	time_t			 t;
-	char			*tmp;
+	char			*tmp, *cp;
 
-	ft = format_create(NULL, FORMAT_NONE, 0);
+	ft = format_create(c, NULL, FORMAT_NONE, 0);
 	format_defaults(ft, c, NULL, NULL, NULL);
 
 	t = time(NULL);
@@ -689,6 +689,12 @@ status_prompt_set(struct client *c, const char *msg, const char *input,
 	if (~flags & PROMPT_INCREMENTAL)
 		c->tty.flags |= (TTY_NOCURSOR|TTY_FREEZE);
 	c->flags |= CLIENT_STATUS;
+
+	if ((flags & PROMPT_INCREMENTAL) && *tmp != '\0') {
+		xasprintf(&cp, "=%s", tmp);
+		c->prompt_callbackfn(c->prompt_data, cp, 0);
+		free(cp);
+	}
 
 	free(tmp);
 	format_free(ft);
@@ -724,7 +730,7 @@ status_prompt_update(struct client *c, const char *msg, const char *input)
 	time_t			 t;
 	char			*tmp;
 
-	ft = format_create(NULL, FORMAT_NONE, 0);
+	ft = format_create(c, NULL, FORMAT_NONE, 0);
 	format_defaults(ft, c, NULL, NULL, NULL);
 
 	t = time(NULL);
@@ -1497,6 +1503,7 @@ status_prompt_complete(struct session *session, const char *s)
 		out = status_prompt_complete_prefix(list, size);
 	if (out != NULL) {
 		xasprintf(&tmp, "-%c%s%s", copy[1], out, colon);
+		free(out);
 		out = tmp;
 		goto found;
 	}
