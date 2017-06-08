@@ -1263,6 +1263,10 @@ server_client_check_redraw(struct client *c)
 	 * end up back here.
 	 */
 	needed = 0;
+#ifdef XTMUX
+	if (tty->xtmux);
+	else
+#endif
 	if (c->flags & CLIENT_REDRAW)
 		needed = 1;
 	else {
@@ -1273,7 +1277,8 @@ server_client_check_redraw(struct client *c)
 			}
 		}
 	}
-	if (needed) {
+	if (needed
+			) {
 		left = EVBUFFER_LENGTH(tty->out);
 		if (left != 0) {
 			log_debug("%s: redraw deferred (%zu left)", c->name, left);
