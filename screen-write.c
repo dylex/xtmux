@@ -41,6 +41,7 @@ static const struct grid_cell screen_write_pad_cell = {
 
 struct screen_write_collect_item {
 	u_int			 x;
+	int			 wrapped;
 
 	u_int			 used;
 	char			 data[256];
@@ -386,6 +387,8 @@ screen_write_initctx(struct screen_write_ctx *ctx, struct tty_ctx *ttyctx)
 {
 	struct screen	*s = ctx->s;
 
+	memset(ttyctx, 0, sizeof *ttyctx);
+
 	ttyctx->wp = ctx->wp;
 
 	ttyctx->ocx = s->cx;
@@ -605,7 +608,7 @@ screen_write_deletecharacter(struct screen_write_ctx *ctx, u_int nx, u_int bg)
 
 /* Clear nx characters. */
 void
-screen_write_clearcharacter(struct screen_write_ctx *ctx, u_int nx)
+screen_write_clearcharacter(struct screen_write_ctx *ctx, u_int nx, u_int bg)
 {
 	struct screen	*s = ctx->s;
 	struct tty_ctx	 ttyctx;
@@ -622,8 +625,9 @@ screen_write_clearcharacter(struct screen_write_ctx *ctx, u_int nx)
 		return;
 
 	screen_write_initctx(ctx, &ttyctx);
+	ttyctx.bg = bg;
 
-	grid_view_clear(s->grid, s->cx, s->cy, nx, 1, 8);
+	grid_view_clear(s->grid, s->cx, s->cy, nx, 1, bg);
 
 	screen_write_collect_flush(ctx, 0);
 	ttyctx.num = nx;
@@ -942,9 +946,9 @@ screen_write_clearstartofscreen(struct screen_write_ctx *ctx, u_int bg)
 	if (s->cy > 0)
 		grid_view_clear(s->grid, 0, 0, sx, s->cy, bg);
 	if (s->cx > sx - 1)
-		grid_view_clear(s->grid, 0, s->cy, sx, 1, 8);
+		grid_view_clear(s->grid, 0, s->cy, sx, 1, bg);
 	else
-		grid_view_clear(s->grid, 0, s->cy, s->cx + 1, 1, 8);
+		grid_view_clear(s->grid, 0, s->cy, s->cx + 1, 1, bg);
 
 	screen_write_collect_clear(ctx, 0, s->cy);
 	screen_write_collect_flush(ctx, 0);
@@ -1054,6 +1058,7 @@ screen_write_collect_flush(struct screen_write_ctx *ctx, int scroll_only)
 			screen_write_cursormove(ctx, ci->x, y);
 			screen_write_initctx(ctx, &ttyctx);
 			ttyctx.cell = &ci->gc;
+			ttyctx.wrapped = ci->wrapped;
 			ttyctx.ptr = ci->data;
 			ttyctx.num = ci->used;
 			tty_write(tty_cmd_cells, &ttyctx);
@@ -1113,7 +1118,7 @@ screen_write_collect_add(struct screen_write_ctx *ctx,
 	 */
 
 	collect = 1;
-	if (gc->data.width != 1)
+	if (gc->data.width != 1 || gc->data.size != 1)
 		collect = 0;
 	else if (gc->attr & GRID_ATTR_CHARSET)
 		collect = 0;
@@ -1133,13 +1138,15 @@ screen_write_collect_add(struct screen_write_ctx *ctx,
 
 	if (s->cx > sx - 1 || ctx->item->used > sx - 1 - s->cx)
 		screen_write_collect_end(ctx);
+	ci = ctx->item; /* may have changed */
+
 	if (s->cx > sx - 1) {
 		log_debug("%s: wrapped at %u,%u", __func__, s->cx, s->cy);
+		ci->wrapped = 1;
 		screen_write_linefeed(ctx, 1);
 		s->cx = 0;
 	}
 
-	ci = ctx->item; /* may have changed */
 	if (ci->used == 0)
 		memcpy(&ci->gc, gc, sizeof ci->gc);
 	ci->data[ci->used++] = gc->data.data[0];
@@ -1312,12 +1319,12 @@ screen_write_combine(struct screen_write_ctx *ctx, const struct utf8_data *ud,
 		fatalx("UTF-8 data empty");
 
 	/* Retrieve the previous cell. */
-	for (n = 1; n < s->cx; n++) {
+	for (n = 1; n <= s->cx; n++) {
 		grid_view_get_cell(gd, s->cx - n, s->cy, &gc);
 		if (~gc.flags & GRID_FLAG_PADDING)
 			break;
 	}
-	if (n == s->cx)
+	if (n > s->cx)
 		return (NULL);
 	*xx = s->cx - n;
 

@@ -1,6 +1,6 @@
 # configure.ac
 
-AC_INIT(tmux, 2.4)
+AC_INIT(tmux, 2.5)
 AC_PREREQ([2.60])
 
 AC_CONFIG_AUX_DIR(etc)
@@ -35,6 +35,7 @@ AC_USE_SYSTEM_EXTENSIONS
 test "$sysconfdir" = '${prefix}/etc' && sysconfdir=/etc
 
 # Is this --enable-debug?
+test "x$VERSION" = xmaster && enable_debug=yes
 AC_ARG_ENABLE(
 	debug,
 	AC_HELP_STRING(--enable-debug, enable debug build flags),
@@ -453,7 +454,13 @@ else
 	AC_LIBOBJ(getopt)
 fi
 
-# Look for forkpty in libutil. compat/forkpty-*.c is linked if not found.
+# Look for fdforkpty and forkpty in libutil.
+AC_SEARCH_LIBS(fdforkpty, util, found_fdforkpty=yes, found_fdforkpty=no)
+if test "x$found_fdforkpty" = xyes; then
+	AC_DEFINE(HAVE_FDFORKPTY)
+else
+	AC_LIBOBJ(fdforkpty)
+fi
 AC_SEARCH_LIBS(forkpty, util, found_forkpty=yes, found_forkpty=no)
 if test "x$found_forkpty" = xyes; then
 	AC_DEFINE(HAVE_FORKPTY)
