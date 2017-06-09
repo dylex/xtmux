@@ -106,18 +106,23 @@ struct paste_ctx {
 	char *sep;
 };
 
-#define PUTC_BUF_LEN 128
+#define PUTC_BUF_LEN 256
 
-struct putc {
-	u_int	x, y;
-	u_short n;
-	wchar	s[PUTC_BUF_LEN];
-	struct grid_cell cell;
+enum buf_type {
+	BUF_NONE = 0,
+	BUF_PUTC,
+	BUF_SCROLL
 };
 
-struct scroll {
-	u_int	x, y, w, h; /* the full area being scrolled (h-n lines are copied) */
-	int	n; /* number of lines to scroll, positive for down */
+struct puts_buf {
+	u_int	x, y;
+	u_int   w; /* number of characters, width of scroll region, or 0 for empty */
+	u_int   h; /* height of scroll region or 0 for putc */
+	union {
+		wchar	s[PUTC_BUF_LEN];
+		int	n; /* number of lines to scroll, positive for down (h-n lines are copied) */
+	};
+	struct grid_cell cell;
 };
 
 struct xtmux {
@@ -148,8 +153,7 @@ struct xtmux {
 	unsigned	cd : 1; /* 1 if cursor is drawn */
 	u_int		cx, cy; /* last drawn cursor location */
 
-	struct putc	putc_buf;
-	struct scroll   scroll_buf;
+	struct puts_buf	puts_buf;
 
 	u_short		copy_active; /* outstanding XCopyArea; should be <= 1 */
 
@@ -610,7 +614,7 @@ xt_class_hints(struct tty *tty, XClassHint *ch)
 	struct options *o = tty->client->options;
 	memset(ch, 0, sizeof(*ch));
 
-	ch->res_name = options_get_string(o, "xtmux-name");
+	ch->res_name = (char *)options_get_string(o, "xtmux-name");
 	ch->res_class = (char *)"Xtmux";
 }
 
@@ -983,18 +987,18 @@ xtmux_reset(struct tty *tty)
 static inline int
 xt_redraw_pending(struct xtmux *x, u_int cx, u_int cy)
 {
-	struct scroll *s = &x->scroll_buf;
+	struct puts_buf *b = &x->puts_buf;
 
-	return s->n && INSIDE(cx, cy, s->x, s->y, s->w, s->h) &&
-		(s->n < 0 ? (int)cy >= (int)(s->y+s->h)+s->n : cy < s->y+s->n);
+	return INSIDE(cx, cy, b->x, b->y, b->w, b->h) &&
+		(b->n < 0 ? (int)cy >= (int)(b->y+b->h)+b->n : cy < b->y+b->n);
 }
 
 static inline void
 xt_flush(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 {
-	struct putc *b = &x->putc_buf;
+	struct puts_buf *b = &x->puts_buf;
 
-	if (b->n && INSIDE1(b->y, py, h) && OVERLAPS1(b->x, b->n, px, w))
+	if (b->w && INSIDE1(b->y, py, h) && OVERLAPS1(b->x, b->w, px, w))
 		xt_putc_flush(x);
 }
 
@@ -1002,17 +1006,16 @@ xt_flush(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 static int
 xt_touch(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 {
-	struct scroll *s = &x->scroll_buf;
+	struct puts_buf *b = &x->puts_buf;
 
-	if (s->n && OVERLAPS(px, py, w, h, s->x, s->y, s->w, s->h))
-	{
-		if (s->n < 0 ? (int)py < (int)(s->y+s->h)+s->n : py+h > s->y+s->n)
+	if (b->w && OVERLAPS(px, py, w, h, b->x, b->y, b->w, b->h || 1)) {
+		if (!b->h)
+			xt_putc_flush(x);
+		else if (b->n < 0 ? (int)py < (int)(b->y+b->h)+b->n : py+h > b->y+b->n)
 			xt_scroll_flush(x); /* includes copy region */
-		else if (WITHIN(px, py, w, h, s->x, s->y, s->w, s->h))
+		else if (WITHIN(px, py, w, h, b->x, b->y, b->w, b->h))
 			return 0; /* within invalidated region */
 	}
-
-	xt_flush(x, px, py, w, h);
 	return 1;
 }
 
@@ -1020,14 +1023,11 @@ xt_touch(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
 static int
 xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h, int c)
 {
-	struct putc *b = &x->putc_buf;
-	struct scroll *s = &x->scroll_buf;
+	struct puts_buf *b = &x->puts_buf;
 
-	if (b->n && WITHIN(b->x, b->y, b->n, 1, px, py, w, h))
-		b->n = 0;
-	if (s->n && WITHIN(s->x, s->y, s->w, s->h, px, py, w, h))
-		s->n = 0;
-	if (!xt_touch(x, px, py, w, h))
+	if (WITHIN(b->x, b->y, b->w, b->h || 1, px, py, w, h))
+		b->w = 0; /* clear now irrelevant buffer */
+	else if (!xt_touch(x, px, py, w, h))
 		return 0;
 	if (!INSIDE(x->cx, x->cy, px, py, w, h))
 		return 1;
@@ -1050,8 +1050,9 @@ xt_clear(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 static void
 xt_redraw(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
 {
-	if (xt_clear(x, cx, cy, w, h))
-		xtmux_redraw(x->client, cx, cy, cx+w, cy+h);
+	log_debug("xt_redraw: %d,%d %dx%d", cx, cy, w, h);
+	XClearArea(x->display, x->window, C2X(cx), C2Y(cy), C2W(w), C2H(h), False);
+	xtmux_redraw(x->client, cx, cy, cx+w, cy+h);
 }
 
 static inline int
@@ -1140,30 +1141,33 @@ xt_do_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_i
 static int
 xt_scroll_flush(struct xtmux *x)
 {
-	struct scroll *s = &x->scroll_buf;
-	int n = s->n;
+	struct puts_buf *b = &x->puts_buf;
+	u_int w = b->w;
+	u_int n;
 
-	if (!n)
+	if (!w || !b->h)
 		return 0;
 
-	s->n = 0;
-	if (n < 0)
+	log_debug("xt_scroll_flush: %d,%d %dx%d %d", b->x, b->y, b->w, b->h, b->n);
+	b->w = 0;
+	if (b->n < 0)
 	{	/* up */
-		n = -n;
-		if (s->h > (u_int)n)
-			xt_do_copy(x, s->x, s->y+n, s->x, s->y, s->w, s->h-n);
-		else
-			n = s->h;
-		xt_redraw(x, s->x, s->y+s->h-n, s->w, n);
+		n = -b->n;
+		if (b->h > n) {
+			xt_do_copy(x, b->x, b->y+n, b->x, b->y, w, b->h-n);
+			b->y += b->h-n;
+			b->h = n;
+		}
 	}
 	else
 	{ 	/* down */
-		if (s->h > (u_int)n)
-			xt_do_copy(x, s->x, s->y, s->x, s->y+n, s->w, s->h-n);
-		else
-			n = s->h;
-		xt_redraw(x, s->x, s->y, s->w, n);
+		n = b->n;
+		if (b->h > n) {
+			xt_do_copy(x, b->x, b->y, b->x, b->y+n, w, b->h-n);
+			b->h = n;
+		}
 	}
+	xt_redraw(x, b->x, b->y, w, b->h);
 
 	return 1;
 }
@@ -1171,20 +1175,23 @@ xt_scroll_flush(struct xtmux *x)
 static void
 xt_scroll(struct xtmux *x, u_int sx, u_int sy, u_int w, u_int h, int n)
 {
-	struct scroll *s = &x->scroll_buf;
+	struct puts_buf *b = &x->puts_buf;
 
-	log_debug("xt_scroll %u,%u %ux%u %d", sx, sy, w, h, n);
+	log_debug("xt_scroll %u,%u %ux%u %d (%d)", sx, sy, w, h, n, b->n);
 
-	if (s->n && (s->x != sx || s->y != sy || s->w != w || s->h != h || (s->n ^ n) < 0))
+	/* TODO: could optimize obviated writes */
+	xt_putc_flush(x);
+
+	if (!(b->h && b->x == sx && b->y == sy && b->w == w && b->h == h && (b->n ^ n) >= 0)) {
 		xt_scroll_flush(x);
-
-	xt_flush(x, sx, sy, w, h);
-
-	s->x = sx;
-	s->y = sy;
-	s->w = w;
-	s->h = h;
-	s->n += n;
+		b->x = sx;
+		b->y = sy;
+		b->w = w;
+		b->h = h;
+		b->n = 0;
+	}
+	b->n += n;
+	// xt_scroll_flush(x);
 }
 
 static void
@@ -1427,49 +1434,50 @@ xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const wchar *c, size_t n, con
 static void
 xt_putc_flush(struct xtmux *x)
 {
-	struct putc *b = &x->putc_buf;
-	u_int n = b->n;
+	struct puts_buf *b = &x->puts_buf;
+	u_int w = b->w;
 
-	if (!n)
+	if (!w || b->h)
 		return;
 
-	b->n = 0;
-	xt_draw_chars(x, b->x, b->y, b->s, n, &b->cell, 0);
+	log_debug("xt_putc_flush");
+	b->w = 0;
+	xt_draw_chars(x, b->x, b->y, b->s, w, &b->cell, 0);
 }
 
 static void
 xtmux_putwc(struct tty *tty, u_int c)
 {
 	struct xtmux *x = tty->xtmux;
-	struct putc *b = &x->putc_buf;
+	struct puts_buf *b = &x->puts_buf;
 
 	XENTRY();
 
 	if (tty->cx >= tty->sx)
 	{
-		xt_putc_flush(x);
+		// xt_putc_flush(x);
 		tty->cx = 0;
 		if (tty->cy != tty->rlower)
 			tty->cy ++;
 	}
 
-	if (xt_redraw_pending(x, tty->cx, tty->cy))
+	if (xt_redraw_pending(x, tty->cx, tty->cy)) {
+		log_debug("xt_putc: %d,%d %c skipped", tty->cx, tty->cy, c);
 		XRETURN();
+	}
+	log_debug("xt_putc: %d,%d %c", tty->cx, tty->cy, c);
 
-	if (b->n &&
-			(b->n == PUTC_BUF_LEN ||
-			 b->x+b->n != tty->cx ||
-			 b->y != tty->cy ||
-			 grid_attr_cmp(&b->cell, &tty->cell)))
+	xt_scroll_flush(x);
+
+	if (!(b->w && b->w < PUTC_BUF_LEN && b->x+b->w == tty->cx && b->y == tty->cy && !grid_attr_cmp(&b->cell, &tty->cell))) {
 		xt_putc_flush(x);
-
-	if (!b->n)
-	{
 		b->x = tty->cx;
 		b->y = tty->cy;
+		b->w = 0;
+		b->h = 0;
 		memcpy(&b->cell, &tty->cell, sizeof tty->cell);
 	}
-	b->s[b->n++] = c;
+	b->s[b->w++] = c;
 
 	XUPDATE();
 	XRETURN();
@@ -1948,6 +1956,7 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 	u_int sx = right;
 	u_int px, bx;
 
+	log_debug("xt_draw_line: %d,%d %d", left, py, right-left);
 	if (sx > gl->cellsize)
 		sx = gl->cellsize;
 	for (px = left, bx = left; px < sx; px ++)
