@@ -1844,6 +1844,11 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc,
 	struct grid_cell	*tc = &tty->cell, gc2;
 	int			 changed;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return xtmux_attributes(tty, gc);
+#endif
+
 	/* Ignore cell if it is the same as the last one. */
 	if (wp != NULL &&
 	    (int)wp->id == tty->last_wp &&
@@ -1854,11 +1859,6 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc,
 		return;
 	tty->last_wp = (wp != NULL ? (int)wp->id : -1);
 	memcpy(&tty->last_cell, gc, sizeof tty->last_cell);
-
-#ifdef XTMUX
-	if (tty->xtmux)
-		return xtmux_attributes(tty, gc);
-#endif
 
 	/* Copy cell and update default colours. */
 	memcpy(&gc2, gc, sizeof gc2);

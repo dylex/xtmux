@@ -1901,8 +1901,10 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 			cl[px] = gce->data.data;
 		}
 
-		if (screen_check_selection(s, px, py))
-			gc = s->sel.cell;
+		if (gc.flags & GRID_FLAG_SELECTED) {
+			struct grid_cell sel = gc;
+			screen_select_cell(s, &gc, &sel);
+		}
 
 		if (px == bx || grid_attr_cmp(&gc, &ga))
 		{
