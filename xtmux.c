@@ -1868,12 +1868,13 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 	struct grid_line *gl = &s->grid->linedata[s->grid->hsize+py];
 	struct grid_cell ga = grid_default_cell;
 	wchar cl[right-left];
+	u_int bx = left;
 	u_int sx = right;
-	u_int px, bx;
+	u_int px;
 
 	if (sx > gl->cellsize)
 		sx = gl->cellsize;
-	for (px = left, bx = left; px < sx; px ++)
+	for (px = bx; px < sx; px ++)
 	{
 		struct grid_cell_entry *gce = &gl->celldata[px];
 		struct grid_cell gc;
@@ -1881,11 +1882,11 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 		if (gce->flags & GRID_FLAG_EXTENDED) {
 			if (gce->offset >= gl->extdsize) {
 				gc = grid_default_cell;
-				cl[px] = ' ';
+				cl[px-left] = ' ';
 			}
 			else {
 				gc = gl->extddata[gce->offset];
-				cl[px] = grid_char(&gc);
+				cl[px-left] = grid_char(&gc);
 			}
 		} else {
 			gc.flags = gce->flags;
@@ -1898,7 +1899,7 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 			if (gc.flags & GRID_FLAG_BG256)
 				gc.bg |= COLOUR_FLAG_256;
 			gc.flags &= ~GRID_FLAG_BG256;
-			cl[px] = gce->data.data;
+			cl[px-left] = gce->data.data;
 		}
 
 		if (gc.flags & GRID_FLAG_SELECTED) {
@@ -1908,12 +1909,12 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 
 		if (px == bx || grid_attr_cmp(&gc, &ga))
 		{
-			xt_draw_cells(x, ox+bx, oy+py, &cl[bx], px-bx, &ga);
+			xt_draw_cells(x, ox+bx, oy+py, &cl[bx-left], px-bx, &ga);
 			bx = px;
 			ga = gc;
 		}
 	}
-	xt_draw_cells(x, ox+bx, oy+py, &cl[bx], px-bx, &ga);
+	xt_draw_cells(x, ox+bx, oy+py, &cl[bx-left], px-bx, &ga);
 	/* XXX do we need to clear from px to right? */
 }
 
