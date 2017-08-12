@@ -1035,7 +1035,7 @@ server_client_resize_event(__unused int fd, __unused short events, void *data)
 
 	evtimer_del(&wp->resize_timer);
 
-	if (!(wp->flags & PANE_RESIZE))
+	if (!(wp->flags & PANE_RESIZE) || wp->fd < 0)
 		return;
 
 	memset(&ws, 0, sizeof ws);
