@@ -6,7 +6,7 @@ CLEANFILES = tmux.1.mdoc tmux.1.man
 
 # Distribution tarball options.
 EXTRA_DIST = \
-	CHANGES FAQ README TODO COPYING example_tmux.conf compat/*.[ch] \
+	CHANGES README COPYING example_tmux.conf compat/*.[ch] \
 	osdep-*.c mdoc2man.awk tmux.1 \
 	README.xtmux xtmux.c
 
@@ -67,8 +67,6 @@ dist_tmux_SOURCES = \
 	cmd-bind-key.c \
 	cmd-break-pane.c \
 	cmd-capture-pane.c \
-	cmd-choose-buffer.c \
-	cmd-choose-client.c \
 	cmd-choose-tree.c \
 	cmd-command-prompt.c \
 	cmd-confirm-before.c \
@@ -146,6 +144,7 @@ dist_tmux_SOURCES = \
 	layout-set.c \
 	layout.c \
 	log.c \
+	mode-tree.c \
 	names.c \
 	notify.c \
 	options-table.c \
@@ -160,7 +159,6 @@ dist_tmux_SOURCES = \
 	server-fn.c \
 	server.c \
 	session.c \
-	signal.c \
 	status.c \
 	style.c \
 	tmux.c \
@@ -170,9 +168,11 @@ dist_tmux_SOURCES = \
 	tty-term.c \
 	tty.c \
 	utf8.c \
-	window-choose.c \
+	window-buffer.c \
+	window-client.c \
 	window-clock.c \
 	window-copy.c \
+	window-tree.c \
 	window.c \
 	xmalloc.c \
 	xmalloc.h \

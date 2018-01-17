@@ -114,7 +114,7 @@ options_free(struct options *oo)
 {
 	struct options_entry	*o, *tmp;
 
-	RB_FOREACH_SAFE (o, options_tree, &oo->tree, tmp)
+	RB_FOREACH_SAFE(o, options_tree, &oo->tree, tmp)
 		options_remove(o);
 	free(oo);
 }
@@ -477,7 +477,6 @@ options_match_get(struct options *oo, const char *s, int *idx, int only,
 	free(name);
 	return (o);
 }
-
 
 const char *
 options_get_string(struct options *oo, const char *name)
