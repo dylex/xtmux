@@ -1,7 +1,6 @@
 - command bits and pieces:
 	* allow multiple targets: fnmatch for -t/-c, for example detach all
 	  clients with -t*
-	* add -c for new-session like new-window
 	* ' and " should be parsed the same (eg "\e" vs '\e') in config
 	  and command prompt
 	* last-pane across sessions
@@ -24,14 +23,6 @@
 	  attached sessions?
 	* comparison operators like < and > (for #{version}?)
 	* %else statement in config file
-
-- choose mode improvements:
-	* choose-pane command (augment choose-tree to do this?)
-	* flag to choose-* for sort order
-	* two choices (first one then second, for swap-pane and join-pane)
-	* choose modes should ditch the key bindings and just have fixed keys, and
-	  be more customized to their purpose (d to delete a buffer for choose-buffer,
-	  a preview of buffer contents, etc)
 
 - improve monitor-*:
 	* straighten out rules for multiple clients
@@ -118,10 +109,22 @@
 	* this doesn't work, need pane reference count probably:
 	  bind -n DoubleClick3Status confirm-before -p "kill-window #I? (y/n)" kill-window
 	* respawn -c flag same as neww etc
+	* marker lines in history (GitHub issue 1042)
+	* tree mode stuff: predefined filters, tag-all key, ...
 
 - hooks
 	* more hooks for various things
-	* finish after hooks for special commands
+	* finish after hooks for special commands. these do not have a hook at
+          the moment:
+		 attach-session detach-client kill-server respawn-window
+		 swap-window break-pane find-window kill-session rotate-window
+		 switch-client choose-tree if-shell kill-window run-shell
+		 wait-for command-prompt join-pane move-window source-file
+		 confirm-before kill-pane respawn-pane swap-pane
+          at the moment AFTERHOOK uses current only if target is not valid,
+          but target is ALWAYS valid - it should use current if no -t flag?
+          then select-* could use AFTERHOOK
 	* multiple hooks with the same name?
 	* finish hooks for notifys
-	* for session_closed, if no sessions at all, perhaps fake up a temporary one
+	* for session_closed, if no sessions at all, perhaps fake up a
+          temporary one

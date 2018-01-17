@@ -30,8 +30,8 @@ const struct cmd_entry cmd_select_pane_entry = {
 	.name = "select-pane",
 	.alias = "selectp",
 
-	.args = { "DdegLlMmP:Rt:U", 0, 0 },
-	.usage = "[-DdegLlMmRU] [-P style] " CMD_TARGET_PANE_USAGE,
+	.args = { "DdegLlMmP:RT:t:U", 0, 0 },
+	.usage = "[-DdegLlMmRU] [-P style] [-T title] " CMD_TARGET_PANE_USAGE,
 
 	.target = { 't', CMD_FIND_PANE, 0 },
 
@@ -77,7 +77,7 @@ cmd_select_pane_exec(struct cmd *self, struct cmdq_item *item)
 			server_unzoom_window(w);
 			window_redraw_active_switch(w, lastwp);
 			if (window_set_active_pane(w, lastwp)) {
-				cmd_find_from_winlink(current, wl);
+				cmd_find_from_winlink(current, wl, 0);
 				server_status_window(w);
 				server_redraw_window_borders(w);
 			}
@@ -147,6 +147,11 @@ cmd_select_pane_exec(struct cmd *self, struct cmdq_item *item)
 		return (CMD_RETURN_NORMAL);
 	}
 
+	if (args_has(self->args, 'T')) {
+	    screen_set_title(&wp->base, args_get(self->args, 'T'));
+	    server_status_window(wp->window);
+	}
+
 	if (wp == w->active)
 		return (CMD_RETURN_NORMAL);
 	server_unzoom_window(wp->window);
@@ -156,7 +161,8 @@ cmd_select_pane_exec(struct cmd *self, struct cmdq_item *item)
 	}
 	window_redraw_active_switch(w, wp);
 	if (window_set_active_pane(w, wp)) {
-		cmd_find_from_winlink(current, wl);
+		cmd_find_from_winlink_pane(current, wl, wp, 0);
+		hooks_insert(s->hooks, item, current, "after-select-pane");
 		server_status_window(w);
 		server_redraw_window_borders(w);
 	}

@@ -68,14 +68,14 @@ cmd_run_shell_print(struct job *job, const char *msg)
 			cmdq_print(cdata->item, "%s", msg);
 			return;
 		}
-		if (cmd_find_from_nothing(&fs) != 0)
+		if (cmd_find_from_nothing(&fs, 0) != 0)
 			return;
 		wp = fs.wp;
 		if (wp == NULL)
 			return;
 	}
 
-	if (window_pane_set_mode(wp, &window_copy_mode) == 0)
+	if (window_pane_set_mode(wp, &window_copy_mode, NULL, NULL) == 0)
 		window_copy_init_for_output(wp);
 	if (wp->mode == &window_copy_mode)
 		window_copy_add(wp, "%s", msg);

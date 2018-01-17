@@ -301,6 +301,13 @@ status_redraw(struct client *c)
 	size_t			 llen, rlen, seplen;
 	int			 larrow, rarrow;
 
+	/* Delete the saved status line, if any. */
+	if (c->old_status != NULL) {
+		screen_free(c->old_status);
+		free(c->old_status);
+		c->old_status = NULL;
+	}
+
 	/* No status line? */
 	if (c->tty.sy == 0 || !options_get_number(s->options, "status"))
 		return (1);
@@ -568,6 +575,12 @@ status_message_set(struct client *c, const char *fmt, ...)
 
 	status_message_clear(c);
 
+	if (c->old_status == NULL) {
+		c->old_status = xmalloc(sizeof *c->old_status);
+		memcpy(c->old_status, &c->status, sizeof *c->old_status);
+		screen_init(&c->status, c->tty.sx, 1, 0);
+	}
+
 	va_start(ap, fmt);
 	xvasprintf(&c->message_string, fmt, ap);
 	va_end(ap);
@@ -656,8 +669,7 @@ status_message_redraw(struct client *c)
 /* Enable status line prompt. */
 void
 status_prompt_set(struct client *c, const char *msg, const char *input,
-    int (*callbackfn)(void *, const char *, int), void (*freefn)(void *),
-    void *data, int flags)
+    prompt_input_cb inputcb, prompt_free_cb freecb, void *data, int flags)
 {
 	struct format_tree	*ft;
 	time_t			 t;
@@ -665,20 +677,31 @@ status_prompt_set(struct client *c, const char *msg, const char *input,
 
 	ft = format_create(c, NULL, FORMAT_NONE, 0);
 	format_defaults(ft, c, NULL, NULL, NULL);
-
 	t = time(NULL);
-	tmp = format_expand_time(ft, input, t);
+
+	if (input == NULL)
+		input = "";
+	if (flags & PROMPT_NOFORMAT)
+		tmp = xstrdup(input);
+	else
+		tmp = format_expand_time(ft, input, t);
 
 	status_message_clear(c);
 	status_prompt_clear(c);
+
+	if (c->old_status == NULL) {
+		c->old_status = xmalloc(sizeof *c->old_status);
+		memcpy(c->old_status, &c->status, sizeof *c->old_status);
+		screen_init(&c->status, c->tty.sx, 1, 0);
+	}
 
 	c->prompt_string = format_expand_time(ft, msg, t);
 
 	c->prompt_buffer = utf8_fromcstr(tmp);
 	c->prompt_index = utf8_strlen(c->prompt_buffer);
 
-	c->prompt_callbackfn = callbackfn;
-	c->prompt_freefn = freefn;
+	c->prompt_inputcb = inputcb;
+	c->prompt_freecb = freecb;
 	c->prompt_data = data;
 
 	c->prompt_hindex = 0;
@@ -692,7 +715,7 @@ status_prompt_set(struct client *c, const char *msg, const char *input,
 
 	if ((flags & PROMPT_INCREMENTAL) && *tmp != '\0') {
 		xasprintf(&cp, "=%s", tmp);
-		c->prompt_callbackfn(c->prompt_data, cp, 0);
+		c->prompt_inputcb(c, c->prompt_data, cp, 0);
 		free(cp);
 	}
 
@@ -707,8 +730,8 @@ status_prompt_clear(struct client *c)
 	if (c->prompt_string == NULL)
 		return;
 
-	if (c->prompt_freefn != NULL && c->prompt_data != NULL)
-		c->prompt_freefn(c->prompt_data);
+	if (c->prompt_freecb != NULL && c->prompt_data != NULL)
+		c->prompt_freecb(c->prompt_data);
 
 	free(c->prompt_string);
 	c->prompt_string = NULL;
@@ -995,7 +1018,7 @@ status_prompt_key(struct client *c, key_code key)
 		if (key >= '0' && key <= '9')
 			goto append_key;
 		s = utf8_tocstr(c->prompt_buffer);
-		c->prompt_callbackfn(c->prompt_data, s, 1);
+		c->prompt_inputcb(c, c->prompt_data, s, 1);
 		status_prompt_clear(c);
 		free(s);
 		return (1);
@@ -1276,13 +1299,13 @@ process_key:
 		s = utf8_tocstr(c->prompt_buffer);
 		if (*s != '\0')
 			status_prompt_add_history(s);
-		if (c->prompt_callbackfn(c->prompt_data, s, 1) == 0)
+		if (c->prompt_inputcb(c, c->prompt_data, s, 1) == 0)
 			status_prompt_clear(c);
 		free(s);
 		break;
 	case '\033': /* Escape */
 	case '\003': /* C-c */
-		if (c->prompt_callbackfn(c->prompt_data, NULL, 1) == 0)
+		if (c->prompt_inputcb(c, c->prompt_data, NULL, 1) == 0)
 			status_prompt_clear(c);
 		break;
 	case '\022': /* C-r */
@@ -1330,7 +1353,7 @@ append_key:
 		s = utf8_tocstr(c->prompt_buffer);
 		if (strlen(s) != 1)
 			status_prompt_clear(c);
-		else if (c->prompt_callbackfn(c->prompt_data, s, 1) == 0)
+		else if (c->prompt_inputcb(c, c->prompt_data, s, 1) == 0)
 			status_prompt_clear(c);
 		free(s);
 	}
@@ -1340,7 +1363,7 @@ changed:
 	if (c->prompt_flags & PROMPT_INCREMENTAL) {
 		s = utf8_tocstr(c->prompt_buffer);
 		xasprintf(&cp, "%c%s", prefix, s);
-		c->prompt_callbackfn(c->prompt_data, cp, 0);
+		c->prompt_inputcb(c, c->prompt_data, cp, 0);
 		free(cp);
 		free(s);
 	}
