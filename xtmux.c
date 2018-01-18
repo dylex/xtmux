@@ -992,7 +992,7 @@ xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h, int c)
 		b->n = 0;
 	else
 		xt_flush(x, px, py, w, h);
-	if (!INSIDE(x->cx, x->cy, px, py, w, h))
+	if (!(x->cd && INSIDE(x->cx, x->cy, px, py, w, h)))
 		return 1;
 	/* the cursor is a special, as it may be drawn/erased before exposure events */
 	if (c)
@@ -1027,39 +1027,36 @@ xt_put_cursor(struct xtmux *x)
 	return 1;
 }
 
-static int
+static void
 xt_clear_cursor(struct xtmux *x)
 {
-	int r = 0;
-
-	if (!x->cd)
-		return 0;
-
-	r |= xt_put_cursor(x);
+	xt_put_cursor(x);
 	x->cd = 0;
-	return r;
-}
-
-static int
-xt_move_cursor(struct xtmux *x, u_int cx, u_int cy)
-{
-	int r = 0;
-
-	if (x->cd && x->cx == cx && x->cy == cy)
-		return r;
-	r |= xt_clear_cursor(x);
-
-	xt_flush(x, cx, cx, 1, 1);
-	x->cx = cx; x->cy = cy;
-	x->cd = 1;
-	r |= xt_put_cursor(x);
-	return r;
 }
 
 static inline int
+xt_check_cursor(struct tty *tty)
+{
+	struct xtmux *x = tty->xtmux;
+	return (tty->mode & MODE_CURSOR) ? !(x->cd && x->cx == tty->cx && x->cy == tty->cy) : x->cd;
+}
+
+static void
 xtmux_update_cursor(struct tty *tty)
 {
-	return (tty->mode & MODE_CURSOR) && xt_move_cursor(tty->xtmux, tty->cx, tty->cy);
+	struct xtmux *x = tty->xtmux;
+
+	if (!xt_check_cursor(tty))
+		return;
+
+	xt_clear_cursor(x);
+	if (!(tty->mode & MODE_CURSOR))
+		return;
+
+	xt_flush(x, tty->cx, tty->cy, 1, 1);
+	x->cx = tty->cx; x->cy = tty->cy;
+	x->cd = 1;
+	xt_put_cursor(x);
 }
 
 static void
@@ -1135,8 +1132,7 @@ xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 
 	tty->cx = cx;
 	tty->cy = cy;
-
-	if (xtmux_update_cursor(tty))
+	if (xt_check_cursor(tty))
 		XUPDATE();
 
 	XRETURN();
@@ -1162,7 +1158,6 @@ void
 xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 {
 	struct xtmux *x = tty->xtmux;
-	int up = 0;
 
 	XENTRY();
 
@@ -1173,13 +1168,11 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 		xt_fill_cursor(x, tty->cstyle);
 	}
 
-	if (mode & MODE_CURSOR)
-		up = xt_move_cursor(x, tty->cx, tty->cy);
-	else if (s && !(s->mode & MODE_CURSOR))
-		up = xt_clear_cursor(x);
-
+	log_debug("xtmux_update_mode %d->%d", tty->mode, mode);
 	tty->mode = mode;
-	if (up) XUPDATE();
+	if (xt_check_cursor(tty))
+		XUPDATE();
+
 	XRETURN();
 }
 
@@ -2244,6 +2237,7 @@ xtmux_main(struct tty *tty)
 	struct xtmux *x = tty->xtmux;
 
 	xt_putc_flush(x);
+	xtmux_update_cursor(tty);
 
 	while (XPending(x->display))
 	{
