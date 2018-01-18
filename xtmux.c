@@ -1027,18 +1027,27 @@ xt_put_cursor(struct xtmux *x)
 	return 1;
 }
 
-static void
+static int
 xt_clear_cursor(struct xtmux *x)
 {
-	xt_put_cursor(x);
+	int r = xt_put_cursor(x);
 	x->cd = 0;
+	return r;
 }
 
-static inline int
-xt_check_cursor(struct tty *tty)
+static int
+xt_move_cursor(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
-	return (tty->mode & MODE_CURSOR) ? !(x->cd && x->cx == tty->cx && x->cy == tty->cy) : x->cd;
+	int r = 0;
+
+	r = xt_clear_cursor(x);
+	if (!(tty->mode & MODE_CURSOR))
+		return r;
+
+	x->cx = tty->cx;
+	x->cy = tty->cy;
+	return 1;
 }
 
 static void
@@ -1046,15 +1055,10 @@ xtmux_update_cursor(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
 
-	if (!xt_check_cursor(tty))
+	if (x->cd || !(tty->mode & MODE_CURSOR))
 		return;
 
-	xt_clear_cursor(x);
-	if (!(tty->mode & MODE_CURSOR))
-		return;
-
-	xt_flush(x, tty->cx, tty->cy, 1, 1);
-	x->cx = tty->cx; x->cy = tty->cy;
+	xt_flush(x, x->cx, x->cy, 1, 1);
 	x->cd = 1;
 	xt_put_cursor(x);
 }
@@ -1132,7 +1136,7 @@ xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 
 	tty->cx = cx;
 	tty->cy = cy;
-	if (xt_check_cursor(tty))
+	if (xt_move_cursor(tty))
 		XUPDATE();
 
 	XRETURN();
@@ -1151,6 +1155,7 @@ xtmux_force_cursor_colour(struct tty *tty, const char *ccolour)
 	log_debug("setting cursor color to %s = %lx", ccolour, c);
 	xt_clear_cursor(x);
 	XSetForeground(x->display, x->cursor_gc, x->bg ^ c);
+	XUPDATE();
 	XRETURN_();
 }
 
@@ -1168,10 +1173,10 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 		xt_fill_cursor(x, tty->cstyle);
 	}
 
-	log_debug("xtmux_update_mode %d->%d", tty->mode, mode);
 	tty->mode = mode;
-	if (xt_check_cursor(tty))
-		XUPDATE();
+	if (!(mode & MODE_CURSOR) || !x->cd)
+		if (xt_move_cursor(tty))
+			XUPDATE();
 
 	XRETURN();
 }
