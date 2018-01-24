@@ -992,7 +992,7 @@ xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h, int c)
 		b->n = 0;
 	else
 		xt_flush(x, px, py, w, h);
-	if (!(x->cd && INSIDE(x->cx, x->cy, px, py, w, h)))
+	if (!INSIDE(x->cx, x->cy, px, py, w, h))
 		return 1;
 	/* the cursor is a special, as it may be drawn/erased before exposure events */
 	if (c)
