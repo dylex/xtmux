@@ -1937,12 +1937,13 @@ xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 }
 
 static void
-xtmux_redraw_pane(struct tty *tty, struct window_pane *wp, int left, int top, int right, int bot)
+xtmux_redraw_pane(struct tty *tty, struct window_pane *wp, int yoff, int left, int top, int right, int bot)
 {
 	struct xtmux *x = tty->xtmux;
 	struct screen *s = wp->screen;
 	u_int y;
 
+	yoff += wp->yoff;
 	left -= wp->xoff;
 	if (left < 0)
 		left = 0;
@@ -1953,17 +1954,17 @@ xtmux_redraw_pane(struct tty *tty, struct window_pane *wp, int left, int top, in
 		return;
 	else if ((u_int)right > wp->sx)
 		right = wp->sx;
-	top -= wp->yoff;
+	top -= yoff;
 	if (top < 0)
 		top = 0;
-	bot -= wp->yoff;
+	bot -= yoff;
 	if (bot <= 0)
 		return;
 	if ((u_int)bot > wp->sy)
 		bot = wp->sy;
 
 	for (y = top; y < (u_int)bot; y ++)
-		xt_draw_line(x, s, y, left, right, wp->xoff, wp->yoff);
+		xt_draw_line(x, s, y, left, right, wp->xoff, yoff);
 }
 
 /* much like screen_redraw_screen, should possibly replace it */
@@ -1972,25 +1973,35 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 {
 	struct tty *tty = &c->tty;
 	struct window_pane *wp;
+	u_int yoff = 0;
+	struct window_pane swp; /* fake status pane */
 
 	if (!c->session)
 		return;
 
-	if (bot >= (int)tty->sy && (c->message_string || c->prompt_string || options_get_number(c->session->options, "status")))
-	{
-		/* fake status pane */
-		struct window_pane swp;
-		swp.screen = &c->status;
-		swp.xoff = 0;
-		swp.yoff = tty->sy-1;
-		swp.sx = swp.screen->grid->sx;
-		swp.sy = 1;
-		xtmux_redraw_pane(tty, &swp, left, top, right, bot);
-		bot = tty->sy-1;
+	swp.screen = &c->status.status;
+	swp.sx = swp.screen->grid->sx;
+
+	if (c->flags & CLIENT_STATUSOFF)
+		swp.sy = 0;
+	else
+		swp.sy = status_line_size(c->session);
+	if (c->message_string || c->prompt_string)
+		swp.sy = swp.sy ?: 1;
+
+	swp.xoff = 0;
+	if (options_get_number(c->session->options, "status-position")) {
+		yoff = 0;
+		swp.yoff = tty->sy-swp.sy;
+	} else {
+		yoff = swp.sy;
+		swp.yoff = 0;
 	}
+	if (swp.sy)
+		xtmux_redraw_pane(tty, &swp, 0, left, top, right, bot);
 
 	TAILQ_FOREACH(wp, &c->session->curw->window->panes, entry)
-		xtmux_redraw_pane(tty, wp, left, top, right, bot);
+		xtmux_redraw_pane(tty, wp, yoff, left, top, right, bot);
 
 	/* TODO: borders, numbers */
 
