@@ -191,10 +191,15 @@ static void
 format_job_update(struct job *job)
 {
 	struct format_job	*fj = job->data;
-	char			*line;
+	struct evbuffer		*evb = job->event->input;
+	char			*line = NULL, *next;
 	time_t			 t;
 
-	if ((line = evbuffer_readline(job->event->input)) == NULL)
+	while ((next = evbuffer_readline(evb)) != NULL) {
+		free(line);
+		line = next;
+	}
+	if (line == NULL)
 		return;
 	fj->updated = 1;
 
@@ -290,7 +295,7 @@ format_job_get(struct format_tree *ft, const char *cmd)
 	t = time(NULL);
 	if (fj->job == NULL && (force || fj->last != t)) {
 		fj->job = job_run(expanded, NULL, NULL, format_job_update,
-		    format_job_complete, NULL, fj);
+		    format_job_complete, NULL, fj, JOB_NOWAIT);
 		if (fj->job == NULL) {
 			free(fj->out);
 			xasprintf(&fj->out, "<'%s' didn't start>", fj->cmd);
@@ -587,8 +592,35 @@ format_cb_pane_tabs(struct format_tree *ft, struct format_entry *fe)
 			evbuffer_add(buffer, ",", 1);
 		evbuffer_add_printf(buffer, "%u", i);
 	}
-	size = EVBUFFER_LENGTH(buffer);
-	xasprintf(&fe->value, "%.*s", size, EVBUFFER_DATA(buffer));
+	if ((size = EVBUFFER_LENGTH(buffer)) != 0)
+		xasprintf(&fe->value, "%.*s", size, EVBUFFER_DATA(buffer));
+	evbuffer_free(buffer);
+}
+
+/* Callback for session_group_list. */
+static void
+format_cb_session_group_list(struct format_tree *ft, struct format_entry *fe)
+{
+	struct session		*s = ft->s;
+	struct session_group	*sg;
+	struct session		*loop;
+	struct evbuffer		*buffer;
+	int			 size;
+
+	if (s == NULL)
+		return;
+	sg = session_group_contains(s);
+	if (sg == NULL)
+		return;
+
+	buffer = evbuffer_new();
+	TAILQ_FOREACH(loop, &sg->sessions, gentry) {
+		if (EVBUFFER_LENGTH(buffer) > 0)
+			evbuffer_add(buffer, ",", 1);
+		evbuffer_add_printf(buffer, "%s", loop->name);
+	}
+	if ((size = EVBUFFER_LENGTH(buffer)) != 0)
+		xasprintf(&fe->value, "%.*s", size, EVBUFFER_DATA(buffer));
 	evbuffer_free(buffer);
 }
 
@@ -781,8 +813,11 @@ format_find(struct format_tree *ft, const char *key, int modifiers)
 			found = s;
 			goto found;
 		}
-		if (fe->value == NULL && fe->cb != NULL)
+		if (fe->value == NULL && fe->cb != NULL) {
 			fe->cb(ft, fe);
+			if (fe->value == NULL)
+				fe->value = xstrdup("");
+		}
 		found = fe->value;
 		goto found;
 	}
@@ -1102,7 +1137,7 @@ format_expand_time(struct format_tree *ft, const char *fmt, time_t t)
 char *
 format_expand(struct format_tree *ft, const char *fmt)
 {
-	char		*buf, *out;
+	char		*buf, *out, *name;
 	const char	*ptr, *s, *saved = fmt;
 	size_t		 off, len, n, outlen;
 	int     	 ch, brackets;
@@ -1141,8 +1176,11 @@ format_expand(struct format_tree *ft, const char *fmt)
 
 			if (ft->flags & FORMAT_NOJOBS)
 				out = xstrdup("");
-			else
-				out = format_job_get(ft, xstrndup(fmt, n));
+			else {
+				name = xstrndup(fmt, n);
+				out = format_job_get(ft, name);
+				free(name);
+			}
 			outlen = strlen(out);
 
 			while (len - off < outlen + 1) {
@@ -1269,8 +1307,13 @@ format_defaults_session(struct format_tree *ft, struct session *s)
 
 	sg = session_group_contains(s);
 	format_add(ft, "session_grouped", "%d", sg != NULL);
-	if (sg != NULL)
+	if (sg != NULL) {
 		format_add(ft, "session_group", "%s", sg->name);
+		format_add(ft, "session_group_size", "%u",
+		    session_group_count (sg));
+		format_add_cb(ft, "session_group_list",
+		    format_cb_session_group_list);
+	}
 
 	format_add_tv(ft, "session_created", &s->creation_time);
 	format_add_tv(ft, "session_last_attached", &s->last_attached_time);
@@ -1392,8 +1435,8 @@ void
 format_defaults_pane(struct format_tree *ft, struct window_pane *wp)
 {
 	struct grid	*gd = wp->base.grid;
+	int  		 status = wp->status;
 	u_int		 idx;
-	int  		 status;
 
 	if (ft->w == NULL)
 		ft->w = wp->window;
@@ -1415,8 +1458,7 @@ format_defaults_pane(struct format_tree *ft, struct window_pane *wp)
 	format_add(ft, "pane_input_off", "%d", !!(wp->flags & PANE_INPUTOFF));
 	format_add(ft, "pane_pipe", "%d", wp->pipe_fd != -1);
 
-	status = wp->status;
-	if (wp->fd == -1 && WIFEXITED(status))
+	if ((wp->flags & PANE_STATUSREADY) && WIFEXITED(status))
 		format_add(ft, "pane_dead_status", "%d", WEXITSTATUS(status));
 	format_add(ft, "pane_dead", "%d", wp->fd == -1);
 
@@ -1427,8 +1469,10 @@ format_defaults_pane(struct format_tree *ft, struct window_pane *wp)
 		format_add(ft, "pane_bottom", "%u", wp->yoff + wp->sy - 1);
 		format_add(ft, "pane_at_left", "%d", wp->xoff == 0);
 		format_add(ft, "pane_at_top", "%d", wp->yoff == 0);
-		format_add(ft, "pane_at_right", "%d", wp->xoff + wp->sx == wp->window->sx);
-		format_add(ft, "pane_at_bottom", "%d", wp->yoff + wp->sy == wp->window->sy);
+		format_add(ft, "pane_at_right", "%d",
+		    wp->xoff + wp->sx == wp->window->sx);
+		format_add(ft, "pane_at_bottom", "%d",
+		    wp->yoff + wp->sy == wp->window->sy);
 	}
 
 	format_add(ft, "pane_in_mode", "%d", wp->screen != &wp->base);
