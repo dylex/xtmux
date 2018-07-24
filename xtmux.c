@@ -35,9 +35,10 @@
 	})
 
 static void xtmux_main(struct tty *);
-static void xt_putc_flush(struct xtmux *);
+static int xt_putc_flush(struct xtmux *);
 static void xtmux_redraw(struct client *, int, int, int, int);
 static void xt_expose(struct xtmux *, XExposeEvent *);
+static void xtmux_flush_callback(int, short, void *);
 
 #define XTMUX_NUM_COLORS 256
 
@@ -139,10 +140,12 @@ struct xtmux {
 	Pixmap		cursor;
 
 	unsigned	focus_out : 1;
+	unsigned	flush : 1;
 	unsigned	cd : 1; /* 1 if cursor is drawn */
 	u_int		cx, cy; /* last drawn cursor location */
 
 	struct putc	putc_buf;
+	struct event	flush_timer;
 
 	u_short		copy_active; /* outstanding XCopyArea; should be <= 1 */
 
@@ -157,7 +160,7 @@ struct xtmux {
 #define XSCREEN		DefaultScreen(x->display)
 #define XCOLORMAP	DefaultColormap(x->display, XSCREEN)
 
-#define XUPDATE()	event_active(&tty->xtmux->event, EV_WRITE, 1)
+#define XUPDATE()	event_active(&x->event, EV_WRITE, 1)
 
 static u_int xdisplay_entry_count;
 static jmp_buf xdisplay_recover;
@@ -831,6 +834,8 @@ xtmux_open(struct tty *tty, char **cause)
 
 	XMapWindow(x->display, x->window);
 
+	evtimer_set(&x->flush_timer, xtmux_flush_callback, tty);
+
 	tty->flags |= TTY_OPENED | TTY_UTF8;
 
 #undef FAIL
@@ -846,6 +851,7 @@ xtmux_close(struct tty *tty)
 
 	tty->flags &= ~TTY_OPENED;
 
+	event_del(&x->flush_timer);
 	event_del(&x->event);
 
 	/* Must be careful here if we got an IO error:
@@ -973,50 +979,6 @@ xtmux_reset(struct tty *tty)
 	xtmux_attributes(tty, &grid_default_cell);
 }
 
-static inline void
-xt_flush(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
-{
-	struct putc *b = &x->putc_buf;
-
-	if (b->n && INSIDE1(b->y, py, h) && OVERLAPS1(b->x, b->n, px, w))
-		xt_putc_flush(x);
-}
-
-/* indicate an intention to completely overwrite a region */
-static int
-xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h, int c)
-{
-	struct putc *b = &x->putc_buf;
-
-	if (b->n && WITHIN(b->x, b->y, b->n, 1, px, py, w, h))
-		b->n = 0;
-	else
-		xt_flush(x, px, py, w, h);
-	if (!INSIDE(x->cx, x->cy, px, py, w, h))
-		return 1;
-	/* the cursor is a special, as it may be drawn/erased before exposure events */
-	if (c)
-		XClearArea(x->display, x->window, C2X(x->cx), C2Y(x->cy), C2W(1), C2H(1), False);
-	x->cd = 0;
-	return 2;
-}
-
-static int
-xt_clear(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
-{
-	if (!xt_write(x, cx, cy, w, h, 0))
-		return 0;
-	XClearArea(x->display, x->window, C2X(cx), C2Y(cy), C2W(w), C2H(h), False);
-	return 1;
-}
-
-static void
-xt_redraw(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
-{
-	XClearArea(x->display, x->window, C2X(cx), C2Y(cy), C2W(w), C2H(h), False);
-	xtmux_redraw(x->client, cx, cy, cx+w, cy+h);
-}
-
 static inline int
 xt_put_cursor(struct xtmux *x)
 {
@@ -1035,32 +997,86 @@ xt_clear_cursor(struct xtmux *x)
 	return r;
 }
 
-static int
-xt_move_cursor(struct tty *tty)
+static void
+xt_flush_timer(struct xtmux *x)
 {
-	struct xtmux *x = tty->xtmux;
+	if (x->flush)
+		XUPDATE();
+	else if (!evtimer_pending(&x->flush_timer, NULL)) {
+		struct timeval tv = { .tv_usec = 100000 };
+		evtimer_add(&x->flush_timer, &tv);
+	}
+}
+
+static inline void
+xt_flush(struct xtmux *x, u_int px, u_int py, u_int w, u_int h)
+{
+	struct putc *b = &x->putc_buf;
+
+	if (b->n && INSIDE1(b->y, py, h) && OVERLAPS1(b->x, b->n, px, w))
+		xt_putc_flush(x);
+	if (x->cd && INSIDE(x->cx, x->cy, px, py, w, h))
+		xt_clear_cursor(x);
+}
+
+/* indicate an intention to completely overwrite a region; return 1 if contains the cursor */
+static int
+xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h, int c)
+{
+	struct putc *b = &x->putc_buf;
 	int r = 0;
 
-	r = xt_clear_cursor(x);
-	if (!(tty->mode & MODE_CURSOR))
-		return r;
+	if (b->n && WITHIN(b->x, b->y, b->n, 1, px, py, w, h))
+		b->n = 0;
+	if (x->cd && INSIDE(x->cx, x->cy, px, py, w, h)) {
+		/* the cursor is special, as it may be drawn/erased before exposure events */
+		if (c)
+			XClearArea(x->display, x->window, C2X(x->cx), C2Y(x->cy), C2W(1), C2H(1), False);
+		x->cd = 0;
+		r = 1;
+	}
 
-	x->cx = tty->cx;
-	x->cy = tty->cy;
+	xt_flush(x, px, py, w, h);
+	return r;
+}
+
+static int
+xt_clear(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
+{
+	xt_write(x, cx, cy, w, h, 0);
+	XClearArea(x->display, x->window, C2X(cx), C2Y(cy), C2W(w), C2H(h), False);
 	return 1;
 }
 
 static void
-xtmux_update_cursor(struct tty *tty)
+xt_redraw(struct xtmux *x, u_int cx, u_int cy, u_int w, u_int h)
+{
+	XClearArea(x->display, x->window, C2X(cx), C2Y(cy), C2W(w), C2H(h), False);
+	xtmux_redraw(x->client, cx, cy, cx+w, cy+h);
+}
+
+static int
+xt_update_cursor(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
+	int r = 0;
 
-	if (x->cd || !(tty->mode & MODE_CURSOR))
-		return;
+	if (!(tty->mode & MODE_CURSOR)) {
+		if (x->cd)
+			r = xt_clear_cursor(x);
+		return r;
+	}
 
-	xt_flush(x, x->cx, x->cy, 1, 1);
+	if (x->cd && x->cx == tty->cx && x->cy == tty->cy)
+		return r;
+
+	xt_clear_cursor(x);
+	x->cx = tty->cx;
+	x->cy = tty->cy;
 	x->cd = 1;
 	xt_put_cursor(x);
+
+	return 1;
 }
 
 static void
@@ -1132,14 +1148,9 @@ xt_copy(struct xtmux *x, u_int x1, u_int y1, u_int x2, u_int y2, u_int w, u_int 
 void
 xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 {
-	XENTRY();
-
 	tty->cx = cx;
 	tty->cy = cy;
-	if (xt_move_cursor(tty))
-		XUPDATE();
-
-	XRETURN();
+	xt_flush_timer(tty->xtmux);
 }
 
 void
@@ -1155,8 +1166,8 @@ xtmux_force_cursor_colour(struct tty *tty, const char *ccolour)
 	log_debug("setting cursor color to %s = %lx", ccolour, c);
 	xt_clear_cursor(x);
 	XSetForeground(x->display, x->cursor_gc, x->bg ^ c);
-	XUPDATE();
 	XRETURN_();
+	xt_flush_timer(x);
 }
 
 void
@@ -1174,11 +1185,9 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	}
 
 	tty->mode = mode;
-	if (!(mode & MODE_CURSOR) || !x->cd)
-		if (xt_move_cursor(tty))
-			XUPDATE();
 
 	XRETURN();
+	xt_flush_timer(x);
 }
 
 static enum font_type
@@ -1218,10 +1227,8 @@ xt_draw_chars(struct xtmux *x, u_int cx, u_int cy, const wchar *cp, size_t n, co
 	if (gc->flags & GRID_FLAG_PADDING)
 		return;
 
-	switch (xt_write(x, cx, cy, n, 1, 0)) {
-		case 0: return;
-		case 2: cleared = 0;
-	}
+	if (xt_write(x, cx, cy, n, 1, 0))
+		cleared = 0;
 
 	/* TODO: palette */
 
@@ -1356,17 +1363,18 @@ xt_draw_cells(struct xtmux *x, u_int cx, u_int cy, const wchar *c, size_t n, con
 	xt_draw_chars(x, cx, cy, c, n, ga, !(x->cd && INSIDE(x->cx, x->cy, cx, cy, n, 1)));
 }
 
-static void
+static int
 xt_putc_flush(struct xtmux *x)
 {
 	struct putc *b = &x->putc_buf;
 	u_int n = b->n;
 
 	if (!n)
-		return;
+		return 0;
 
 	b->n = 0;
 	xt_draw_chars(x, b->x, b->y, b->s, n, &b->cell, 0);
+	return 1;
 }
 
 static void
@@ -1392,8 +1400,8 @@ xtmux_putwc(struct tty *tty, u_int c)
 	}
 	b->s[b->n++] = c;
 
-	XUPDATE();
 	XRETURN();
+	xt_flush_timer(x);
 }
 
 void
@@ -1854,8 +1862,10 @@ found:
 void
 xtmux_bell(struct tty *tty)
 {
+	struct xtmux *x = tty->xtmux;
+
 	XENTRY();
-	XBell(tty->xtmux->display, 100);
+	XBell(x->display, 100);
 	XUPDATE();
 	XRETURN();
 }
@@ -1919,6 +1929,7 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 void
 xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 {
+	struct xtmux *x = tty->xtmux;
 	u_int sx;
 
 	XENTRY();
@@ -1927,9 +1938,9 @@ xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 	if (sx > tty->sx)
 		sx = tty->sx;
 
-	if (xt_clear(tty->xtmux, ox, oy+py, sx, 1))
+	if (xt_clear(x, ox, oy+py, sx, 1))
 	{
-		xt_draw_line(tty->xtmux, s, py, 0, sx, ox, oy);
+		xt_draw_line(x, s, py, 0, sx, ox, oy);
 		XUPDATE();
 	}
 
@@ -2006,7 +2017,23 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 	/* TODO: borders, numbers */
 
 	if (INSIDE(tty->cx, tty->cy, left, top, right-left, bot-top))
-		xtmux_update_cursor(tty);
+		xt_update_cursor(tty);
+}
+
+static void
+xtmux_flush_callback(__unused int fd, __unused short events, void *data)
+{
+	struct tty *tty = (struct tty *)data;
+	struct xtmux *x = tty->xtmux;
+	int r = 0;
+
+	XENTRY();
+	r = xt_putc_flush(x);
+	r |= xt_update_cursor(tty);
+	if (r)
+		XUPDATE();
+	XRETURN_();
+	x->flush = 0;
 }
 
 static void
@@ -2208,8 +2235,7 @@ xt_expose(struct xtmux *x, XExposeEvent *xev)
 	if (xev->type == GraphicsExpose && !xev->count && x->copy_active)
 		x->copy_active --;
 
-	if (!xt_write(x, cx1, cy1, cx2-cx1, cy2-cy1, 1))
-		return;
+	xt_write(x, cx1, cy1, cx2-cx1, cy2-cy1, 1);
 
 	/* extend exposed area out to character borders so we can redraw */
 	#define CLEAR(X1, X2, Y1, Y2) \
@@ -2245,6 +2271,8 @@ xtmux_focus(struct tty *tty, int focus)
 		else
 			XUnsetICFocus(x->xic);
 	}
+
+	xt_flush_timer(x);
 }
 
 static void
@@ -2252,8 +2280,12 @@ xtmux_main(struct tty *tty)
 {
 	struct xtmux *x = tty->xtmux;
 
-	xt_putc_flush(x);
-	xtmux_update_cursor(tty);
+	if (x->flush) {
+		xt_putc_flush(x);
+		xt_update_cursor(tty);
+		evtimer_del(&x->flush_timer);
+		x->flush = 0;
+	}
 
 	while (XPending(x->display))
 	{
@@ -2263,6 +2295,7 @@ xtmux_main(struct tty *tty)
 		switch (xev.type)
 		{
 			case KeyPress:
+				x->flush = 1;
 				x->last_time = xev.xkey.time;
 				xtmux_key_press(tty, &xev.xkey);
 				break;
