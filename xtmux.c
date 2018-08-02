@@ -1028,8 +1028,8 @@ xt_write(struct xtmux *x, u_int px, u_int py, u_int w, u_int h, int c)
 
 	if (b->n && WITHIN(b->x, b->y, b->n, 1, px, py, w, h))
 		b->n = 0;
-	if (x->cd && INSIDE(x->cx, x->cy, px, py, w, h)) {
-		/* the cursor is special, as it may be drawn/erased before exposure events */
+	/* the cursor is special, as it may be drawn/erased before exposure events */
+	if (INSIDE(x->cx, x->cy, px, py, w, h)) {
 		if (c)
 			XClearArea(x->display, x->window, C2X(x->cx), C2Y(x->cy), C2W(1), C2H(1), False);
 		x->cd = 0;
