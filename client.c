@@ -17,11 +17,10 @@
  */
 
 #include <sys/types.h>
-#include <sys/file.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/file.h>
 
 #include <errno.h>
 #include <event.h>
