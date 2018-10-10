@@ -156,10 +156,8 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 	/* Get the new session working directory. */
 	if ((tmp = args_get(args, 'c')) != NULL)
 		cwd = format_single(item, tmp, c, NULL, NULL, NULL);
-	else if (c != NULL && c->session == NULL && c->cwd != NULL)
-		cwd = xstrdup(c->cwd);
 	else
-		cwd = xstrdup(".");
+		cwd = xstrdup(server_client_get_cwd(c, NULL));
 
 	/*
 	 * If this is a new client, check for nesting and save the termios
@@ -204,17 +202,29 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 		sy = 24;
 	}
 	if ((is_control || detached) && args_has(args, 'x')) {
-		sx = strtonum(args_get(args, 'x'), 1, USHRT_MAX, &errstr);
-		if (errstr != NULL) {
-			cmdq_error(item, "width %s", errstr);
-			goto error;
+		tmp = args_get(args, 'x');
+		if (strcmp(tmp, "-") == 0) {
+			if (c != NULL)
+				sx = c->tty.sx;
+		} else {
+			sx = strtonum(tmp, 1, USHRT_MAX, &errstr);
+			if (errstr != NULL) {
+				cmdq_error(item, "width %s", errstr);
+				goto error;
+			}
 		}
 	}
 	if ((is_control || detached) && args_has(args, 'y')) {
-		sy = strtonum(args_get(args, 'y'), 1, USHRT_MAX, &errstr);
-		if (errstr != NULL) {
-			cmdq_error(item, "height %s", errstr);
-			goto error;
+		tmp = args_get(args, 'y');
+		if (strcmp(tmp, "-") == 0) {
+			if (c != NULL)
+				sy = c->tty.sy;
+		} else {
+			sy = strtonum(tmp, 1, USHRT_MAX, &errstr);
+			if (errstr != NULL) {
+				cmdq_error(item, "height %s", errstr);
+				goto error;
+			}
 		}
 	}
 	if (sx == 0)

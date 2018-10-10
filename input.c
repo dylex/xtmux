@@ -30,7 +30,7 @@
 /*
  * Based on the description by Paul Williams at:
  *
- * http://vt100.net/emu/dec_ansi_parser
+ * https://vt100.net/emu/dec_ansi_parser
  *
  * With the following changes:
  *
@@ -1188,6 +1188,7 @@ input_esc_dispatch(struct input_ctx *ictx)
 		window_pane_reset_palette(ictx->wp);
 		input_reset_cell(ictx);
 		screen_write_reset(sctx);
+		screen_write_clearhistory(sctx);
 		break;
 	case INPUT_ESC_IND:
 		screen_write_linefeed(sctx, 0, ictx->cell.cell.bg);
@@ -1845,10 +1846,12 @@ input_csi_dispatch_sgr_colon(struct input_ctx *ictx, u_int i)
 
 	ptr = copy = xstrdup(s);
 	while ((out = strsep(&ptr, ":")) != NULL) {
-		p[n++] = strtonum(out, 0, INT_MAX, &errstr);
-		if (errstr != NULL || n == nitems(p)) {
-			free(copy);
-			return;
+		if (*out != '\0') {
+			p[n++] = strtonum(out, 0, INT_MAX, &errstr);
+			if (errstr != NULL || n == nitems(p)) {
+				free(copy);
+				return;
+			}
 		}
 		log_debug("%s: %u = %d", __func__, n - 1, p[n - 1]);
 	}
@@ -1856,16 +1859,21 @@ input_csi_dispatch_sgr_colon(struct input_ctx *ictx, u_int i)
 
 	if (n == 0 || (p[0] != 38 && p[0] != 48))
 		return;
-	switch (p[1]) {
+	if (p[1] == -1)
+		i = 2;
+	else
+		i = 1;
+	switch (p[i]) {
 	case 2:
-		if (n != 5)
+		if (n < i + 4)
 			break;
-		input_csi_dispatch_sgr_rgb_do(ictx, p[0], p[2], p[3], p[4]);
+		input_csi_dispatch_sgr_rgb_do(ictx, p[0], p[i + 1], p[i + 2],
+		    p[i + 3]);
 		break;
 	case 5:
-		if (n != 3)
+		if (n < i + 2)
 			break;
-		input_csi_dispatch_sgr_256_do(ictx, p[0], p[2]);
+		input_csi_dispatch_sgr_256_do(ictx, p[0], p[i + 1]);
 		break;
 	}
 }
@@ -2227,7 +2235,7 @@ bad:
 	free(copy);
 }
 
-/* Handle the OSC 10 sequence for setting background colour. */
+/* Handle the OSC 10 sequence for setting foreground colour. */
 static void
 input_osc_10(struct window_pane *wp, const char *p)
 {
