@@ -874,18 +874,27 @@ input_set_state(struct window_pane *wp, const struct input_transition *itr)
 void
 input_parse(struct window_pane *wp)
 {
+	struct evbuffer		*evb = wp->event->input;
+
+	input_parse_buffer(wp, EVBUFFER_DATA(evb), EVBUFFER_LENGTH(evb));
+	evbuffer_drain(evb, EVBUFFER_LENGTH(evb));
+}
+
+/* Parse given input. */
+void
+input_parse_buffer(struct window_pane *wp, u_char *buf, size_t len)
+{
 	struct input_ctx		*ictx = wp->ictx;
 	struct screen_write_ctx		*sctx = &ictx->ctx;
 	const struct input_transition	*itr;
-	struct evbuffer			*evb = wp->event->input;
-	u_char				*buf;
-	size_t				 len, off;
+	size_t				 off = 0;
 
-	if (EVBUFFER_LENGTH(evb) == 0)
+	if (len == 0)
 		return;
 
 	window_update_activity(wp->window);
 	wp->flags |= PANE_CHANGED;
+	notify_input(wp, buf, len);
 
 	/*
 	 * Open the screen. Use NULL wp if there is a mode set as don't want to
@@ -896,12 +905,6 @@ input_parse(struct window_pane *wp)
 	else
 		screen_write_start(sctx, NULL, &wp->base);
 	ictx->wp = wp;
-
-	buf = EVBUFFER_DATA(evb);
-	len = EVBUFFER_LENGTH(evb);
-	off = 0;
-
-	notify_input(wp, evb);
 
 	log_debug("%s: %%%u %s, %zu bytes: %.*s", __func__, wp->id,
 	    ictx->state->name, len, (int)len, buf);
@@ -950,8 +953,6 @@ input_parse(struct window_pane *wp)
 
 	/* Close the screen. */
 	screen_write_stop(sctx);
-
-	evbuffer_drain(evb, len);
 }
 
 /* Split the parameter list (if any). */
@@ -1185,6 +1186,8 @@ input_c0_dispatch(struct input_ctx *ictx)
 	case '\013':	/* VT */
 	case '\014':	/* FF */
 		screen_write_linefeed(sctx, 0, ictx->cell.cell.bg);
+		if (s->mode & MODE_CRLF)
+			screen_write_carriagereturn(sctx);
 		break;
 	case '\015':	/* CR */
 		screen_write_carriagereturn(sctx);
@@ -1935,23 +1938,25 @@ input_csi_dispatch_sgr_colon(struct input_ctx *ictx, u_int i)
 		}
 		return;
 	}
-	if (p[0] != 38 && p[0] != 48)
+	if (n < 2 || (p[0] != 38 && p[0] != 48))
 		return;
-	if (p[1] == -1)
-		i = 2;
-	else
-		i = 1;
-	switch (p[i]) {
+	switch (p[1]) {
 	case 2:
-		if (n < i + 4)
+		if (n < 3)
 			break;
-		input_csi_dispatch_sgr_rgb_do(ictx, p[0], p[i + 1], p[i + 2],
-		    p[i + 3]);
+		if (n == 5)
+			i = 2;
+		else
+			i = 3;
+		if (n < i + 3)
+			break;
+		input_csi_dispatch_sgr_rgb_do(ictx, p[0], p[i], p[i + 1],
+		    p[i + 2]);
 		break;
 	case 5:
-		if (n < i + 2)
+		if (n < 3)
 			break;
-		input_csi_dispatch_sgr_256_do(ictx, p[0], p[i + 1]);
+		input_csi_dispatch_sgr_256_do(ictx, p[0], p[2]);
 		break;
 	}
 }
@@ -2066,6 +2071,12 @@ input_csi_dispatch_sgr(struct input_ctx *ictx)
 			break;
 		case 49:
 			gc->bg = 8;
+			break;
+		case 53:
+			gc->attr |= GRID_ATTR_OVERLINE;
+			break;
+		case 55:
+			gc->attr &= ~GRID_ATTR_OVERLINE;
 			break;
 		case 90:
 		case 91:
@@ -2432,7 +2443,7 @@ input_osc_52(struct input_ctx *ictx, const char *p)
 	screen_write_stop(&ctx);
 	notify_pane("pane-set-clipboard", wp);
 
-	paste_add(out, outlen);
+	paste_add(NULL, out, outlen);
 }
 
 /* Handle the OSC 104 sequence for unsetting (multiple) palette entries. */

@@ -414,9 +414,9 @@ layout_destroy_cell(struct window *w, struct layout_cell *lc,
 		lcother = TAILQ_NEXT(lc, entry);
 	else
 		lcother = TAILQ_PREV(lc, layout_cells, entry);
-	if (lcparent->type == LAYOUT_LEFTRIGHT)
+	if (lcother != NULL && lcparent->type == LAYOUT_LEFTRIGHT)
 		layout_resize_adjust(w, lcother, lcparent->type, lc->sx + 1);
-	else
+	else if (lcother != NULL)
 		layout_resize_adjust(w, lcother, lcparent->type, lc->sy + 1);
 
 	/* Remove this from the parent's list. */
@@ -831,12 +831,12 @@ layout_resize_child_cells(struct window *w, struct layout_cell *lc)
  */
 struct layout_cell *
 layout_split_pane(struct window_pane *wp, enum layout_type type, int size,
-    int insert_before, int full_size)
+    int flags)
 {
 	struct layout_cell     *lc, *lcparent, *lcnew, *lc1, *lc2;
 	u_int			sx, sy, xoff, yoff, size1, size2, minimum;
 	u_int			new_size, saved_size, resize_first = 0;
-	int			status;
+	int			full_size = (flags & SPAWN_FULLSIZE), status;
 
 	/*
 	 * If full_size is specified, add a new cell at the top of the window
@@ -881,7 +881,7 @@ layout_split_pane(struct window_pane *wp, enum layout_type type, int size,
 		saved_size = sy;
 	if (size < 0)
 		size2 = ((saved_size + 1) / 2) - 1;
-	else if (insert_before)
+	else if (flags & SPAWN_BEFORE)
 		size2 = saved_size - size - 1;
 	else
 		size2 = size;
@@ -892,7 +892,7 @@ layout_split_pane(struct window_pane *wp, enum layout_type type, int size,
 	size1 = saved_size - 1 - size2;
 
 	/* Which size are we using? */
-	if (insert_before)
+	if (flags & SPAWN_BEFORE)
 		new_size = size2;
 	else
 		new_size = size1;
@@ -908,7 +908,7 @@ layout_split_pane(struct window_pane *wp, enum layout_type type, int size,
 		 */
 		lcparent = lc->parent;
 		lcnew = layout_create_cell(lcparent);
-		if (insert_before)
+		if (flags & SPAWN_BEFORE)
 			TAILQ_INSERT_BEFORE(lc, lcnew, entry);
 		else
 			TAILQ_INSERT_AFTER(&lcparent->cells, lc, lcnew, entry);
@@ -937,7 +937,7 @@ layout_split_pane(struct window_pane *wp, enum layout_type type, int size,
 			layout_set_size(lcnew, size, sy, 0, 0);
 		else if (lc->type == LAYOUT_TOPBOTTOM)
 			layout_set_size(lcnew, sx, size, 0, 0);
-		if (insert_before)
+		if (flags & SPAWN_BEFORE)
 			TAILQ_INSERT_HEAD(&lc->cells, lcnew, entry);
 		else
 			TAILQ_INSERT_TAIL(&lc->cells, lcnew, entry);
@@ -961,12 +961,12 @@ layout_split_pane(struct window_pane *wp, enum layout_type type, int size,
 
 		/* Create the new child cell. */
 		lcnew = layout_create_cell(lcparent);
-		if (insert_before)
+		if (flags & SPAWN_BEFORE)
 			TAILQ_INSERT_HEAD(&lcparent->cells, lcnew, entry);
 		else
 			TAILQ_INSERT_TAIL(&lcparent->cells, lcnew, entry);
 	}
-	if (insert_before) {
+	if (flags & SPAWN_BEFORE) {
 		lc1 = lcnew;
 		lc2 = lc;
 	} else {

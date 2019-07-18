@@ -57,10 +57,8 @@ style_parse(struct style *sy, const struct grid_cell *base, const char *in)
 	style_copy(&saved, sy);
 
 	do {
-		while (*in != '\0' && strchr(delimiters, *in) != NULL) {
+		while (*in != '\0' && strchr(delimiters, *in) != NULL)
 			in++;
-			end--;
-		}
 		if (*in == '\0')
 			break;
 
@@ -172,7 +170,7 @@ style_tostring(struct style *sy)
 {
 	struct grid_cell	*gc = &sy->gc;
 	int			 off = 0;
-	const char		*comma = "", *tmp;
+	const char		*comma = "", *tmp = "";
 	static char		 s[256];
 	char			 b[16];
 

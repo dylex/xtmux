@@ -143,18 +143,6 @@ fail:
 	return (-1);
 }
 
-/* Server error callback. */
-static enum cmd_retval
-server_start_error(struct cmdq_item *item, void *data)
-{
-	char	*error = data;
-
-	cmdq_error(item, "%s", error);
-	free(error);
-
-	return (CMD_RETURN_NORMAL);
-}
-
 /* Fork new server. */
 int
 server_start(struct tmuxproc *client, struct event_base *base, int lockfd,
@@ -224,7 +212,8 @@ server_start(struct tmuxproc *client, struct event_base *base, int lockfd,
 	}
 
 	if (cause != NULL) {
-		cmdq_append(c, cmdq_get_callback(server_start_error, cause));
+		cmdq_append(c, cmdq_get_error(cause));
+		free(cause);
 		c->flags |= CLIENT_EXIT;
 	}
 
@@ -304,7 +293,7 @@ server_send_exit(void)
 	}
 
 	RB_FOREACH_SAFE(s, sessions, &sessions, s1)
-		session_destroy(s, __func__);
+		session_destroy(s, 1, __func__);
 }
 
 /* Update socket execute permissions based on whether sessions are attached. */
