@@ -1873,7 +1873,7 @@ xtmux_bell(struct tty *tty)
 static void
 xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int right, u_int ox, u_int oy)
 {
-	struct grid_line *gl = &s->grid->linedata[s->grid->hsize+py];
+	struct grid_line *gl = grid_get_line(s->grid, s->grid->hsize+py);
 	struct grid_cell ga = grid_default_cell;
 	wchar cl[right-left];
 	u_int bx = left;
@@ -1927,7 +1927,7 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 }
 
 void
-xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
+xtmux_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx, u_int atx, u_int aty)
 {
 	struct xtmux *x = tty->xtmux;
 	u_int sx;
@@ -1937,10 +1937,12 @@ xtmux_draw_line(struct tty *tty, struct screen *s, u_int py, u_int ox, u_int oy)
 	sx = screen_size_x(s);
 	if (sx > tty->sx)
 		sx = tty->sx;
+	if (nx > sx)
+		nx = sx;
 
-	if (xt_clear(x, ox, oy+py, sx, 1))
+	if (xt_clear(x, atx, aty, nx, 1))
 	{
-		xt_draw_line(x, s, py, 0, sx, ox, oy);
+		xt_draw_line(x, s, py, px, nx, atx, aty);
 		XUPDATE();
 	}
 
@@ -1990,13 +1992,13 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 	if (!c->session)
 		return;
 
-	swp.screen = &c->status.status;
+	swp.screen = &c->status.screen;
 	swp.sx = swp.screen->grid->sx;
 
 	if (c->flags & CLIENT_STATUSOFF)
 		swp.sy = 0;
 	else
-		swp.sy = status_line_size(c->session);
+		swp.sy = status_line_size(c);
 	if (c->message_string || c->prompt_string)
 		swp.sy = swp.sy ?: 1;
 
