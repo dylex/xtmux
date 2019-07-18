@@ -1,3 +1,73 @@
+CHANGES FROM 2.9 to 3.0
+
+* INCOMPATIBLE: Add a new {} syntax to the configuration file. This is a string
+  similar to single quotes but also includes newlines and allows commands that
+  take other commands as string arguments to be expressed more clearly and
+  without additional escaping.
+
+  A literal { and } or a string containing { or } must now be escaped or
+  quoted, for example '{' and '}' instead of { or }, or 'X#{foo}' instead of
+  X#{foo}.
+
+* New <, >, <= and >= comparison operators for formats.
+
+* Improve escaping of special characters in list-keys output.
+
+* INCOMPATIBLE: tmux's configuration parsing has changed to use yacc(1). There
+  is one incompatible change: a \ on its own must be escaped or quoted as
+  either \\ or '\' (the latter works on older tmux versions).
+
+  Entirely the same parser is now used for parsing the configuration file
+  and for string commands. This means that constructs previously only
+  available in .tmux.conf, such as %if, can now be used in string commands
+  (for example, those given to if-shell - not commands invoked from the
+  shell, they are still parsed by the shell itself).
+
+* Add support for the overline attribute (SGR 53). The Smol capability is
+  needed in terminal-overrides.
+
+* Add the ability to create simple menus. Introduces new command
+  display-menu. Default menus are bound to MouseDown3 on the status line;
+  MouseDown3 or M-MouseDown3 on panes; MouseDown3 in tree, client and
+  buffer modes; and C-b C-m and C-b M-m.
+
+* Allow panes to be empty (no command). They can be created either by piping to
+  split-window -I, or by passing an empty command ('') to split-window. Output
+  can be sent to an existing empty window with display-message -I.
+
+* Add keys to jump between matching brackets (emacs C-M-f and C-M-b, vi %).
+
+* Add a -e flag to new-window, split-window, respawn-window, respawn-pane to
+  pass environment variables into the newly created process.
+
+* Hooks are now stored in the options tree as array options, allowing them to
+  have multiple separate commands. set-hook and show-hooks remain but
+  set-option and show-options can now also be used (show-options will only show
+  hooks if given the -H flag). Hooks with multiple commands are run in index
+  order.
+
+* Automatically scroll if dragging to create a selection with the mouse and the
+  cursor reaches the top or bottom line.
+
+* Add -no-clear variants of copy-selection and copy-pipe which do not clear the
+  selection after copying. Make copy-pipe clear the selection by default to be
+  consistent with copy-selection.
+
+* Add an argument to copy commands to set the prefix for the buffer name, this
+  (for example) allows buffers for different sessions to be named separately.
+
+* Update session activity on focus event.
+
+* Pass target from source-file into the config file parser so formats in %if
+  and %endif have access to more useful variables.
+
+* Add the ability to infer an option type (server, session, window) from its
+  name to show-options (it was already present in set-option).
+
+CHANGES FROM 2.9 to 2.9a
+
+* Fix bugs in select-pane and the main-horizontal and main-vertical layouts.
+
 CHANGES FROM 2.8 to 2.9
 
 * Attempt to preserve horizontal cursor position as well as vertical with
