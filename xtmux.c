@@ -1871,7 +1871,7 @@ xtmux_bell(struct tty *tty)
 }
 
 static void
-xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int right, u_int ox, u_int oy)
+xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int right, u_int atx, u_int aty)
 {
 	struct grid_line *gl = grid_get_line(s->grid, s->grid->hsize+py);
 	struct grid_cell ga = grid_default_cell;
@@ -1917,12 +1917,12 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 
 		if (px == bx || grid_attr_cmp(&gc, &ga))
 		{
-			xt_draw_cells(x, ox+bx, oy+py, &cl[bx-left], px-bx, &ga);
+			xt_draw_cells(x, atx+bx-left, aty, &cl[bx-left], px-bx, &ga);
 			bx = px;
 			ga = gc;
 		}
 	}
-	xt_draw_cells(x, ox+bx, oy+py, &cl[bx-left], px-bx, &ga);
+	xt_draw_cells(x, atx+bx-left, aty, &cl[bx-left], px-bx, &ga);
 	/* XXX do we need to clear from px to right? */
 }
 
@@ -1977,7 +1977,7 @@ xtmux_redraw_pane(struct tty *tty, struct window_pane *wp, int yoff, int left, i
 		bot = wp->sy;
 
 	for (y = top; y < (u_int)bot; y ++)
-		xt_draw_line(x, s, y, left, right, wp->xoff, yoff);
+		xt_draw_line(x, s, y, left, right, wp->xoff+left, yoff+y);
 }
 
 /* much like screen_redraw_screen, should possibly replace it */
