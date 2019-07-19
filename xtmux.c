@@ -2039,6 +2039,15 @@ xtmux_flush_callback(__unused int fd, __unused short events, void *data)
 }
 
 static void
+handle_key(struct client *c, key_code key)
+{
+	struct key_event *ke = xmalloc(sizeof *ke);
+	ke->key = key;
+	if (!server_client_handle_key(c, ke))
+		free(ke);
+}
+
+static void
 xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
@@ -2046,7 +2055,6 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 	int r, i;
 	static unsigned char buf[32];
 	KeySym xks = 0;
-	struct key_event ke;
 
 	if (x->xic)
 		r = Xutf8LookupString(x->xic, xev, buf, sizeof buf, &xks, NULL);
@@ -2137,61 +2145,58 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 	if (x->prefix_mod >= 0 && xev->state & (1<<x->prefix_mod))
 		server_client_set_key_table(tty->client, "prefix");
 
-	if (r < 0) {
-		ke.key = key;
-		server_client_handle_key(tty->client, &ke);
-	}
-	else for (i = 0; i < r; i ++) {
-		ke.key = key | buf[i];
-		server_client_handle_key(tty->client, &ke);
-	}
+	if (r < 0)
+		handle_key(tty->client, key);
+	else for (i = 0; i < r; i ++)
+		handle_key(tty->client, key | buf[i]);
 }
 
 static void
 xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 {
 	struct xtmux *x = tty->xtmux;
-	struct key_event ke = { KEYC_MOUSE };
+	struct mouse_event m;
 	int prefix;
+	struct key_event *ke;
 
-	ke.m.lx = tty->mouse_last_x;
-	ke.m.ly = tty->mouse_last_y;
-	ke.m.x = xev->x / x->cw;
-	ke.m.y = xev->y / x->ch;
+	m.lx = tty->mouse_last_x;
+	m.ly = tty->mouse_last_y;
+	m.x = xev->x / x->cw;
+	m.y = xev->y / x->ch;
 	prefix = xev->state & (x->prefix_mod >= 0 ? 1<<x->prefix_mod : ShiftMask);
 
 	switch (xev->type) {
 		case ButtonPress:
 			switch (xev->button)
 			{
-				case Button1: ke.m.b = 0; break;
-				case Button2: ke.m.b = 1; break;
-				case Button3: ke.m.b = 2; break;
-				case Button4: ke.m.b = MOUSE_MASK_WHEEL|0; break;
-				case Button5: ke.m.b = MOUSE_MASK_WHEEL|1; break;
+				case Button1: m.b = 0; break;
+				case Button2: m.b = 1; break;
+				case Button3: m.b = 2; break;
+				case Button4: m.b = MOUSE_MASK_WHEEL|0; break;
+				case Button5: m.b = MOUSE_MASK_WHEEL|1; break;
 				default: return;
 			}
 			break;
 		case ButtonRelease:
-			ke.m.b = 3;
+			m.b = 3;
 			break;
 		case MotionNotify:
 			if (!prefix && !(tty->mode & (MODE_MOUSE_BUTTON /* | MODE_MOUSE_ANY */)))
 				return;
-			if (ke.m.x == ke.m.lx && ke.m.y == ke.m.ly)
+			if (m.x == m.lx && m.y == m.ly)
 				return;
-			ke.m.b = MOUSE_MASK_DRAG;
+			m.b = MOUSE_MASK_DRAG;
 			if (xev->state & Button1Mask)
-				ke.m.b |= 0;
+				m.b |= 0;
 			else if (xev->state & Button2Mask)
-				ke.m.b |= 1;
+				m.b |= 1;
 			else if (xev->state & Button3Mask)
-				ke.m.b |= 2;
+				m.b |= 2;
 			else
 			{
 				/* if (!(tty->mode & MODE_MOUSE_ANY)) */
 					return;
-				ke.m.b |= 3;
+				m.b |= 3;
 			}
 			break;
 		default:
@@ -2199,16 +2204,20 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 	}
 
 	if (xev->state & ShiftMask)
-		ke.m.b |= MOUSE_MASK_SHIFT;
+		m.b |= MOUSE_MASK_SHIFT;
 	if (xev->state & Mod4Mask) /* META */
-		ke.m.b |= MOUSE_MASK_META;
+		m.b |= MOUSE_MASK_META;
 	if (xev->state & ControlMask)
-		ke.m.b |= MOUSE_MASK_CTRL;
+		m.b |= MOUSE_MASK_CTRL;
 
 	if (prefix)
 		server_client_set_key_table(tty->client, "prefix");
 
-	server_client_handle_key(tty->client, &ke);
+	ke = xmalloc(sizeof *ke);
+	ke->key = KEYC_MOUSE;
+	memcpy(&ke->m, &m, sizeof ke->m);
+	if (!server_client_handle_key(tty->client, ke))
+		free(ke);
 }
 
 static void
