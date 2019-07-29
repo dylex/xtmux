@@ -134,6 +134,11 @@ tty_resize(struct tty *tty)
 	struct winsize	 ws;
 	u_int		 sx, sy;
 
+#ifdef XTMUX
+	if (tty->xtmux)
+		return;
+#endif
+
 	if (ioctl(tty->fd, TIOCGWINSZ, &ws) != -1) {
 		sx = ws.ws_col;
 		if (sx == 0)
@@ -439,11 +444,6 @@ void
 tty_free(struct tty *tty)
 {
 	tty_close(tty);
-
-#ifdef XTMUX
-	if (tty->xtmux)
-		xtmux_free(tty);
-#endif
 
 	free(tty->ccolour);
 	free(tty->term_name);
@@ -878,7 +878,11 @@ tty_update_client_offset(struct client *c)
 {
 	u_int	ox, oy, sx, sy;
 
-	if (~c->flags & CLIENT_TERMINAL)
+	if (~c->flags & CLIENT_TERMINAL
+#ifdef XTMUX
+			&& !c->tty.xtmux
+#endif
+	   )
 		return;
 
 	c->tty.oflag = tty_window_offset1(&c->tty, &ox, &oy, &sx, &sy);
@@ -1422,7 +1426,7 @@ tty_draw_line(struct tty *tty, struct window_pane *wp, struct screen *s,
 static int
 tty_client_ready(struct client *c, struct window_pane *wp)
 {
-	if (c->session == NULL || c->tty.term == NULL
+	if ((c->session == NULL || c->tty.term == NULL)
 #ifdef XTMUX
 			&& c->tty.xtmux == NULL
 #endif

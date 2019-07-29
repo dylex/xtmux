@@ -286,6 +286,10 @@ server_client_lost(struct client *c)
 	 * If CLIENT_TERMINAL hasn't been set, then tty_init hasn't been called
 	 * and tty_free might close an unrelated fd.
 	 */
+#ifdef XTMUX
+	if (c->tty.xtmux)
+		xtmux_free(&c->tty);
+#endif
 	if (c->flags & CLIENT_TERMINAL)
 		tty_free(&c->tty);
 	free(c->ttyname);

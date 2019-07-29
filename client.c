@@ -279,6 +279,11 @@ client_main(struct event_base *base, int argc, char **argv, int flags)
 	/* Save these before pledge(). */
 	if ((cwd = find_cwd()) == NULL && (cwd = find_home()) == NULL)
 		cwd = "/";
+#ifdef XTMUX
+	if (xdisplay)
+		ttynam = "";
+	else
+#endif
 	if ((ttynam = ttyname(STDIN_FILENO)) == NULL)
 		ttynam = "";
 
@@ -303,6 +308,10 @@ client_main(struct event_base *base, int argc, char **argv, int flags)
 	environ_free(global_environ);
 
 	/* Create stdin handler. */
+#ifdef XTMUX
+	if (!xdisplay)
+#endif
+	{
 	setblocking(STDIN_FILENO, 0);
 	event_set(&client_stdin, STDIN_FILENO, EV_READ|EV_PERSIST,
 	    client_stdin_callback, NULL);
@@ -324,6 +333,7 @@ client_main(struct event_base *base, int argc, char **argv, int flags)
 		cfsetispeed(&tio, cfgetispeed(&saved_tio));
 		cfsetospeed(&tio, cfgetospeed(&saved_tio));
 		tcsetattr(STDIN_FILENO, TCSANOW, &tio);
+	}
 	}
 
 	/* Send identify messages. */
@@ -403,6 +413,11 @@ client_send_identify(const char *ttynam, const char *cwd)
 
 	proc_send(client_peer, MSG_IDENTIFY_FLAGS, -1, &flags, sizeof flags);
 
+#ifdef XTMUX
+	if (xdisplay)
+		s = "";
+	else
+#endif
 	if ((s = getenv("TERM")) == NULL)
 		s = "";
 	proc_send(client_peer, MSG_IDENTIFY_TERM, -1, s, strlen(s) + 1);
@@ -411,6 +426,11 @@ client_send_identify(const char *ttynam, const char *cwd)
 	    strlen(ttynam) + 1);
 	proc_send(client_peer, MSG_IDENTIFY_CWD, -1, cwd, strlen(cwd) + 1);
 
+#ifdef XTMUX
+	if (xdisplay)
+		fd = -1;
+	else
+#endif
 	if ((fd = dup(STDIN_FILENO)) == -1)
 		fatal("dup failed");
 	proc_send(client_peer, MSG_IDENTIFY_STDIN, fd, NULL, 0);
@@ -525,6 +545,9 @@ client_signal(int sig)
 			proc_send(client_peer, MSG_EXITING, -1, NULL, 0);
 			break;
 		case SIGWINCH:
+#ifdef XTMUX
+			if (!xdisplay)
+#endif
 			proc_send(client_peer, MSG_RESIZE, -1, NULL, 0);
 			break;
 		case SIGCONT:
@@ -603,8 +626,14 @@ client_dispatch_wait(struct imsg *imsg)
 		if (datalen != 0)
 			fatalx("bad MSG_READY size");
 
+#ifdef XTMUX
+		if (!xdisplay)
+#endif
 		event_del(&client_stdin);
 		client_attached = 1;
+#ifdef XTMUX
+		if (!xdisplay)
+#endif
 		proc_send(client_peer, MSG_RESIZE, -1, NULL, 0);
 		break;
 	case MSG_STDIN:

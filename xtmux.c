@@ -565,7 +565,7 @@ static void
 xt_free_font(struct xtmux *x, enum font_type type)
 {
 	struct font *font = &x->font[type];
-	if (!x->ioerror && font->fid)
+	if (!x->ioerror && font->fid != None)
 		XUnloadFont(x->display, font->fid);
 	font->fid = None;
 	free(font->name);
@@ -849,10 +849,12 @@ xtmux_close(struct tty *tty)
 	struct xtmux *x = tty->xtmux;
 	enum font_type ft;
 
-	tty->flags &= ~TTY_OPENED;
+	if (tty->flags & TTY_OPENED) {
+		tty->flags &= ~TTY_OPENED;
 
-	event_del(&x->flush_timer);
-	event_del(&x->event);
+		event_del(&x->flush_timer);
+		event_del(&x->event);
+	}
 
 	/* Must be careful here if we got an IO error:
 	 * want to free resources without using the connection */
@@ -875,14 +877,14 @@ xtmux_close(struct tty *tty)
 		x->paste.sep = NULL;
 	}
 
-	if (x->pointer)
+	if (x->pointer != None)
 	{
 		if (!x->ioerror)
 			XFreeCursor(x->display, x->pointer);
 		x->pointer = None;
 	}
 
-	if (x->cursor)
+	if (x->cursor != None)
 	{
 		XFreePixmap(x->display, x->cursor);
 		x->cursor = None;
@@ -924,6 +926,7 @@ xtmux_close(struct tty *tty)
 void
 xtmux_free(struct tty *tty)
 {
+	xtmux_close(tty);
 	free(tty->xtmux->display_name);
 	free(tty->xtmux);
 }
@@ -2229,8 +2232,7 @@ xtmux_configure_notify(struct tty *tty, XConfigureEvent *xev)
 
 	if (sx != tty->sx || sy != tty->sy)
 	{
-		tty->sx = sx;
-		tty->sy = sy;
+		tty_set_size(tty, sx, sy);
 		xtmux_cursor(tty, 0, 0);
 		recalculate_sizes();
 	}
