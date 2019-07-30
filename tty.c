@@ -1426,7 +1426,7 @@ tty_draw_line(struct tty *tty, struct window_pane *wp, struct screen *s,
 static int
 tty_client_ready(struct client *c, struct window_pane *wp)
 {
-	if ((c->session == NULL || c->tty.term == NULL)
+	if (c->session == NULL || c->tty.term == NULL
 #ifdef XTMUX
 			&& c->tty.xtmux == NULL
 #endif
