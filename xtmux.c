@@ -2164,6 +2164,7 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 
 	m.lx = tty->mouse_last_x;
 	m.ly = tty->mouse_last_y;
+	m.lb = tty->mouse_last_b;
 	m.x = xev->x / x->cw;
 	m.y = xev->y / x->ch;
 	prefix = xev->state & (x->prefix_mod >= 0 ? 1<<x->prefix_mod : ShiftMask);
@@ -2221,6 +2222,10 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 	memcpy(&ke->m, &m, sizeof ke->m);
 	if (!server_client_handle_key(tty->client, ke))
 		free(ke);
+	
+	tty->mouse_last_x = m.x;
+	tty->mouse_last_y = m.y;
+	tty->mouse_last_b = m.b;
 }
 
 static void
