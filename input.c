@@ -244,6 +244,7 @@ enum input_csi_type {
 	INPUT_CSI_RM,
 	INPUT_CSI_RM_PRIVATE,
 	INPUT_CSI_SCP,
+	INPUT_CSI_SD,
 	INPUT_CSI_SGR,
 	INPUT_CSI_SM,
 	INPUT_CSI_SM_PRIVATE,
@@ -270,6 +271,7 @@ static const struct input_table_entry input_csi_table[] = {
 	{ 'M', "",  INPUT_CSI_DL },
 	{ 'P', "",  INPUT_CSI_DCH },
 	{ 'S', "",  INPUT_CSI_SU },
+	{ 'T', "",  INPUT_CSI_SD },
 	{ 'X', "",  INPUT_CSI_ECH },
 	{ 'Z', "",  INPUT_CSI_CBT },
 	{ '`', "",  INPUT_CSI_HPA },
@@ -1525,6 +1527,11 @@ input_csi_dispatch(struct input_ctx *ictx)
 		if (n != -1)
 			screen_write_scrollup(sctx, n, bg);
 		break;
+	case INPUT_CSI_SD:
+		n = input_get(ictx, 0, 1, 1);
+		if (n != -1)
+			screen_write_scrolldown(sctx, n, bg);
+		break;
 	case INPUT_CSI_TBC:
 		switch (input_get(ictx, 0, 0, 0)) {
 		case -1:
@@ -1829,6 +1836,8 @@ input_csi_dispatch_sgr_256_do(struct input_ctx *ictx, int fgbg, int c)
 			gc->fg = c | COLOUR_FLAG_256;
 		else if (fgbg == 48)
 			gc->bg = c | COLOUR_FLAG_256;
+		else if (fgbg == 58)
+			gc->us = c | COLOUR_FLAG_256;
 	}
 	return (1);
 }
@@ -1862,6 +1871,8 @@ input_csi_dispatch_sgr_rgb_do(struct input_ctx *ictx, int fgbg, int r, int g,
 		gc->fg = colour_join_rgb(r, g, b);
 	else if (fgbg == 48)
 		gc->bg = colour_join_rgb(r, g, b);
+	else if (fgbg == 58)
+		gc->us = colour_join_rgb(r, g, b);
 	return (1);
 }
 
@@ -1938,7 +1949,7 @@ input_csi_dispatch_sgr_colon(struct input_ctx *ictx, u_int i)
 		}
 		return;
 	}
-	if (n < 2 || (p[0] != 38 && p[0] != 48))
+	if (n < 2 || (p[0] != 38 && p[0] != 48 && p[0] != 58))
 		return;
 	switch (p[1]) {
 	case 2:
@@ -1983,7 +1994,7 @@ input_csi_dispatch_sgr(struct input_ctx *ictx)
 		if (n == -1)
 			continue;
 
-		if (n == 38 || n == 48) {
+		if (n == 38 || n == 48 || n == 58) {
 			i++;
 			switch (input_get(ictx, i, 0, -1)) {
 			case 2:
@@ -2077,6 +2088,9 @@ input_csi_dispatch_sgr(struct input_ctx *ictx)
 			break;
 		case 55:
 			gc->attr &= ~GRID_ATTR_OVERLINE;
+			break;
+		case 59:
+			gc->us = 0;
 			break;
 		case 90:
 		case 91:
@@ -2259,7 +2273,7 @@ input_exit_rename(struct input_ctx *ictx)
 {
 	if (ictx->flags & INPUT_DISCARD)
 		return;
-	if (!options_get_number(ictx->wp->window->options, "allow-rename"))
+	if (!options_get_number(ictx->wp->options, "allow-rename"))
 		return;
 	log_debug("%s: \"%s\"", __func__, ictx->input_buf);
 
@@ -2347,12 +2361,14 @@ input_osc_10(struct input_ctx *ictx, const char *p)
 {
 	struct window_pane	*wp = ictx->wp;
 	u_int			 r, g, b;
+	char			 tmp[16];
 
 	if (sscanf(p, "rgb:%2x/%2x/%2x", &r, &g, &b) != 3)
 	    goto bad;
-
-	wp->style.gc.fg = colour_join_rgb(r, g, b);
-	wp->flags |= PANE_REDRAW;
+	xsnprintf(tmp, sizeof tmp, "fg=#%02x%02x%02x", r, g, b);
+	options_set_style(wp->options, "window-style", 1, tmp);
+	options_set_style(wp->options, "window-active-style", 1, tmp);
+	wp->flags |= (PANE_REDRAW|PANE_STYLECHANGED);
 
 	return;
 
@@ -2366,12 +2382,14 @@ input_osc_11(struct input_ctx *ictx, const char *p)
 {
 	struct window_pane	*wp = ictx->wp;
 	u_int			 r, g, b;
+	char			 tmp[16];
 
 	if (sscanf(p, "rgb:%2x/%2x/%2x", &r, &g, &b) != 3)
 	    goto bad;
-
-	wp->style.gc.bg = colour_join_rgb(r, g, b);
-	wp->flags |= PANE_REDRAW;
+	xsnprintf(tmp, sizeof tmp, "bg=#%02x%02x%02x", r, g, b);
+	options_set_style(wp->options, "window-style", 1, tmp);
+	options_set_style(wp->options, "window-active-style", 1, tmp);
+	wp->flags |= (PANE_REDRAW|PANE_STYLECHANGED);
 
 	return;
 
@@ -2409,7 +2427,6 @@ input_osc_52(struct input_ctx *ictx, const char *p)
 			outlen = 4 * ((len + 2) / 3) + 1;
 			out = xmalloc(outlen);
 			if ((outlen = b64_ntop(buf, len, out, outlen)) == -1) {
-				abort();
 				free(out);
 				return;
 			}

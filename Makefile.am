@@ -89,7 +89,6 @@ dist_tmux_SOURCES = \
 	cmd-list-panes.c \
 	cmd-list-sessions.c \
 	cmd-list-windows.c \
-	cmd-list.c \
 	cmd-load-buffer.c \
 	cmd-lock-server.c \
 	cmd-move-window.c \
@@ -153,6 +152,7 @@ dist_tmux_SOURCES = \
 	options.c \
 	paste.c \
 	proc.c \
+	regsub.c \
 	resize.c \
 	screen-redraw.c \
 	screen-write.c \

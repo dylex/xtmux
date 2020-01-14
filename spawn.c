@@ -170,10 +170,8 @@ spawn_window(struct spawn_context *sc, char **cause)
 	/* Spawn the pane. */
 	wp = spawn_pane(sc, cause);
 	if (wp == NULL) {
-		if (~sc->flags & SPAWN_RESPAWN) {
-			window_destroy(w);
+		if (~sc->flags & SPAWN_RESPAWN)
 			winlink_remove(&s->windows, sc->wl);
-		}
 		return (NULL);
 	}
 
@@ -252,7 +250,7 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	 * Now we have a pane with nothing running in it ready for the new
 	 * process. Work out the command and arguments.
 	 */
-	if (sc->argc == 0) {
+	if (sc->argc == 0 && (~sc->flags & SPAWN_RESPAWN)) {
 		cmd = options_get_string(s->options, "default-command");
 		if (cmd != NULL && *cmd != '\0') {
 			argc = 1;
@@ -332,14 +330,6 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	cmd_log_argv(new_wp->argc, new_wp->argv, "%s", __func__);
 	environ_log(child, "%s: environment ", __func__);
 
-	/* If the command is empty, don't fork a child process. */
-	if (sc->flags & SPAWN_EMPTY) {
-		new_wp->flags |= PANE_EMPTY;
-		new_wp->base.mode &= ~MODE_CURSOR;
-		new_wp->base.mode |= MODE_CRLF;
-		goto complete;
-	}
-
 	/* Initialize the window size. */
 	memset(&ws, 0, sizeof ws);
 	ws.ws_col = screen_size_x(&new_wp->base);
@@ -348,6 +338,14 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	/* Block signals until fork has completed. */
 	sigfillset(&set);
 	sigprocmask(SIG_BLOCK, &set, &oldset);
+
+	/* If the command is empty, don't fork a child process. */
+	if (sc->flags & SPAWN_EMPTY) {
+		new_wp->flags |= PANE_EMPTY;
+		new_wp->base.mode &= ~MODE_CURSOR;
+		new_wp->base.mode |= MODE_CRLF;
+		goto complete;
+	}
 
 	/* Fork the new process. */
 	new_wp->pid = fdforkpty(ptm_fd, &new_wp->fd, new_wp->tty, NULL, &ws);

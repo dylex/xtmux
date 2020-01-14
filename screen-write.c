@@ -36,7 +36,7 @@ static const struct grid_cell *screen_write_combine(struct screen_write_ctx *,
 		    const struct utf8_data *, u_int *);
 
 static const struct grid_cell screen_write_pad_cell = {
-	GRID_FLAG_PADDING, 0, 8, 8, { { 0 }, 0, 0, 0 }
+	{ { 0 }, 0, 0, 0 }, 0, GRID_FLAG_PADDING, 0, 8, 8
 };
 
 struct screen_write_collect_item {
@@ -1088,6 +1088,31 @@ screen_write_scrollup(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 	ctx->scrolled += lines;
 }
 
+/* Scroll down. */
+void
+screen_write_scrolldown(struct screen_write_ctx *ctx, u_int lines, u_int bg)
+{
+	struct screen	*s = ctx->s;
+	struct grid	*gd = s->grid;
+	struct tty_ctx	 ttyctx;
+	u_int		 i;
+
+	screen_write_initctx(ctx, &ttyctx);
+	ttyctx.bg = bg;
+
+	if (lines == 0)
+		lines = 1;
+	else if (lines > s->rlower - s->rupper + 1)
+		lines = s->rlower - s->rupper + 1;
+
+	for (i = 0; i < lines; i++)
+		grid_view_scroll_region_down(gd, s->rupper, s->rlower, bg);
+
+	screen_write_collect_flush(ctx, 0);
+	ttyctx.num = lines;
+	tty_write(tty_cmd_scrolldown, &ttyctx);
+}
+
 /* Carriage return (cursor to start of line). */
 void
 screen_write_carriagereturn(struct screen_write_ctx *ctx)
@@ -1169,11 +1194,7 @@ screen_write_clearscreen(struct screen_write_ctx *ctx, u_int bg)
 void
 screen_write_clearhistory(struct screen_write_ctx *ctx)
 {
-	struct screen	*s = ctx->s;
-	struct grid	*gd = s->grid;
-
-	grid_move_lines(gd, 0, gd->hsize, gd->sy, 8);
-	gd->hscrolled = gd->hsize = 0;
+	grid_clear_history(ctx->s->grid);
 }
 
 /* Clear a collected line. */

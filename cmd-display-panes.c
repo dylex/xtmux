@@ -188,7 +188,7 @@ cmd_display_panes_free(struct client *c)
 	struct cmd_display_panes_data	*cdata = c->overlay_data;
 
 	if (cdata->item != NULL)
-		cdata->item->flags &= ~CMDQ_WAITING;
+		cmdq_continue(cdata->item);
 	free(cdata->command);
 	free(cdata);
 }
@@ -204,7 +204,7 @@ cmd_display_panes_key(struct client *c, struct key_event *event)
 	struct cmd_parse_result		*pr;
 
 	if (event->key < '0' || event->key > '9')
-		return (1);
+		return (-1);
 
 	wp = window_pane_at_index(w, event->key - '0');
 	if (wp == NULL)
