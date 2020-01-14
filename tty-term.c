@@ -242,6 +242,7 @@ static const struct tty_term_code_entry tty_term_codes[] = {
 	[TTYC_REV] = { TTYCODE_STRING, "rev" },
 	[TTYC_RGB] = { TTYCODE_FLAG, "RGB" },
 	[TTYC_RI] = { TTYCODE_STRING, "ri" },
+	[TTYC_RIN] = { TTYCODE_STRING, "rin" },
 	[TTYC_RMACS] = { TTYCODE_STRING, "rmacs" },
 	[TTYC_RMCUP] = { TTYCODE_STRING, "rmcup" },
 	[TTYC_RMKX] = { TTYCODE_STRING, "rmkx" },
@@ -249,6 +250,7 @@ static const struct tty_term_code_entry tty_term_codes[] = {
 	[TTYC_SETAF] = { TTYCODE_STRING, "setaf" },
 	[TTYC_SETRGBB] = { TTYCODE_STRING, "setrgbb" },
 	[TTYC_SETRGBF] = { TTYCODE_STRING, "setrgbf" },
+	[TTYC_SETULC] = { TTYCODE_STRING, "Setulc" },
 	[TTYC_SE] = { TTYCODE_STRING, "Se" },
 	[TTYC_SGR0] = { TTYCODE_STRING, "sgr0" },
 	[TTYC_SITM] = { TTYCODE_STRING, "sitm" },
@@ -279,7 +281,7 @@ static char *
 tty_term_strip(const char *s)
 {
 	const char     *ptr;
-	static char	buf[BUFSIZ];
+	static char	buf[8192];
 	size_t		len;
 
 	/* Ignore strings with no padding. */
@@ -307,7 +309,7 @@ tty_term_strip(const char *s)
 static char *
 tty_term_override_next(const char *s, size_t *offset)
 {
-	static char	value[BUFSIZ];
+	static char	value[8192];
 	size_t		n = 0, at = *offset;
 
 	if (s[at] == '\0')
@@ -691,7 +693,7 @@ tty_term_describe(struct tty_term *term, enum tty_code_code code)
 		break;
 	case TTYCODE_STRING:
 		strnvis(out, term->codes[code].value.string, sizeof out,
-		    VIS_OCTAL|VIS_TAB|VIS_NL);
+		    VIS_OCTAL|VIS_CSTYLE|VIS_TAB|VIS_NL);
 		xsnprintf(s, sizeof s, "%4u: %s: (string) %s",
 		    code, tty_term_codes[code].name,
 		    out);

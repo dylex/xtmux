@@ -161,7 +161,7 @@ menu_free_cb(struct client *c)
 	struct menu_data	*md = c->overlay_data;
 
 	if (md->item != NULL)
-		md->item->flags &= ~CMDQ_WAITING;
+		cmdq_continue(md->item);
 
 	if (md->cb != NULL)
 		md->cb(md->menu, UINT_MAX, KEYC_NONE, md->data);
@@ -185,8 +185,11 @@ menu_key_cb(struct client *c, struct key_event *event)
 	const char			*name;
 
 	if (KEYC_IS_MOUSE(event->key)) {
-		if (md->flags & MENU_NOMOUSE)
+		if (md->flags & MENU_NOMOUSE) {
+			if (MOUSE_BUTTONS(m->b) != 0)
+				return (1);
 			return (0);
+		}
 		if (m->x < md->px ||
 		    m->x > md->px + 4 + menu->width ||
 		    m->y < md->py + 1 ||
@@ -206,8 +209,18 @@ menu_key_cb(struct client *c, struct key_event *event)
 			c->flags |= CLIENT_REDRAWOVERLAY;
 		return (0);
 	}
+	for (i = 0; i < (u_int)count; i++) {
+		name = menu->items[i].name;
+		if (name == NULL || *name == '-')
+			continue;
+		if (event->key == menu->items[i].key) {
+			md->choice = i;
+			goto chosen;
+		}
+	}
 	switch (event->key) {
 	case KEYC_UP:
+	case 'k':
 		if (old == -1)
 			old = 0;
 		do {
@@ -220,6 +233,7 @@ menu_key_cb(struct client *c, struct key_event *event)
 		c->flags |= CLIENT_REDRAWOVERLAY;
 		return (0);
 	case KEYC_DOWN:
+	case 'j':
 		if (old == -1)
 			old = 0;
 		do {
@@ -238,15 +252,6 @@ menu_key_cb(struct client *c, struct key_event *event)
 	case '\007': /* C-g */
 	case 'q':
 		return (1);
-	}
-	for (i = 0; i < (u_int)count; i++) {
-		name = menu->items[i].name;
-		if (name == NULL || *name == '-')
-			continue;
-		if (event->key == menu->items[i].key) {
-			md->choice = i;
-			goto chosen;
-		}
 	}
 	return (0);
 

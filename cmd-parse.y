@@ -77,6 +77,8 @@ static char	*cmd_parse_get_error(const char *, u_int, const char *);
 static void	 cmd_parse_free_command(struct cmd_parse_command *);
 static struct cmd_parse_commands *cmd_parse_new_commands(void);
 static void	 cmd_parse_free_commands(struct cmd_parse_commands *);
+static void	 cmd_parse_print_commands(struct cmd_parse_input *, u_int,
+		     struct cmd_list *);
 
 %}
 
@@ -508,6 +510,22 @@ cmd_parse_get_error(const char *file, u_int line, const char *error)
 }
 
 static void
+cmd_parse_print_commands(struct cmd_parse_input *pi, u_int line,
+    struct cmd_list *cmdlist)
+{
+	char	*s;
+
+	if (pi->item != NULL && (pi->flags & CMD_PARSE_VERBOSE)) {
+		s = cmd_list_print(cmdlist, 0);
+		if (pi->file != NULL)
+			cmdq_print(pi->item, "%s:%u: %s", pi->file, line, s);
+		else
+			cmdq_print(pi->item, "%u: %s", line, s);
+		free(s);
+	}
+}
+
+static void
 cmd_parse_free_command(struct cmd_parse_command *cmd)
 {
 	free(cmd->name);
@@ -663,6 +681,7 @@ cmd_parse_build_commands(struct cmd_parse_commands *cmds,
 
 		if (cmdlist == NULL || cmd->line != line) {
 			if (cmdlist != NULL) {
+				cmd_parse_print_commands(pi, line, cmdlist);
 				cmd_list_move(result, cmdlist);
 				cmd_list_free(cmdlist);
 			}
@@ -682,6 +701,7 @@ cmd_parse_build_commands(struct cmd_parse_commands *cmds,
 		cmd_list_append(cmdlist, add);
 	}
 	if (cmdlist != NULL) {
+		cmd_parse_print_commands(pi, line, cmdlist);
 		cmd_list_move(result, cmdlist);
 		cmd_list_free(cmdlist);
 	}
@@ -1124,16 +1144,53 @@ error:
 static int
 yylex_token_escape(char **buf, size_t *len)
 {
-	int			 ch, type;
+	int			 ch, type, o2, o3;
 	u_int			 size, i, tmp;
 	char			 s[9];
 	struct utf8_data	 ud;
 
-	switch (ch = yylex_getc()) {
+	ch = yylex_getc();
+
+	if (ch >= '4' && ch <= '7') {
+		yyerror("invalid octal escape");
+		return (0);
+	}
+	if (ch >= '0' && ch <= '3') {
+		o2 = yylex_getc();
+		if (o2 >= '0' && o2 <= '7') {
+			o3 = yylex_getc();
+			if (o3 >= '0' && o3 <= '7') {
+				ch = 64 * (ch - '0') +
+				      8 * (o2 - '0') +
+				          (o3 - '0');
+				yylex_append1(buf, len, ch);
+				return (1);
+			}
+		}
+		yyerror("invalid octal escape");
+		return (0);
+	}
+
+	switch (ch) {
 	case EOF:
 		return (0);
+	case 'a':
+		ch = '\a';
+		break;
+	case 'b':
+		ch = '\b';
+		break;
 	case 'e':
 		ch = '\033';
+		break;
+	case 'f':
+		ch = '\f';
+		break;
+	case 's':
+		ch = ' ';
+		break;
+	case 'v':
+		ch = '\v';
 		break;
 	case 'r':
 		ch = '\r';
@@ -1188,7 +1245,7 @@ yylex_token_variable(char **buf, size_t *len)
 {
 	struct environ_entry	*envent;
 	int			 ch, brackets = 0;
-	char			 name[BUFSIZ];
+	char			 name[1024];
 	size_t			 namelen = 0;
 	const char		*value;
 
@@ -1240,7 +1297,7 @@ yylex_token_tilde(char **buf, size_t *len)
 {
 	struct environ_entry	*envent;
 	int			 ch;
-	char			 name[BUFSIZ];
+	char			 name[1024];
 	size_t			 namelen = 0;
 	struct passwd		*pw;
 	const char		*home = NULL;
@@ -1281,8 +1338,8 @@ static int
 yylex_token_brace(char **buf, size_t *len)
 {
 	struct cmd_parse_state	*ps = &parse_state;
-	int 			 ch, nesting = 1, escape = 0, quote = '\0';
-	int			 lines = 0;
+	int 			 ch, lines = 0, nesting = 1, escape = 0;
+	int			 quote = '\0', token = 0;
 
 	/*
 	 * Extract a string up to the matching unquoted '}', including newlines
@@ -1291,6 +1348,10 @@ yylex_token_brace(char **buf, size_t *len)
 	 * To detect the final and intermediate braces which affect the nesting
 	 * depth, we scan the input as if it was a tmux config file, and ignore
 	 * braces which would be considered quoted, escaped, or in a comment.
+	 *
+	 * We update the token state after every character because '#' begins a
+	 * comment only when it begins a token. For simplicity, we treat an
+	 * unquoted directive format as comment.
 	 *
 	 * The result is verbatim copy of the input excluding the final brace.
 	 */
@@ -1311,6 +1372,8 @@ yylex_token_brace(char **buf, size_t *len)
 		    ch == '\n' ||
 		    ch == '\\')) {
 			escape = 0;
+			if (ch != '\n')
+				token = 1;
 			continue;
 		}
 
@@ -1326,7 +1389,7 @@ yylex_token_brace(char **buf, size_t *len)
 
 		/* A newline always resets to unquoted. */
 		if (ch == '\n') {
-			quote = 0;
+			quote = token = 0;
 			continue;
 		}
 
@@ -1337,33 +1400,47 @@ yylex_token_brace(char **buf, size_t *len)
 			 */
 			if (ch == quote && quote != '#')
 				quote = 0;
-		} else  {
+			token = 1;  /* token continues regardless */
+		} else {
 			/* Not inside quotes or comment. */
 			switch (ch) {
 			case '"':
 			case '\'':
 			case '#':
-				/* Beginning of quote or comment. */
-				quote = ch;
+				/* Beginning of quote or maybe comment. */
+				if (ch != '#' || !token)
+					quote = ch;
+				token = 1;
+				break;
+			case ' ':
+			case '\t':
+			case ';':
+				/* Delimiter - token resets. */
+				token = 0;
 				break;
 			case '{':
 				nesting++;
+				token = 0; /* new commands set - token resets */
 				break;
 			case '}':
 				nesting--;
+				token = 1;  /* same as after quotes */
 				if (nesting == 0) {
 					(*len)--; /* remove closing } */
 					ps->input->line += lines;
 					return (1);
 				}
 				break;
+			default:
+				token = 1;
+				break;
 			}
 		}
 	}
 
 	/*
-	 * Update line count after error as reporting the opening line
-	 * is more useful than EOF.
+	 * Update line count after error as reporting the opening line is more
+	 * useful than EOF.
 	 */
 	yyerror("unterminated brace string");
 	ps->input->line += lines;
