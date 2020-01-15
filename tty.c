@@ -577,7 +577,7 @@ tty_putc(struct tty *tty, u_char ch)
 		xtmux_putc(tty, ch);
 	else
 #endif
-	if ((tty->term->flags & TERM_EARLYWRAP) &&
+	if ((tty_term_flags(tty) & TERM_EARLYWRAP) &&
 	    ch >= 0x20 && ch != 0x7f &&
 	    tty->cy == tty->sy - 1 &&
 	    tty->cx + 1 >= tty->sx)
@@ -613,7 +613,7 @@ tty_putc(struct tty *tty, u_char ch)
 static void
 tty_putn(struct tty *tty, const void *buf, size_t len, u_int width)
 {
-	if ((tty->term->flags & TERM_EARLYWRAP) &&
+	if ((tty_term_flags(tty) & TERM_EARLYWRAP) &&
 	    tty->cy == tty->sy - 1 &&
 	    tty->cx + len >= tty->sx)
 		len = tty->sx - tty->cx - 1;
@@ -1966,7 +1966,7 @@ tty_cmd_cells(struct tty *tty, const struct tty_ctx *ctx)
 	    ctx->xoff + ctx->ocx + ctx->num > ctx->ox + ctx->sx)) {
 		if (!ctx->wrapped ||
 		    !tty_pane_full_width(tty, ctx) ||
-		    (tty->term->flags & TERM_EARLYWRAP) ||
+		    (tty_term_flags(tty) & TERM_EARLYWRAP) ||
 		    ctx->xoff + ctx->ocx != 0 ||
 		    ctx->yoff + ctx->ocy != tty->cy + 1 ||
 		    tty->cx < tty->sx ||
