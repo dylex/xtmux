@@ -665,7 +665,7 @@ cmd_find_valid_state(struct cmd_find_state *fs)
 {
 	struct winlink	*wl;
 
-	if (fs->s == NULL || fs->wl == NULL || fs->w == NULL || fs->wp == NULL || fs->c == NULL)
+	if (fs->s == NULL || fs->wl == NULL || fs->w == NULL || fs->wp == NULL)
 		return (0);
 
 	if (!session_alive(fs->s))
