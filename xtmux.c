@@ -641,7 +641,7 @@ xtmux_setup(struct tty *tty)
 			XSizeHints size_hints;
 
 			XGetGeometry(x->display, x->window, &root, &xpos, &ypos, &width, &height, &border, &depth);
-			tty_set_size(tty, width/x->cw, height/x->ch);
+			tty_set_size(tty, width/x->cw, height/x->ch, x->cw, x->ch);
 			XClearWindow(x->display, x->window);
 			recalculate_sizes();
 
@@ -2237,7 +2237,7 @@ xtmux_configure_notify(struct tty *tty, XConfigureEvent *xev)
 
 	if (sx != tty->sx || sy != tty->sy)
 	{
-		tty_set_size(tty, sx, sy);
+		tty_set_size(tty, sx, sy, x->cw, x->ch);
 		xtmux_cursor(tty, 0, 0);
 		recalculate_sizes();
 	}

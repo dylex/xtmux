@@ -18,6 +18,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 
 #include <errno.h>
 #include <event.h>
@@ -135,6 +136,7 @@ make_label(const char *label, char **cause)
 		free(base);
 		goto fail;
 	}
+	free(base);
 
 	if (mkdir(resolved, S_IRWXU) != 0 && errno != EEXIST)
 		goto fail;
@@ -216,6 +218,12 @@ find_home(void)
 	return (home);
 }
 
+const char *
+getversion(void)
+{
+	return TMUX_VERSION;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -242,7 +250,7 @@ main(int argc, char **argv)
 		flags = 0;
 
 	label = path = NULL;
-	while ((opt = getopt(argc, argv, "2c:Cdf:lL:qS:uUVv"
+	while ((opt = getopt(argc, argv, "2c:Cdf:lL:qS:uUvV"
 #ifdef XTMUX
 					"x"
 #endif
@@ -260,12 +268,12 @@ main(int argc, char **argv)
 			else
 				flags |= CLIENT_CONTROL;
 			break;
-		case 'V':
-			printf("%s %s\n", getprogname(), VERSION);
-			exit(0);
 		case 'f':
 			set_cfg_file(optarg);
 			break;
+ 		case 'V':
+			printf("%s %s\n", getprogname(), getversion());
+ 			exit(0);
 		case 'l':
 			flags |= CLIENT_LOGIN;
 			break;

@@ -6,12 +6,15 @@ CLEANFILES = tmux.1.mdoc tmux.1.man cmd-parse.c
 
 # Distribution tarball options.
 EXTRA_DIST = \
-	CHANGES README README.ja COPYING example_tmux.conf compat/*.[ch] \
+	CHANGES README README.ja COPYING example_tmux.conf \
 	osdep-*.c mdoc2man.awk tmux.1 \
 	README.xtmux xtmux.c
+dist_EXTRA_tmux_SOURCES = compat/*.[ch]
 
 # Preprocessor flags.
-AM_CPPFLAGS += @XOPEN_DEFINES@ -DTMUX_CONF="\"$(sysconfdir)/tmux.conf\""
+AM_CPPFLAGS += @XOPEN_DEFINES@ \
+	-DTMUX_VERSION="\"@VERSION@\"" \
+	-DTMUX_CONF="\"$(sysconfdir)/tmux.conf:~/.tmux.conf:~/.config/tmux/tmux.conf\""
 
 # Additional object files.
 LDADD = $(LIBOBJS)
@@ -131,6 +134,7 @@ dist_tmux_SOURCES = \
 	control-notify.c \
 	control.c \
 	environ.c \
+	file.c \
 	format.c \
 	format-draw.c \
 	grid-view.c \
