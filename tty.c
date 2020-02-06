@@ -74,7 +74,7 @@ static void	tty_default_attributes(struct tty *, struct window_pane *,
 		    u_int);
 
 #define tty_use_margin(tty) \
-	((tty->term->flags|tty->term_flags) & TERM_DECSLRM)
+	((tty_term_flags(tty)|tty->term_flags) & TERM_DECSLRM)
 
 #ifdef XTMUX
 #define tty_term_flags(tty) \
