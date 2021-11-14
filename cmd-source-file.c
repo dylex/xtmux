@@ -35,8 +35,8 @@ const struct cmd_entry cmd_source_file_entry = {
 	.name = "source-file",
 	.alias = "source",
 
-	.args = { "nqv", 1, -1 },
-	.usage = "[-nqv] path ...",
+	.args = { "Fnqv", 1, -1 },
+	.usage = "[-Fnqv] path ...",
 
 	.flags = 0,
 	.exec = cmd_source_file_exec
@@ -67,7 +67,9 @@ cmd_source_file_complete(struct client *c, struct cmd_source_file_data *cdata)
 	struct cmdq_item	*new_item;
 
 	if (cfg_finished) {
-		if (cdata->retval == CMD_RETURN_ERROR && c->session == NULL)
+		if (cdata->retval == CMD_RETURN_ERROR &&
+		    c != NULL &&
+		    c->session == NULL)
 			c->retval = 1;
 		new_item = cmdq_get_callback(cmd_source_file_complete_cb, NULL);
 		cmdq_insert_after(cdata->after, new_item);
@@ -122,11 +124,11 @@ cmd_source_file_add(struct cmd_source_file_data *cdata, const char *path)
 static enum cmd_retval
 cmd_source_file_exec(struct cmd *self, struct cmdq_item *item)
 {
-	struct args			*args = self->args;
+	struct args			*args = cmd_get_args(self);
 	struct cmd_source_file_data	*cdata;
-	struct client			*c = item->client;
+	struct client			*c = cmdq_get_client(item);
 	enum cmd_retval			 retval = CMD_RETURN_NORMAL;
-	char				*pattern, *cwd;
+	char				*pattern, *cwd, *expand = NULL;
 	const char			*path, *error;
 	glob_t				 g;
 	int				 i, result;
@@ -145,7 +147,12 @@ cmd_source_file_exec(struct cmd *self, struct cmdq_item *item)
 	utf8_stravis(&cwd, server_client_get_cwd(c, NULL), VIS_GLOB);
 
 	for (i = 0; i < args->argc; i++) {
-		path = args->argv[i];
+		if (args_has(args, 'F')) {
+			free(expand);
+			expand = format_single_from_target(item, args->argv[i]);
+			path = expand;
+		} else
+			path = args->argv[i];
 		if (strcmp(path, "-") == 0) {
 			cmd_source_file_add(cdata, "-");
 			continue;
@@ -172,6 +179,7 @@ cmd_source_file_exec(struct cmd *self, struct cmdq_item *item)
 			free(pattern);
 			continue;
 		}
+		free(expand);
 		free(pattern);
 
 		for (j = 0; j < g.gl_pathc; j++)
