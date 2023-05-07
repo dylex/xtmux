@@ -52,8 +52,9 @@ const struct cmd_entry cmd_paste_buffer_entry = {
 static enum cmd_retval
 cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
 {
-	struct args		*args = self->args;
-	struct window_pane	*wp = item->target.wp;
+	struct args		*args = cmd_get_args(self);
+	struct cmd_find_state	*target = cmdq_get_target(item);
+	struct window_pane	*wp = target->wp;
 	struct paste_buffer	*pb;
 	const char		*sepstr, *bufname, *bufdata;
 	size_t			 bufsize;
@@ -74,12 +75,13 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
 #ifdef XTMUX
 	if (args_has(args, 'x'))
 	{
-		if (!(item->client && item->client->tty.xtmux))
+		struct client *client = cmdq_get_client(item);
+		if (!(client && client->tty.xtmux))
 		{
 			cmdq_error(item, "not xtmux");
 			return (CMD_RETURN_ERROR);
 		}
-		return xtmux_paste(&item->client->tty, wp, bufname, sepstr);
+		return xtmux_paste(&client->tty, wp, bufname, sepstr);
 	}
 #endif
 

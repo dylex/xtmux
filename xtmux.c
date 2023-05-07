@@ -179,8 +179,8 @@ static jmp_buf xdisplay_recover;
 #define C2H(C) 		(x->ch * (C))
 #define C2X(C) 		C2W(C)
 #define C2Y(C) 		C2H(C)
-#define PANE_X(X) 	(ctx->wp->xoff + (X))
-#define PANE_Y(Y) 	(ctx->wp->yoff + (Y))
+#define PANE_X(X) 	(ctx->rxoff + (X))
+#define PANE_Y(Y) 	(ctx->ryoff + (Y))
 #define PANE_CX 	(PANE_X(ctx->ocx))
 #define PANE_CY 	(PANE_Y(ctx->ocy))
 
@@ -207,11 +207,11 @@ xtmux_init(struct client *c, const char *display)
 	c->tty.xtmux = xcalloc(1, sizeof *c->tty.xtmux);
 	c->tty.xtmux->display_name = xstrdup(display);
 
-	free(c->tty.term_name);
-	c->tty.term_name = xstrdup("xtmux");
+	free(c->term_name);
+	c->term_name = xstrdup("xtmux");
 
 	/* update client environment to reflect current DISPLAY */
-	environ_set(c->environ, "DISPLAY", "%s", display);
+	environ_set(c->environ, "DISPLAY", 0, "%s", display);
 	environ_unset(c->environ, "WINDOWID"); /* will be set later when we know it */
 
 	/* find a unique number to identify this client on this display, up to 999 */
@@ -791,7 +791,7 @@ xtmux_open(struct tty *tty, char **cause)
 	if (x->window == None)
 		FAIL("could not create X window");
 
-	environ_set(tty->client->environ, "WINDOWID", "%u", (unsigned)x->window);
+	environ_set(tty->client->environ, "WINDOWID", 0, "%u", (unsigned)x->window);
 
 	x->xim = XOpenIM(x->display, NULL, NULL, NULL);
 	if (x->xim)
@@ -836,7 +836,7 @@ xtmux_open(struct tty *tty, char **cause)
 
 	evtimer_set(&x->flush_timer, xtmux_flush_callback, tty);
 
-	tty->flags |= TTY_OPENED | TTY_UTF8;
+	tty->flags |= TTY_OPENED;
 
 #undef FAIL
 	XUPDATE();
@@ -952,19 +952,6 @@ grid_attr_cmp(const struct grid_cell *a, const struct grid_cell *b)
 			a->flags == b->flags &&
 			a->fg == b->fg &&
 			a->bg == b->bg);
-}
-
-static u_int
-grid_char(const struct grid_cell *gc)
-{
-	wchar_t c;
-
-	if (gc->flags & GRID_FLAG_PADDING)
-		return ' ';
-	/* XXX does ud.width matter? 0-width characters seem messed up */
-	if (gc->data.size != 1 && utf8_combine(&gc->data, &c) == UTF8_DONE)
-		return c;
-	return *gc->data.data;
 }
 
 void
@@ -1418,7 +1405,7 @@ void
 xtmux_pututf8(struct tty *tty, const struct utf8_data *gu)
 {
 	wchar_t c;
-	if (utf8_combine(gu, &c) == UTF8_DONE)
+	if (utf8_from_data(gu, &c) == UTF8_DONE)
 		xtmux_putwc(tty, c);
 }
 
@@ -1426,7 +1413,7 @@ void
 xtmux_cmd_insertcharacter(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 	u_int dx = ctx->ocx + ctx->num;
 
 	XENTRY();
@@ -1447,7 +1434,7 @@ void
 xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 	u_int dx = ctx->ocx + ctx->num;
 
 	XENTRY();
@@ -1465,10 +1452,25 @@ xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 }
 
 void
+xtmux_cmd_clearcharacter(struct tty *tty, const struct tty_ctx *ctx)
+{
+	struct xtmux 		*x = tty->xtmux;
+
+	XENTRY();
+
+	xt_clear(x,
+			PANE_CX, PANE_CY,
+			ctx->num, 1);
+
+	XUPDATE();
+	XRETURN();
+}
+
+void
 xtmux_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 
 	XENTRY();
 
@@ -1485,7 +1487,7 @@ void
 xtmux_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 
 	XENTRY();
 
@@ -1502,7 +1504,7 @@ void
 xtmux_cmd_clearline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 
 	XENTRY();
 
@@ -1518,7 +1520,7 @@ void
 xtmux_cmd_clearendofline(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 
 	XENTRY();
 
@@ -1549,7 +1551,7 @@ void
 xtmux_cmd_reverseindex(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 
 	XENTRY();
 
@@ -1567,7 +1569,7 @@ void
 xtmux_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 
 	XENTRY();
 
@@ -1585,7 +1587,7 @@ void
 xtmux_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 
 	XENTRY();
 
@@ -1602,7 +1604,7 @@ void
 xtmux_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 	u_int y;
 
 	XENTRY();
@@ -1629,7 +1631,7 @@ void
 xtmux_cmd_clearstartofscreen(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 	u_int y;
 
 	XENTRY();
@@ -1654,7 +1656,7 @@ void
 xtmux_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
-	struct screen		*s = ctx->wp->screen;
+	struct screen		*s = ctx->s;
 
 	XENTRY();
 
@@ -1667,7 +1669,7 @@ xtmux_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 }
 
 void
-xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
+xtmux_set_selection(struct tty *tty, const char *buf, size_t len)
 {
 	struct xtmux 		*x = tty->xtmux;
 
@@ -1678,7 +1680,7 @@ xtmux_cmd_setselection(struct tty *tty, const struct tty_ctx *ctx)
 		XRETURN();
 
 	XChangeProperty(x->display, DefaultRootWindow(x->display),
-			XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace, ctx->ptr, ctx->num);
+			XA_CUT_BUFFER0, XA_STRING, 8, PropModeReplace, buf, len);
 
 	XRETURN();
 }
@@ -1896,8 +1898,13 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 				cl[px-left] = ' ';
 			}
 			else {
-				gc = gl->extddata[gce->offset];
-				cl[px-left] = grid_char(&gc);
+				struct grid_extd_entry *gee = &gl->extddata[gce->offset];
+				gc.flags = gee->flags;
+				gc.attr = gee->attr;
+				gc.fg = gee->fg;
+				gc.bg = gee->bg;
+				gc.us = gee->us;
+				cl[px-left] = gee->data;
 			}
 		} else {
 			gc.flags = gce->flags;
@@ -2142,7 +2149,7 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 		if (xev->state & ControlMask)
 			key |= KEYC_CTRL;
 		if (xev->state & (x->prefix_mod == Mod1MapIndex ? Mod4Mask : Mod1Mask)) /* ALT */
-			key |= KEYC_ESCAPE;
+			key |= KEYC_META;
 	}
 
 	if (x->prefix_mod >= 0 && xev->state & (1<<x->prefix_mod))
