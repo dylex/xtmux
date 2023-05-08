@@ -699,6 +699,9 @@ screen_redraw_draw_borders_cell(struct screen_redraw_ctx *ctx, u_int i, u_int j)
 
 	if (cell_type == CELL_TOPBOTTOM &&
 	    (c->flags & CLIENT_UTF8) &&
+#ifdef XTMUX
+	    !c->tty.xtmux &&
+#endif
 	    tty_term_has(tty->term, TTYC_BIDI))
 		isolates = 1;
 	else
