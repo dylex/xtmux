@@ -39,7 +39,7 @@ const struct cmd_entry cmd_paste_buffer_entry = {
 	.name = "paste-buffer",
 	.alias = "pasteb",
 
-	.args = { "db:prs:t:" X_OPT, 0, 0 },
+	.args = { "db:prs:t:" X_OPT, 0, 0, NULL },
 	.usage = "[-dpr" X_OPT "] [-s separator] " CMD_BUFFER_USAGE " "
 		 CMD_TARGET_PANE_USAGE,
 

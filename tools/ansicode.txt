@@ -19,7 +19,7 @@ Standardized Video Terminals" in the April-1984 issue of BYTE magazine.
 ANSI X3.4-1977 defines the 7-bit ASCII character set (C0 and G0).  It was
 written in 1968, revised in 1977, and explains the decisions made in laying out
 the ASCII code.  In particular, it explains why ANSI chose to make ASCII
-incompatible with EBCDIC in order to make it self-consistant.
+incompatible with EBCDIC in order to make it self-consistent.
 
 ANSI X3.41-1974 introduces the idea of an 8-bit ASCII character set (C1 and G1
 in addition to the existing C0 and G0).  It describes how to use the 8-bit
@@ -184,7 +184,7 @@ Oct Hex Name *	(* marks function used in DEC VT series or LA series terminals)
 230 98 X	Reserved for for future standard
 231 99 Y	Reserved
 232 9A Z     *	Reserved, but causes DEC terminals to respond with DA codes
-233 9B [ CSI *	Control Sequence Introducer (described in a seperate table)
+233 9B [ CSI *	Control Sequence Introducer (described in a separate table)
 234 9C \ ST  *	String Terminator (VT125 exits graphics)
 235 9D ] OSC	Operating System Command (reprograms intelligent terminal)
 236 9E ^ PM	Privacy Message (password verification), terminated by ST
@@ -294,7 +294,7 @@ Pt = Start VT105 graphics on a VT125
 
 ==============================================================================
 
-    Indepenent control functions (from Appendix E of X3.64-1977).
+    Independent control functions (from Appendix E of X3.64-1977).
     These four controls have the same meaning regardless of the current
     definition of the C0 and C1 control sets.  Each control is a two-character
     ESCape sequence, the 2nd character is lowercase.

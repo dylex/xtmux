@@ -227,7 +227,7 @@ xtmux_init(struct client *c, const char *display)
 	c->name = path;
 
 	if (!c->tty.ccolour)
-		c->tty.ccolour = xstrdup("");
+		c->tty.ccolour = -1;
 	
 	c->tty.xtmux->client = c->tty.client = c;
 }
@@ -1143,19 +1143,32 @@ xtmux_cursor(struct tty *tty, u_int cx, u_int cy)
 	xt_flush_timer(tty->xtmux);
 }
 
+static void
+xtmux_set_cursor_colour(struct xtmux *x, int c)
+{
+	XColor xc;
+	u_char r, g, b;
+
+	xc.pixel = WhitePixel(x->display, XSCREEN);
+	if (c != -1) {
+		colour_split_rgb(c, &r, &g, &b);
+		xc.red   = r << 8 | r;
+		xc.green = g << 8 | g;
+		xc.blue  = b << 8 | b;
+		if (XAllocColor(x->display, XCOLORMAP, &xc))
+			xc.pixel ^= x->bg;
+	}
+	
+	xt_clear_cursor(x);
+	XSetForeground(x->display, x->cursor_gc, xc.pixel);
+}
+
 void
-xtmux_force_cursor_colour(struct tty *tty, const char *ccolour)
+xtmux_force_cursor_colour(struct tty *tty, int c)
 {
 	struct xtmux *x = tty->xtmux;
-	unsigned long c;
-	
 	XENTRY();
-	/* We draw cursor with xor, so xor with background to get right color, defaulting to inverse */
-	c = WhitePixel(x->display, XSCREEN);
-	c = xt_parse_color(x, ccolour, x->bg ^ c);
-	log_debug("setting cursor color to %s = %lx", ccolour, c);
-	xt_clear_cursor(x);
-	XSetForeground(x->display, x->cursor_gc, x->bg ^ c);
+	xtmux_set_cursor_colour(x, c);
 	XRETURN_();
 	xt_flush_timer(x);
 }
@@ -1166,6 +1179,19 @@ xtmux_update_mode(struct tty *tty, int mode, struct screen *s)
 	struct xtmux *x = tty->xtmux;
 
 	XENTRY();
+
+	if (s) {
+		int ccolour = s->ccolour;
+		if (ccolour == -1)
+			ccolour = s->default_ccolour;
+		else
+			ccolour = colour_force_rgb(ccolour);
+		if (ccolour != tty->ccolour) {
+			xtmux_set_cursor_colour(x, ccolour);
+			tty->ccolour = ccolour;
+		}
+	}
+
 
 	if (s && tty->cstyle != s->cstyle)
 	{
@@ -2183,8 +2209,8 @@ xtmux_button_press(struct tty *tty, XButtonEvent *xev)
 				case Button1: m.b = 0; break;
 				case Button2: m.b = 1; break;
 				case Button3: m.b = 2; break;
-				case Button4: m.b = MOUSE_MASK_WHEEL|0; break;
-				case Button5: m.b = MOUSE_MASK_WHEEL|1; break;
+				case Button4: m.b = MOUSE_WHEEL_UP; break;
+				case Button5: m.b = MOUSE_WHEEL_DOWN; break;
 				default: return;
 			}
 			break;
