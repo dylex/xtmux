@@ -878,6 +878,7 @@ cmd_find_from_client(struct cmd_find_state *fs, struct client *c, int flags)
 		fs->s = c->session;
 		fs->wl = fs->s->curw;
 		fs->w = fs->wl->window;
+		fs->c = c;
 
 		cmd_find_log_state(__func__, fs);
 		return (0);
