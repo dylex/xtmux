@@ -1427,11 +1427,24 @@ xtmux_putc(struct tty *tty, u_char c)
 		xtmux_putwc(tty, c);
 }
 
+static wchar_t
+xt_utf8_char(const struct utf8_data *u) {
+	wchar_t wc;
+	if (u->size == 0)
+		return ' ';
+	if (u->size == 1)
+		return *u->data;
+	if (mbtowc(&wc, u->data, u->size) > 0)
+		return wc;
+	return 0; /* error */
+}
+
 void
 xtmux_pututf8(struct tty *tty, const struct utf8_data *gu)
 {
-	wchar_t c;
-	if (utf8_from_data(gu, &c) == UTF8_DONE)
+	wchar_t c = xt_utf8_char(gu);
+	log_debug("xt_utf8_char(%d) = %u", gu->size, c);
+	if (c)
 		xtmux_putwc(tty, c);
 }
 
@@ -1915,36 +1928,10 @@ xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int righ
 		sx = gl->cellsize;
 	for (px = bx; px < sx; px ++)
 	{
-		struct grid_cell_entry *gce = &gl->celldata[px];
 		struct grid_cell gc;
 
-		if (gce->flags & GRID_FLAG_EXTENDED) {
-			if (gce->offset >= gl->extdsize) {
-				gc = grid_default_cell;
-				cl[px-left] = ' ';
-			}
-			else {
-				struct grid_extd_entry *gee = &gl->extddata[gce->offset];
-				gc.flags = gee->flags;
-				gc.attr = gee->attr;
-				gc.fg = gee->fg;
-				gc.bg = gee->bg;
-				gc.us = gee->us;
-				cl[px-left] = gee->data;
-			}
-		} else {
-			gc.flags = gce->flags;
-			gc.attr = gce->data.attr;
-			gc.fg = gce->data.fg;
-			gc.bg = gce->data.bg;
-			if (gc.flags & GRID_FLAG_FG256)
-				gc.fg |= COLOUR_FLAG_256;
-			gc.flags &= ~GRID_FLAG_FG256;
-			if (gc.flags & GRID_FLAG_BG256)
-				gc.bg |= COLOUR_FLAG_256;
-			gc.flags &= ~GRID_FLAG_BG256;
-			cl[px-left] = gce->data.data;
-		}
+		grid_view_get_cell(s->grid, px, s->grid->hsize+py, &gc);
+		cl[px-left] = xt_utf8_char(&gc.data);
 
 		if (gc.flags & GRID_FLAG_SELECTED) {
 			struct grid_cell sel = gc;
