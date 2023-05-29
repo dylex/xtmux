@@ -187,9 +187,13 @@ screen_set_cursor_style(u_int style, enum screen_cursor_style *cstyle,
 		*mode &= ~MODE_CURSOR_BLINKING;
 		break;
 	default:
-		/* for xtmux?? */
-		*cstyle = style;
-		*mode &= ~MODE_CURSOR_BLINKING;
+		/* for xtmux */
+		if (style&1) {
+			style ++;
+			*mode |= MODE_CURSOR_BLINKING;
+		} else
+			*mode &= ~MODE_CURSOR_BLINKING;
+		*cstyle = style/2;
 	}
 }
 

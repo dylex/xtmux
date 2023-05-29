@@ -398,11 +398,13 @@ xt_fill_cursor(struct xtmux *x, u_int cstyle)
 	XFillRectangle(x->display, x->cursor, gc, 0, 0, w, h);
 	XSetForeground(x->display, gc, 1);
 
-	if (x->focus_out)
-		cstyle >>= 4;
+	if (x->focus_out) {
+		if (cstyle == SCREEN_CURSOR_DEFAULT)
+			cstyle = 4;
+		else
+			cstyle >>= 5;
+	}
 	cstyle &= 0xf;
-	if (cstyle == 0)
-		cstyle = x->focus_out ? 8 : 2;
 
 	log_debug("creating cursor %d", cstyle);
 	switch (cstyle)
@@ -410,33 +412,28 @@ xt_fill_cursor(struct xtmux *x, u_int cstyle)
 		/* based on http://invisible-island.net/xterm/ctlseqs/ctlseqs.html
 		 * we don't (bother to) support blinking yet */
 		default:
-		case 1: /* block (blinking) */
-		case 2: /* block (steady) */
+		case SCREEN_CURSOR_DEFAULT:
+		case SCREEN_CURSOR_BLOCK:
 			XFillRectangle(x->display, x->cursor, gc, 0, 0, w, h);
 			break;
-		case 3: /* underscore (blinking) */
-		case 4: /* underscore (steady) */
+		case SCREEN_CURSOR_UNDERLINE:
 			XDrawLine(x->display, x->cursor, gc, 0, h-1, w-1, h-1);
 			break;
 		/* xtmux extensions (leaving a bit for blink): */
-		case 5: /* insert bar */
-		case 6:
+		case SCREEN_CURSOR_BAR:
 			XDrawLine(x->display, x->cursor, gc, 0, 0, 0, h-1);
 			break;
-		case 7: /* outline */
-		case 8:
+		case 4: /* outline */
 			XDrawRectangle(x->display, x->cursor, gc, 0, 0, w-1, h-1);
 			break;
-		case 9: /* bottom half */
-		case 10:
+		case 5: /* bottom half */
 			XFillRectangle(x->display, x->cursor, gc, 0, h/2, w, (h+1)/2);
 			break;
-		case 11: /* left half */
-		case 12:
+		case 6: /* left half */
 			XFillRectangle(x->display, x->cursor, gc, 0, 0, w/2, h);
 			break;
 		/* what else? fuzz? L? */
-		case 15: /* blank */
+		case 8: /* blank */
 			break;
 	}
 
