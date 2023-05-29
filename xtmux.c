@@ -1917,20 +1917,16 @@ xtmux_bell(struct tty *tty)
 static void
 xt_draw_line(struct xtmux *x, struct screen *s, u_int py, u_int left, u_int right, u_int atx, u_int aty)
 {
-	struct grid_line *gl = grid_get_line(s->grid, s->grid->hsize+py);
 	struct grid_cell ga = grid_default_cell;
 	wchar cl[right-left];
 	u_int bx = left;
 	u_int sx = right;
 	u_int px;
 
-	if (sx > gl->cellsize)
-		sx = gl->cellsize;
 	for (px = bx; px < sx; px ++)
 	{
 		struct grid_cell gc;
-
-		grid_view_get_cell(s->grid, px, s->grid->hsize+py, &gc);
+		grid_view_get_cell(s->grid, px, py, &gc);
 		cl[px-left] = xt_utf8_char(&gc.data);
 
 		if (gc.flags & GRID_FLAG_SELECTED) {
