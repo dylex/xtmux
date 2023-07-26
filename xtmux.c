@@ -2156,6 +2156,10 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 			key |= KEYC_CTRL;
 		if (xev->state & (x->prefix_mod == Mod1MapIndex ? Mod4Mask : Mod1Mask)) /* ALT */
 			key |= KEYC_META;
+		if (tty->mode & MODE_KCURSOR)
+			key |= KEYC_CURSOR;
+		if (tty->mode & MODE_KKEYPAD)
+			key |= KEYC_KEYPAD;
 	}
 
 	if (x->prefix_mod >= 0 && xev->state & (1<<x->prefix_mod))
