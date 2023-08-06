@@ -2121,29 +2121,29 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 		case XK_Prior:		key = KEYC_PPAGE;	break;
 		case XK_ISO_Left_Tab:	key = KEYC_BTAB;	break;
 		case XK_KP_Up:
-		case XK_Up:		key = KEYC_UP;		break;
+		case XK_Up:		key = KEYC_CURSOR|KEYC_UP; break;
 		case XK_KP_Down:
-		case XK_Down:		key = KEYC_DOWN;	break;
+		case XK_Down:		key = KEYC_CURSOR|KEYC_DOWN;	break;
 		case XK_KP_Left:
-		case XK_Left:		key = KEYC_LEFT;	break;
+		case XK_Left:		key = KEYC_CURSOR|KEYC_LEFT;	break;
 		case XK_KP_Right:
-		case XK_Right:		key = KEYC_RIGHT;	break;
-		case XK_KP_Divide:	key = KEYC_KP_SLASH;	break;
-		case XK_KP_Multiply:	key = KEYC_KP_STAR;	break;
-		case XK_KP_Subtract:	key = KEYC_KP_MINUS;	break;
-		case XK_KP_7:		key = KEYC_KP_SEVEN;	break;
-		case XK_KP_8:		key = KEYC_KP_EIGHT;	break;
-		case XK_KP_9:		key = KEYC_KP_NINE;	break;
-		case XK_KP_Add:		key = KEYC_KP_PLUS;	break;
-		case XK_KP_4:		key = KEYC_KP_FOUR;	break;
-		case XK_KP_5:		key = KEYC_KP_FIVE;	break;
-		case XK_KP_6:		key = KEYC_KP_SIX;	break;
-		case XK_KP_1:		key = KEYC_KP_ONE;	break;
-		case XK_KP_2:		key = KEYC_KP_TWO;	break;
-		case XK_KP_3:		key = KEYC_KP_THREE;	break;
-		case XK_KP_Enter:	key = KEYC_KP_ENTER;	break;
-		case XK_KP_0:		key = KEYC_KP_ZERO;	break;
-		case XK_KP_Decimal:	key = KEYC_KP_PERIOD;	break;
+		case XK_Right:		key = KEYC_CURSOR|KEYC_RIGHT;	break;
+		case XK_KP_Divide:	key = KEYC_KEYPAD|KEYC_KP_SLASH;	break;
+		case XK_KP_Multiply:	key = KEYC_KEYPAD|KEYC_KP_STAR;	break;
+		case XK_KP_Subtract:	key = KEYC_KEYPAD|KEYC_KP_MINUS;	break;
+		case XK_KP_7:		key = KEYC_KEYPAD|KEYC_KP_SEVEN;	break;
+		case XK_KP_8:		key = KEYC_KEYPAD|KEYC_KP_EIGHT;	break;
+		case XK_KP_9:		key = KEYC_KEYPAD|KEYC_KP_NINE;	break;
+		case XK_KP_Add:		key = KEYC_KEYPAD|KEYC_KP_PLUS;	break;
+		case XK_KP_4:		key = KEYC_KEYPAD|KEYC_KP_FOUR;	break;
+		case XK_KP_5:		key = KEYC_KEYPAD|KEYC_KP_FIVE;	break;
+		case XK_KP_6:		key = KEYC_KEYPAD|KEYC_KP_SIX;	break;
+		case XK_KP_1:		key = KEYC_KEYPAD|KEYC_KP_ONE;	break;
+		case XK_KP_2:		key = KEYC_KEYPAD|KEYC_KP_TWO;	break;
+		case XK_KP_3:		key = KEYC_KEYPAD|KEYC_KP_THREE;	break;
+		case XK_KP_Enter:	key = KEYC_KEYPAD|KEYC_KP_ENTER;	break;
+		case XK_KP_0:		key = KEYC_KEYPAD|KEYC_KP_ZERO;	break;
+		case XK_KP_Decimal:	key = KEYC_KEYPAD|KEYC_KP_PERIOD;	break;
 		default:		key = 0;
 	}
 
@@ -2156,10 +2156,6 @@ xtmux_key_press(struct tty *tty, XKeyEvent *xev)
 			key |= KEYC_CTRL;
 		if (xev->state & (x->prefix_mod == Mod1MapIndex ? Mod4Mask : Mod1Mask)) /* ALT */
 			key |= KEYC_META;
-		if (tty->mode & MODE_KCURSOR)
-			key |= KEYC_CURSOR;
-		if (tty->mode & MODE_KKEYPAD)
-			key |= KEYC_KEYPAD;
 	}
 
 	if (x->prefix_mod >= 0 && xev->state & (1<<x->prefix_mod))
