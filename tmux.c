@@ -54,7 +54,7 @@ static __dead void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: %s [-2CDlNuvV] [-c shell-command] [-f file] [-L socket-name]\n"
+	    "usage: %s [-2CDlNuVv] [-c shell-command] [-f file] [-L socket-name]\n"
 	    "            [-S socket-path] [-T features] [command [flags]]\n",
 	    getprogname());
 	exit(1);
@@ -392,7 +392,7 @@ main(int argc, char **argv)
 			cfg_quiet = 0;
 			break;
  		case 'V':
-			printf("%s %s\n", getprogname(), getversion());
+			printf("tmux %s\n", getversion());
  			exit(0);
 		case 'l':
 			flags |= CLIENT_LOGIN;
