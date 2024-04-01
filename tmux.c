@@ -57,7 +57,7 @@ static __dead void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: %s [-2CDlNuvV"
+	    "usage: %s [-2CDlNuVv"
 #ifdef XTMUX
 			        "x"
 #endif
@@ -403,7 +403,7 @@ main(int argc, char **argv)
 			cfg_quiet = 0;
 			break;
  		case 'V':
-			printf("%s %s\n", getprogname(), getversion());
+			printf("tmux %s\n", getversion());
  			exit(0);
 		case 'l':
 			flags |= CLIENT_LOGIN;

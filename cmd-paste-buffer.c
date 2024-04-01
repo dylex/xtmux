@@ -60,6 +60,11 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
 	size_t			 bufsize;
 	int			 bracket = args_has(args, 'p');
 
+	if (window_pane_exited(wp)) {
+		cmdq_error(item, "target pane has exited");
+		return (CMD_RETURN_ERROR);
+	}
+
 	sepstr = args_get(args, 's');
 	if (sepstr == NULL) {
 		if (args_has(args, 'r'))
