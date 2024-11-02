@@ -413,7 +413,7 @@ server_find_session(struct session *s,
 static int
 server_newer_session(struct session *s_loop, struct session *s_out)
 {
-	return (timercmp(&s_loop->activity_time, &s_out->activity_time, <));
+	return (timercmp(&s_loop->activity_time, &s_out->activity_time, >));
 }
 
 static int
@@ -490,6 +490,6 @@ server_check_unattached(void)
 void
 server_unzoom_window(struct window *w)
 {
-	if (window_unzoom(w) == 0)
+	if (window_unzoom(w, 1) == 0)
 		server_redraw_window(w);
 }
