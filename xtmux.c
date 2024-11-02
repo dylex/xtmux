@@ -2058,6 +2058,16 @@ static void
 handle_key(struct client *c, key_code key)
 {
 	struct key_event *ke = xmalloc(sizeof *ke);
+	/* replicating tty_keys_next */
+	if (key < 0x20 &&
+	    key != C0_HT &&
+	    key != C0_CR &&
+	    key != C0_ESC) {
+		key |= 0x40;
+		if (key >= 'A' && key <= 'Z')
+			key |= 0x20;
+		key |= KEYC_CTRL;
+	}
 	ke->key = key;
 	if (!server_client_handle_key(c, ke))
 		free(ke);
