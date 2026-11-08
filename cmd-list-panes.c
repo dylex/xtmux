@@ -38,8 +38,9 @@ const struct cmd_entry cmd_list_panes_entry = {
 	.name = "list-panes",
 	.alias = "lsp",
 
-	.args = { "asF:f:t:", 0, 0, NULL },
-	.usage = "[-as] [-F format] [-f filter] " CMD_TARGET_WINDOW_USAGE,
+	.args = { "aF:f:O:rst:", 0, 0, NULL },
+	.usage = "[-asr] [-F format] [-f filter] [-O order]"
+		 CMD_TARGET_WINDOW_USAGE,
 
 	.target = { 't', CMD_FIND_WINDOW, 0 },
 
@@ -54,6 +55,13 @@ cmd_list_panes_exec(struct cmd *self, struct cmdq_item *item)
 	struct cmd_find_state	*target = cmdq_get_target(item);
 	struct session		*s = target->s;
 	struct winlink		*wl = target->wl;
+	enum sort_order		 order;
+
+	order = sort_order_from_string(args_get(args, 'O'));
+	if (order == SORT_END && args_has(args, 'O')) {
+		cmdq_error(item, "invalid sort order");
+		return (CMD_RETURN_ERROR);
+	}
 
 	if (args_has(args, 'a'))
 		cmd_list_panes_server(self, item);
@@ -89,34 +97,41 @@ cmd_list_panes_window(struct cmd *self, struct session *s, struct winlink *wl,
     struct cmdq_item *item, int type)
 {
 	struct args		*args = cmd_get_args(self);
-	struct window_pane	*wp;
-	u_int			 n;
+	struct window_pane	*wp, **l;
+	u_int			 i, n;
 	struct format_tree	*ft;
 	const char		*template, *filter;
 	char			*line, *expanded;
 	int			 flag;
+	struct sort_criteria	 sort_crit;
 
 	template = args_get(args, 'F');
 	if (template == NULL) {
 		switch (type) {
 		case 0:
 			template = "#{pane_index}: "
-			    "[#{pane_width}x#{pane_height}] [history "
+			    "[#{pane_width}x#{pane_height}"
+			    "#{?pane_floating_flag, "
+			    "#{pane_x}#,#{pane_y}#,#{pane_z}}] [history "
 			    "#{history_size}/#{history_limit}, "
 			    "#{history_bytes} bytes] #{pane_id}"
 			    "#{?pane_active, (active),}#{?pane_dead, (dead),}";
 			break;
 		case 1:
 			template = "#{window_index}.#{pane_index}: "
-			    "[#{pane_width}x#{pane_height}] [history "
+			    "[#{pane_width}x#{pane_height}"
+			    "#{?pane_floating_flag, "
+			    "#{pane_x}#,#{pane_y}#,#{pane_z}}] [history "
 			    "#{history_size}/#{history_limit}, "
 			    "#{history_bytes} bytes] #{pane_id}"
 			    "#{?pane_active, (active),}#{?pane_dead, (dead),}";
 			break;
 		case 2:
 			template = "#{session_name}:#{window_index}."
-			    "#{pane_index}: [#{pane_width}x#{pane_height}] "
-			    "[history #{history_size}/#{history_limit}, "
+			    "#{pane_index}: [#{pane_width}x#{pane_height}"
+			    "#{?pane_floating_flag, "
+			    "#{pane_x}#,#{pane_y}#,#{pane_z}}] [history "
+			    "#{history_size}/#{history_limit}, "
 			    "#{history_bytes} bytes] #{pane_id}"
 			    "#{?pane_active, (active),}#{?pane_dead, (dead),}";
 			break;
@@ -124,8 +139,12 @@ cmd_list_panes_window(struct cmd *self, struct session *s, struct winlink *wl,
 	}
 	filter = args_get(args, 'f');
 
-	n = 0;
-	TAILQ_FOREACH(wp, &wl->window->panes, entry) {
+	sort_crit.order = sort_order_from_string(args_get(args, 'O'));
+	sort_crit.reversed = args_has(args, 'r');
+
+	l = sort_get_panes_window(wl->window, &n, &sort_crit);
+	for (i = 0; i < n; i++) {
+		wp = l[i];
 		ft = format_create(cmdq_get_client(item), item, FORMAT_NONE, 0);
 		format_add(ft, "line", "%u", n);
 		format_defaults(ft, NULL, s, wl, wp);
@@ -143,6 +162,5 @@ cmd_list_panes_window(struct cmd *self, struct session *s, struct winlink *wl,
 		}
 
 		format_free(ft);
-		n++;
 	}
 }

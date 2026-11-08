@@ -98,7 +98,7 @@ static const char *tty_feature_hyperlinks_capabilities[] = {
 #if defined (__OpenBSD__) || (defined(NCURSES_VERSION_MAJOR) && \
 	(NCURSES_VERSION_MAJOR > 5 || \
 	(NCURSES_VERSION_MAJOR == 5 && NCURSES_VERSION_MINOR > 8)))
-	"*:Hls=\\E]8;%?%p1%l%tid=%p1%s%;;%p2%s\\E\\\\",
+	"Hls=\\E]8;%?%p1%l%tid=%p1%s%;;%p2%s\\E\\\\",
 #endif
 	NULL
 };
@@ -357,6 +357,17 @@ static const struct tty_feature tty_feature_sixel = {
 	TERM_SIXEL
 };
 
+/* Terminal supports the OSC 9;4 progress bar. */
+static const char *const tty_feature_progressbar_capabilities[] = {
+	"Spb=\\E]9;4;%p1%d;%p2%d\\E\\\\",
+	NULL
+};
+static const struct tty_feature tty_feature_progressbar = {
+	"progressbar",
+	tty_feature_progressbar_capabilities,
+	0
+};
+
 /* Available terminal features. */
 static const struct tty_feature *const tty_features[] = {
 	&tty_feature_256,
@@ -372,6 +383,7 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_mouse,
 	&tty_feature_osc7,
 	&tty_feature_overline,
+	&tty_feature_progressbar,
 	&tty_feature_rectfill,
 	&tty_feature_rgb,
 	&tty_feature_sixel,
@@ -474,23 +486,62 @@ tty_default_features(int *feat, const char *name, u_int version)
 #define TTY_FEATURES_BASE_MODERN_XTERM \
 	"256,RGB,bpaste,clipboard,mouse,strikethrough,title"
 		{ .name = "mintty",
-		  .features = TTY_FEATURES_BASE_MODERN_XTERM
-			      ",ccolour,cstyle,extkeys,margins,overline,usstyle"
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "ccolour,"
+			      "cstyle,"
+			      "extkeys,"
+			      "margins,"
+			      "overline,"
+			      "usstyle"
 		},
 		{ .name = "tmux",
-		  .features = TTY_FEATURES_BASE_MODERN_XTERM
-			      ",ccolour,cstyle,focus,overline,usstyle,hyperlinks"
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "ccolour,"
+			      "cstyle,"
+			      "extkeys,"
+			      "focus,"
+			      "overline,"
+			      "usstyle,"
+			      "hyperlinks,"
+		  	      "progressbar"
 		},
 		{ .name = "rxvt-unicode",
-		  .features = "256,bpaste,ccolour,cstyle,mouse,title,ignorefkeys"
+		  .features = "256,"
+			      "bpaste,"
+			      "ccolour,"
+			      "cstyle,"
+			      "mouse,"
+			      "title,"
+			      "ignorefkeys"
 		},
 		{ .name = "iTerm2",
-		  .features = TTY_FEATURES_BASE_MODERN_XTERM
-			      ",cstyle,extkeys,margins,usstyle,sync,osc7,hyperlinks"
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "cstyle,"
+			      "extkeys,"
+			      "margins,"
+			      "usstyle,"
+			      "sync,"
+			      "osc7,"
+			      "hyperlinks,"
+		  	      "progressbar"
 		},
 		{ .name = "foot",
-		  .features = TTY_FEATURES_BASE_MODERN_XTERM
-		              ",cstyle,extkeys"
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "ccolour,"
+			      "cstyle,"
+			      "extkeys,"
+			      "usstyle,"
+			      "sync,"
+			      "osc7,"
+			      "hyperlinks"
+		},
+		{ .name = "WezTerm",
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "ccolour,"
+			      "cstyle,"
+			      "extkeys,"
+			      "focus,"
+			      "usstyle"
 		},
 		{ .name = "XTerm",
 		  /*
@@ -498,8 +549,11 @@ tty_default_features(int *feat, const char *name, u_int version)
 		   * disabled so not set it here - they will be added if
 		   * secondary DA shows VT420.
 		   */
-		  .features = TTY_FEATURES_BASE_MODERN_XTERM
-			      ",ccolour,cstyle,extkeys,focus"
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "ccolour,"
+			      "cstyle,"
+			      "extkeys,"
+			      "focus"
 		}
 	};
 	u_int	i;

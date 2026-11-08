@@ -39,8 +39,8 @@ const struct cmd_entry cmd_paste_buffer_entry = {
 	.name = "paste-buffer",
 	.alias = "pasteb",
 
-	.args = { "db:prs:t:" X_OPT, 0, 0, NULL },
-	.usage = "[-dpr" X_OPT "] [-s separator] " CMD_BUFFER_USAGE " "
+	.args = { "db:prSs:t:" X_OPT, 0, 0, NULL },
+	.usage = "[-dprS" X_OPT "] [-s separator] " CMD_BUFFER_USAGE " "
 		 CMD_TARGET_PANE_USAGE,
 
 	.target = { 't', CMD_FIND_PANE, 0 },
@@ -48,6 +48,17 @@ const struct cmd_entry cmd_paste_buffer_entry = {
 	.flags = CMD_AFTERHOOK,
 	.exec = cmd_paste_buffer_exec
 };
+
+static void
+cmd_paste_buffer_paste(struct window_pane *wp, const char *buf, size_t len)
+{
+	char	*cp;
+	size_t	 n;
+
+	n = utf8_stravisx(&cp, buf, len, VIS_SAFE|VIS_NOSLASH);
+	bufferevent_write(wp->event, cp, n);
+	free(cp);
+}
 
 static enum cmd_retval
 cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
@@ -102,7 +113,7 @@ cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
 
 	if (pb != NULL) {
 		bufdata = paste_buffer_data(pb, &bufsize);
-		paste_send_pane(bufdata, bufsize, wp, sepstr, bracket);
+		paste_send_pane(bufdata, bufsize, wp, sepstr, bracket, args_has(args, 'S'));
 	}
 
 	if (pb != NULL && args_has(args, 'd'))

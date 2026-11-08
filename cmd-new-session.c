@@ -77,8 +77,8 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 	struct termios		 tio, *tiop;
 	struct session_group	*sg = NULL;
 	const char		*errstr, *template, *group, *tmp;
-	char			*cause, *cwd = NULL, *cp, *newname = NULL;
-	char			*name, *prefix = NULL;
+	char			*cause, *cwd = NULL, *cp, *ename;
+	char			*wname = NULL, *sname = NULL, *prefix = NULL;
 	int			 detached, already_attached, is_control = 0;
 	u_int			 sx, sy, dsx, dsy, count = args_count(args);
 	struct spawn_context	 sc = { 0 };
@@ -99,32 +99,43 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 		return (CMD_RETURN_ERROR);
 	}
 
-	tmp = args_get(args, 's');
-	if (tmp != NULL) {
-		name = format_single(item, tmp, c, NULL, NULL, NULL);
-		newname = session_check_name(name);
-		if (newname == NULL) {
-			cmdq_error(item, "invalid session: %s", name);
-			free(name);
+	if ((tmp = args_get(args, 'n')) != NULL) {
+		ename = format_single(item, tmp, c, NULL, NULL, NULL);
+		if (!check_name(ename)) {
+			cmdq_error(item, "invalid window name: %s", ename);
+			free(ename);
 			return (CMD_RETURN_ERROR);
 		}
-		free(name);
+		wname = clean_name(ename, 0);
+		free(ename);
+	}
+	if ((tmp = args_get(args, 's')) != NULL) {
+		ename = format_single(item, tmp, c, NULL, NULL, NULL);
+		if (!check_name(ename)) {
+			cmdq_error(item, "invalid session name: %s", ename);
+			free(ename);
+			goto fail;
+		}
+		sname = clean_name(ename, 0);
+		free(ename);
 	}
 	if (args_has(args, 'A')) {
-		if (newname != NULL)
-			as = session_find(newname);
+		if (sname != NULL)
+			as = session_find(sname);
 		else
 			as = target->s;
 		if (as != NULL) {
 			retval = cmd_attach_session(item, as->name,
-			    args_has(args, 'D'), args_has(args, 'X'), 0, NULL,
-			    args_has(args, 'E'), args_get(args, 'f'));
-			free(newname);
+			    args_has(args, 'D'), args_has(args, 'X'), 0,
+			    args_get(args, 'c'), args_has(args, 'E'),
+			    args_get(args, 'f'));
+			free(wname);
+			free(sname);
 			return (retval);
 		}
 	}
-	if (newname != NULL && session_find(newname) != NULL) {
-		cmdq_error(item, "duplicate session: %s", newname);
+	if (sname != NULL && session_find(sname) != NULL) {
+		cmdq_error(item, "duplicate session: %s", sname);
 		goto fail;
 	}
 
@@ -141,12 +152,12 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 		else if (groupwith != NULL)
 			prefix = xstrdup(groupwith->name);
 		else {
-			prefix = session_check_name(group);
-			if (prefix == NULL) {
-				cmdq_error(item, "invalid session group: %s",
-				    group);
+			if (!check_name(group)) {
+				cmdq_error(item,
+				    "invalid session group name: %s", group);
 				goto fail;
 			}
+			prefix = clean_name(group, 0);
 		}
 	}
 
@@ -281,7 +292,7 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 		environ_put(env, av->string, 0);
 		av = args_next_value(av);
 	}
-	s = session_create(prefix, newname, cwd, env, oo, tiop);
+	s = session_create(prefix, sname, cwd, env, oo, tiop);
 
 	/* Spawn the initial window. */
 	sc.item = item;
@@ -289,7 +300,7 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 	if (!detached)
 		sc.tc = c;
 
-	sc.name = args_get(args, 'n');
+	sc.name = wname;
 	args_to_vector(args, &sc.argc, &sc.argv);
 
 	sc.idx = -1;
@@ -362,7 +373,8 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 	if (sc.argv != NULL)
 		cmd_free_argv(sc.argc, sc.argv);
 	free(cwd);
-	free(newname);
+	free(wname);
+	free(sname);
 	free(prefix);
 	return (CMD_RETURN_NORMAL);
 
@@ -370,7 +382,8 @@ fail:
 	if (sc.argv != NULL)
 		cmd_free_argv(sc.argc, sc.argv);
 	free(cwd);
-	free(newname);
+	free(wname);
+	free(sname);
 	free(prefix);
 	return (CMD_RETURN_ERROR);
 }

@@ -289,6 +289,31 @@ get_timer(void)
 	return ((ts.tv_sec * 1000ULL) + (ts.tv_nsec / 1000000ULL));
 }
 
+char *
+clean_name(const char *name, int untrusted)
+{
+	char	*copy, *cp, *new_name;
+
+	if (!utf8_isvalid(name))
+		return (NULL);
+	copy = xstrdup(name);
+	for (cp = copy; *cp != '\0'; cp++) {
+		if (untrusted && cp[0] == '#' && cp[1] == '(')
+			*cp = '_';
+	}
+	utf8_stravis(&new_name, copy, VIS_OCTAL|VIS_CSTYLE|VIS_TAB|VIS_NL);
+	free(copy);
+	return (new_name);
+}
+
+int
+check_name(const char *name)
+{
+	if (!utf8_isvalid(name))
+		return (0);
+	return (1);
+}
+
 const char *
 sig2name(int signo)
 {

@@ -71,6 +71,7 @@ extern const struct cmd_entry cmd_lock_server_entry;
 extern const struct cmd_entry cmd_lock_session_entry;
 extern const struct cmd_entry cmd_move_pane_entry;
 extern const struct cmd_entry cmd_move_window_entry;
+extern const struct cmd_entry cmd_new_pane_entry;
 extern const struct cmd_entry cmd_new_session_entry;
 extern const struct cmd_entry cmd_new_window_entry;
 extern const struct cmd_entry cmd_next_layout_entry;
@@ -163,6 +164,7 @@ const struct cmd_entry *cmd_table[] = {
 	&cmd_lock_session_entry,
 	&cmd_move_pane_entry,
 	&cmd_move_window_entry,
+	&cmd_new_pane_entry,
 	&cmd_new_session_entry,
 	&cmd_new_window_entry,
 	&cmd_next_layout_entry,
@@ -303,6 +305,8 @@ cmd_unpack_argv(char *buf, size_t len, int argc, char ***argv)
 
 	if (argc == 0)
 		return (0);
+	if (argc < 0 || argc > 1000)
+		return (-1);
 	*argv = xcalloc(argc, sizeof **argv);
 
 	buf[len - 1] = '\0';
@@ -676,11 +680,16 @@ cmd_list_copy(const struct cmd_list *cmdlist, int argc, char **argv)
 
 /* Get a command list as a string. */
 char *
-cmd_list_print(const struct cmd_list *cmdlist, int escaped)
+cmd_list_print(const struct cmd_list *cmdlist, int flags)
 {
 	struct cmd	*cmd, *next;
 	char		*buf, *this;
 	size_t		 len;
+	const char	*separator;
+	int		 escaped = flags & CMD_LIST_PRINT_ESCAPED;
+	int		 no_groups = flags & CMD_LIST_PRINT_NO_GROUPS;
+	const char	*single_separator = escaped ? " \\; " : " ; ";
+	const char	*double_separator = escaped ? " \\;\\; " : " ;; ";
 
 	len = 1;
 	buf = xcalloc(1, len);
@@ -695,17 +704,11 @@ cmd_list_print(const struct cmd_list *cmdlist, int escaped)
 
 		next = TAILQ_NEXT(cmd, qentry);
 		if (next != NULL) {
-			if (cmd->group != next->group) {
-				if (escaped)
-					strlcat(buf, " \\;\\; ", len);
-				else
-					strlcat(buf, " ;; ", len);
-			} else {
-				if (escaped)
-					strlcat(buf, " \\; ", len);
-				else
-					strlcat(buf, " ; ", len);
-			}
+			if (!no_groups && cmd->group != next->group)
+				separator = double_separator;
+			else
+				separator = single_separator;
+			strlcat(buf, separator, len);
 		}
 
 		free(this);
@@ -773,9 +776,9 @@ cmd_mouse_at(struct window_pane *wp, struct mouse_event *m, u_int *xp,
 	if (m->statusat == 0 && y >= m->statuslines)
 		y -= m->statuslines;
 
-	if (x < wp->xoff || x >= wp->xoff + wp->sx)
+	if ((int)x < wp->xoff || (int)x >= wp->xoff + (int)wp->sx)
 		return (-1);
-	if (y < wp->yoff || y >= wp->yoff + wp->sy)
+	if ((int)y < wp->yoff || (int)y >= wp->yoff + (int)wp->sy)
 		return (-1);
 
 	if (xp != NULL)

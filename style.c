@@ -39,7 +39,7 @@ static struct style style_default = {
 
 	STYLE_RANGE_NONE, 0, "",
 
-	STYLE_WIDTH_DEFAULT, STYLE_PAD_DEFAULT,
+	STYLE_WIDTH_DEFAULT, 0, STYLE_PAD_DEFAULT,
 
 	STYLE_DEFAULT_BASE
 };
@@ -137,6 +137,15 @@ style_parse(struct style *sy, const struct grid_cell *base, const char *in)
 				sy->range_type = STYLE_RANGE_RIGHT;
 				sy->range_argument = 0;
 				style_set_range_string(sy, "");
+			} else if (strcasecmp(tmp + 6, "control") == 0) {
+				if (found == NULL)
+					goto error;
+				n = strtonum(found, 0, 9, &errstr);
+				if (errstr != NULL)
+					goto error;
+				sy->range_type = STYLE_RANGE_CONTROL;
+				sy->range_argument = n;
+				style_set_range_string(sy, "");
 			} else if (strcasecmp(tmp + 6, "pane") == 0) {
 				if (found == NULL)
 					goto error;
@@ -226,10 +235,20 @@ style_parse(struct style *sy, const struct grid_cell *base, const char *in)
 				sy->gc.attr &= ~value;
 			}
 		} else if (end > 6 && strncasecmp(tmp, "width=", 6) == 0) {
-			n = strtonum(tmp + 6, 0, UINT_MAX, &errstr);
-			if (errstr != NULL)
-				goto error;
-			sy->width = (int)n;
+			if (end > 7 && tmp[end - 1] == '%') {
+				tmp[end - 1] = '\0';
+				n = strtonum(tmp + 6, 0, 100, &errstr);
+				if (errstr != NULL)
+					goto error;
+				sy->width = (int)n;
+				sy->width_percentage = 1;
+			} else {
+				n = strtonum(tmp + 6, 0, UINT_MAX, &errstr);
+				if (errstr != NULL)
+					goto error;
+				sy->width = (int)n;
+				sy->width_percentage = 0;
+			}
 		} else if (end > 4 && strncasecmp(tmp, "pad=", 4) == 0) {
 			n = strtonum(tmp + 4, 0, UINT_MAX, &errstr);
 			if (errstr != NULL)
@@ -343,13 +362,17 @@ style_tostring(struct style *sy)
 		comma = ",";
 	}
 	if (gc->attr != 0) {
-		xsnprintf(s + off, sizeof s - off, "%s%s", comma,
+		off += xsnprintf(s + off, sizeof s - off, "%s%s", comma,
 		    attributes_tostring(gc->attr));
 		comma = ",";
 	}
 	if (sy->width >= 0) {
-		xsnprintf(s + off, sizeof s - off, "%swidth=%u", comma,
-		    sy->width);
+		if (sy->width_percentage)
+			off += xsnprintf(s + off, sizeof s - off,
+			    "%swidth=%u%%", comma, sy->width);
+		else
+			off += xsnprintf(s + off, sizeof s - off,
+			    "%swidth=%u", comma, sy->width);
 		comma = ",";
 	}
 	if (sy->pad >= 0) {
@@ -412,8 +435,10 @@ style_copy(struct style *dst, struct style *src)
 	memcpy(dst, src, sizeof *dst);
 }
 
+/* Set scrollbar style from an option. */
 void
-style_set_scrollbar_style_from_option(struct style *sb_style, struct options *oo)
+style_set_scrollbar_style_from_option(struct style *sb_style,
+    struct options *oo)
 {
 	struct style	*sy;
 
@@ -431,4 +456,38 @@ style_set_scrollbar_style_from_option(struct style *sb_style, struct options *oo
 			sb_style->pad = PANE_SCROLLBARS_DEFAULT_PADDING;
 		utf8_set(&sb_style->gc.data, PANE_SCROLLBARS_CHARACTER);
 	}
+}
+
+/* Initialize style ranges. */
+void
+style_ranges_init(struct style_ranges *srs)
+{
+	TAILQ_INIT(srs);
+}
+
+/* Free style ranges. */
+void
+style_ranges_free(struct style_ranges *srs)
+{
+	struct style_range	*sr, *sr1;
+
+	TAILQ_FOREACH_SAFE(sr, srs, entry, sr1) {
+		TAILQ_REMOVE(srs, sr, entry);
+		free(sr);
+	}
+}
+
+/* Get range for position from style ranges. */
+struct style_range *
+style_ranges_get_range(struct style_ranges *srs, u_int x)
+{
+	struct style_range	*sr;
+
+	if (srs == NULL)
+		return (NULL);
+	TAILQ_FOREACH(sr, srs, entry) {
+		if (x >= sr->start && x < sr->end)
+			return (sr);
+	}
+	return (NULL);
 }

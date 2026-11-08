@@ -292,16 +292,37 @@ utf8_find_in_width_cache(wchar_t wc)
 	return RB_FIND(utf8_width_cache, &utf8_width_cache, &uw);
 }
 
+/* Add to width cache. */
+static void
+utf8_insert_width_cache(wchar_t wc, u_int width)
+{
+	struct utf8_width_item	*uw, *old;
+
+	log_debug("Unicode width cache: %08X=%u", (u_int)wc, width);
+
+	uw = xcalloc(1, sizeof *uw);
+	uw->wc = wc;
+	uw->width = width;
+	uw->allocated = 1;
+
+	old = RB_INSERT(utf8_width_cache, &utf8_width_cache, uw);
+	if (old != NULL) {
+		RB_REMOVE(utf8_width_cache, &utf8_width_cache, old);
+		if (old->allocated)
+			free(old);
+		RB_INSERT(utf8_width_cache, &utf8_width_cache, uw);
+	}
+}
+
 /* Parse a single codepoint option. */
 static void
 utf8_add_to_width_cache(const char *s)
 {
-	struct utf8_width_item	*uw, *old;
 	char			*copy, *cp, *endptr;
 	u_int			 width;
 	const char		*errstr;
 	struct utf8_data	*ud;
-	wchar_t			 wc;
+	wchar_t			 wc, wc_start, wc_end;
 	unsigned long long	 n;
 
 	copy = xstrdup(s);
@@ -321,14 +342,40 @@ utf8_add_to_width_cache(const char *s)
 		errno = 0;
 		n = strtoull(copy + 2, &endptr, 16);
 		if (copy[2] == '\0' ||
-		    *endptr != '\0' ||
 		    n == 0 ||
 		    n > WCHAR_MAX ||
 		    (errno == ERANGE && n == ULLONG_MAX)) {
 			free(copy);
 			return;
 		}
-		wc = n;
+		wc_start = n;
+		if (*endptr == '-') {
+			endptr++;
+			if (strncmp(endptr, "U+", 2) != 0) {
+				free(copy);
+				return;
+			}
+			errno = 0;
+			n = strtoull(endptr + 2, &endptr, 16);
+			if (*endptr != '\0' ||
+			    n == 0 ||
+			    n > WCHAR_MAX ||
+			    (errno == ERANGE && n == ULLONG_MAX) ||
+			    (wchar_t)n < wc_start) {
+				free(copy);
+				return;
+			}
+			wc_end = n;
+		} else {
+			if (*endptr != '\0') {
+				free(copy);
+				return;
+			}
+			wc_end = wc_start;
+		}
+
+		for (wc = wc_start; wc <= wc_end; wc++)
+			utf8_insert_width_cache(wc, width);
 	} else {
 		utf8_no_width = 1;
 		ud = utf8_fromcstr(copy);
@@ -348,21 +395,8 @@ utf8_add_to_width_cache(const char *s)
 			return;
 		}
 		free(ud);
-	}
 
-	log_debug("Unicode width cache: %08X=%u", (u_int)wc, width);
-
-	uw = xcalloc(1, sizeof *uw);
-	uw->wc = wc;
-	uw->width = width;
-	uw->allocated = 1;
-
-	old = RB_INSERT(utf8_width_cache, &utf8_width_cache, uw);
-	if (old != NULL) {
-		RB_REMOVE(utf8_width_cache, &utf8_width_cache, old);
-		if (old->allocated)
-			free(old);
-		RB_INSERT(utf8_width_cache, &utf8_width_cache, uw);
+		utf8_insert_width_cache(wc, width);
 	}
 
 	free(copy);
@@ -565,7 +599,7 @@ utf8_towc(const struct utf8_data *ud, wchar_t *wc)
 	case 0:
 		return (UTF8_ERROR);
 	}
-	log_debug("UTF-8 %.*s is %05X", (int)ud->size, ud->data, (u_int)*wc);
+	log_debug("UTF-8 %.*s is U+%06X", (int)ud->size, ud->data, (u_int)*wc);
 	return (UTF8_DONE);
 }
 
@@ -652,7 +686,7 @@ utf8_append(struct utf8_data *ud, u_char ch)
  * bytes available for each character from src (for \abc or UTF-8) plus space
  * for \0.
  */
-int
+size_t
 utf8_strvis(char *dst, const char *src, size_t len, int flag)
 {
 	struct utf8_data	 ud;
@@ -690,11 +724,11 @@ utf8_strvis(char *dst, const char *src, size_t len, int flag)
 }
 
 /* Same as utf8_strvis but allocate the buffer. */
-int
+size_t
 utf8_stravis(char **dst, const char *src, int flag)
 {
 	char	*buf;
-	int	 len;
+	size_t	 len;
 
 	buf = xreallocarray(NULL, 4, strlen(src) + 1);
 	len = utf8_strvis(buf, src, strlen(src), flag);
@@ -704,11 +738,11 @@ utf8_stravis(char **dst, const char *src, int flag)
 }
 
 /* Same as utf8_strvis but allocate the buffer. */
-int
+size_t
 utf8_stravisx(char **dst, const char *src, size_t srclen, int flag)
 {
 	char	*buf;
-	int	 len;
+	size_t	 len;
 
 	buf = xreallocarray(NULL, 4, srclen + 1);
 	len = utf8_strvis(buf, src, srclen, flag);
