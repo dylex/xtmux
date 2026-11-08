@@ -49,17 +49,6 @@ const struct cmd_entry cmd_paste_buffer_entry = {
 	.exec = cmd_paste_buffer_exec
 };
 
-static void
-cmd_paste_buffer_paste(struct window_pane *wp, const char *buf, size_t len)
-{
-	char	*cp;
-	size_t	 n;
-
-	n = utf8_stravisx(&cp, buf, len, VIS_SAFE|VIS_NOSLASH);
-	bufferevent_write(wp->event, cp, n);
-	free(cp);
-}
-
 static enum cmd_retval
 cmd_paste_buffer_exec(struct cmd *self, struct cmdq_item *item)
 {

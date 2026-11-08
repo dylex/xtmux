@@ -357,6 +357,17 @@ paste_make_sample(struct paste_buffer *pb)
 	return (buf);
 }
 
+static void
+cmd_paste_buffer_paste(struct window_pane *wp, const char *buf, size_t len)
+{
+	char	*cp;
+	size_t	 n;
+
+	n = utf8_stravisx(&cp, buf, len, VIS_SAFE|VIS_NOSLASH);
+	bufferevent_write(wp->event, cp, n);
+	free(cp);
+}
+
 /* Paste into a window pane, filtering '\n' according to separator. */
 void
 paste_send_pane(const char *data, size_t size, struct window_pane *wp,

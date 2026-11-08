@@ -2549,11 +2549,12 @@ server_client_check_redraw(struct client *c)
 	 * consumed. We can just add a timer to get out of the event loop and
 	 * end up back here.
 	 */
-	n = EVBUFFER_LENGTH(tty->out);
 #ifdef XTMUX
-	if (tty->xtmux);
+	if (tty->xtmux)
+		n = 0;
 	else
 #endif
+	n = EVBUFFER_LENGTH(tty->out);
 	if (n != 0 || (tty->flags & TTY_BLOCK)) {
 		if (n != 0)
 			log_debug("%s: redraw deferred (%zu left)", c->name, n);
@@ -2624,6 +2625,9 @@ server_client_check_redraw(struct client *c)
 	 */
 	c->flags &= ~(CLIENT_ALLREDRAWFLAGS|CLIENT_REDRAWSCROLLBARS|
 	    CLIENT_STATUSFORCE);
+#ifdef XTMUX
+	if (!tty->xtmux)
+#endif
 	c->redraw = EVBUFFER_LENGTH(tty->out);
 	log_debug("%s: redraw added %zu bytes", c->name, c->redraw);
 }

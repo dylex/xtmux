@@ -1450,7 +1450,7 @@ xtmux_cmd_insertcharacter(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->s;
-	u_int dx = ctx->ocx + ctx->num;
+	u_int dx = ctx->ocx + ctx->n;
 
 	XENTRY();
 
@@ -1460,7 +1460,7 @@ xtmux_cmd_insertcharacter(struct tty *tty, const struct tty_ctx *ctx)
 			screen_size_x(s) - dx, 1);
 	xt_clear(x,
 			PANE_CX, PANE_CY,
-			ctx->num, 1);
+			ctx->n, 1);
 
 	XUPDATE();
 	XRETURN();
@@ -1471,7 +1471,7 @@ xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 {
 	struct xtmux 		*x = tty->xtmux;
 	struct screen		*s = ctx->s;
-	u_int dx = ctx->ocx + ctx->num;
+	u_int dx = ctx->ocx + ctx->n;
 
 	XENTRY();
 
@@ -1480,8 +1480,8 @@ xtmux_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 			PANE_CX, PANE_CY,
 			screen_size_x(s) - dx, 1);
 	xt_clear(x,
-			PANE_X(screen_size_x(s) - ctx->num), PANE_CY,
-			ctx->num, 1);
+			PANE_X(screen_size_x(s) - ctx->n), PANE_CY,
+			ctx->n, 1);
 
 	XUPDATE();
 	XRETURN();
@@ -1496,7 +1496,7 @@ xtmux_cmd_clearcharacter(struct tty *tty, const struct tty_ctx *ctx)
 
 	xt_clear(x,
 			PANE_CX, PANE_CY,
-			ctx->num, 1);
+			ctx->n, 1);
 
 	XUPDATE();
 	XRETURN();
@@ -1513,7 +1513,7 @@ xtmux_cmd_insertline(struct tty *tty, const struct tty_ctx *ctx)
 	xt_scroll(x,
 			PANE_X(0), PANE_CY,
 			screen_size_x(s), ctx->orlower+1-ctx->ocy,
-			ctx->num);
+			ctx->n);
 
 	XUPDATE();
 	XRETURN();
@@ -1530,7 +1530,7 @@ xtmux_cmd_deleteline(struct tty *tty, const struct tty_ctx *ctx)
 	xt_scroll(x,
 			PANE_X(0), PANE_CY,
 			screen_size_x(s), ctx->orlower+1-ctx->ocy,
-			-ctx->num);
+			-ctx->n);
 
 	XUPDATE();
 	XRETURN();
@@ -1630,7 +1630,7 @@ xtmux_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 	xt_scroll(x,
 			PANE_X(0), PANE_Y(ctx->orupper),
 			screen_size_x(s), ctx->orlower+1-ctx->orupper,
-			-ctx->num);
+			-ctx->n);
 
 	XUPDATE();
 	XRETURN();
@@ -1783,7 +1783,7 @@ extern void cmd_paste_buffer_filter(struct window_pane *, const char *, size_t, 
 static void
 do_paste(const struct paste_ctx *p, const char *data, size_t size)
 {
-	paste_send_pane(data, size, p->wp, p->sep, 0);
+	paste_send_pane(data, size, p->wp, p->sep, 0, 0);
 }
 
 static int
@@ -2015,7 +2015,7 @@ xtmux_redraw(struct client *c, int left, int top, int right, int bot)
 		swp.sy = 0;
 	else
 		swp.sy = status_line_size(c);
-	if (c->message_string || c->prompt_string)
+	if (c->message_string)
 		swp.sy = swp.sy ?: 1;
 
 	swp.xoff = 0;
@@ -2057,7 +2057,7 @@ xtmux_flush_callback(__unused int fd, __unused short events, void *data)
 static void
 handle_key(struct client *c, key_code key)
 {
-	struct key_event *ke = xmalloc(sizeof *ke);
+	struct key_event *ke = xcalloc(1, sizeof *ke);
 	/* replicating tty_keys_next */
 	if (key < 0x20 &&
 	    key != C0_HT &&
