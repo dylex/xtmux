@@ -48,9 +48,7 @@ struct mode_tree_data {
 	void			 *modedata;
 	const struct menu_item	 *menu;
 
-	const char		**sort_list;
-	u_int			  sort_size;
-	struct mode_tree_sort_criteria sort_crit;
+	struct sort_criteria	  sort_crit;
 
 	mode_tree_build_cb        buildcb;
 	mode_tree_draw_cb         drawcb;
@@ -59,6 +57,8 @@ struct mode_tree_data {
 	mode_tree_height_cb       heightcb;
 	mode_tree_key_cb	  keycb;
 	mode_tree_swap_cb	  swapcb;
+	mode_tree_sort_cb	  sortcb;
+	mode_tree_help_cb	  helpcb;
 
 	struct mode_tree_list	  children;
 	struct mode_tree_list	  saved;
@@ -132,6 +132,35 @@ static const struct menu_item mode_tree_menu_items[] = {
 
 	{ NULL, KEYC_NONE, NULL }
 };
+
+static const char* mode_tree_help_start[] = {
+	"\r\033[1m      Up, k \033[0m\016x\017 \033[0mMove cursor up\n",
+	"\r\033[1m    Down, j \033[0m\016x\017 \033[0mMove cursor down\n",
+	"\r\033[1m          g \033[0m\016x\017 \033[0mGo to top\n",
+	"\r\033[1m          G \033[0m\016x\017 \033[0mGo to bottom\n",
+	"\r\033[1m PPage, C-b \033[0m\016x\017 \033[0mPage up\n",
+	"\r\033[1m NPage, C-f \033[0m\016x\017 \033[0mPage down\n",
+	"\r\033[1m    Left, h \033[0m\016x\017 \033[0mCollapse %1\n",
+	"\r\033[1m   Right, l \033[0m\016x\017 \033[0mExpand %1\n",
+	"\r\033[1m        M-- \033[0m\016x\017 \033[0mCollapse all %1s\n",
+	"\r\033[1m        M-+ \033[0m\016x\017 \033[0mExpand all %1s\n",
+	"\r\033[1m          t \033[0m\016x\017 \033[0mToggle %1 tag\n",
+	"\r\033[1m          T \033[0m\016x\017 \033[0mUntag all %1s\n",
+	"\r\033[1m        C-t \033[0m\016x\017 \033[0mTag all %1s\n",
+	"\r\033[1m        C-s \033[0m\016x\017 \033[0mSearch forward\n",
+	"\r\033[1m          n \033[0m\016x\017 \033[0mRepeat search forward\n",
+	"\r\033[1m          N \033[0m\016x\017 \033[0mRepeat search backward\n",
+	"\r\033[1m          f \033[0m\016x\017 \033[0mFilter %1s\n",
+	"\r\033[1m          O \033[0m\016x\017 \033[0mChange sort order\n",
+	"\r\033[1m          r \033[0m\016x\017 \033[0mReverse sort order\n",
+	"\r\033[1m          v \033[0m\016x\017 \033[0mToggle preview\n",
+	NULL
+};
+static const char* mode_tree_help_end[] = {
+	"\r\033[1m  q, Escape \033[0m\016x\017 \033[0mExit mode\033[H",
+	NULL
+};
+#define MODE_TREE_HELP_DEFAULT_WIDTH 39
 
 static int
 mode_tree_is_lowercase(const char *ptr)
@@ -271,6 +300,8 @@ mode_tree_clear_tagged(struct mode_tree_list *mtl)
 void
 mode_tree_up(struct mode_tree_data *mtd, int wrap)
 {
+	if (mtd->line_size == 0)
+		return;
 	if (mtd->current == 0) {
 		if (wrap) {
 			mtd->current = mtd->line_size - 1;
@@ -287,6 +318,8 @@ mode_tree_up(struct mode_tree_data *mtd, int wrap)
 int
 mode_tree_down(struct mode_tree_data *mtd, int wrap)
 {
+	if (mtd->line_size == 0)
+		return (0);
 	if (mtd->current == mtd->line_size - 1) {
 		if (wrap) {
 			mtd->current = 0;
@@ -324,7 +357,7 @@ mode_tree_swap(struct mode_tree_data *mtd, int direction)
 		return;
 
 	if (mtd->swapcb(mtd->line_list[mtd->current].item->itemdata,
-	    mtd->line_list[swap_with].item->itemdata)) {
+	    mtd->line_list[swap_with].item->itemdata, &mtd->sort_crit)) {
 		mtd->current = swap_with;
 		mode_tree_build(mtd);
 	}
@@ -333,6 +366,8 @@ mode_tree_swap(struct mode_tree_data *mtd, int direction)
 void *
 mode_tree_get_current(struct mode_tree_data *mtd)
 {
+	if (mtd->line_size == 0)
+		return (NULL);
 	return (mtd->line_list[mtd->current].item->itemdata);
 }
 
@@ -382,7 +417,7 @@ mode_tree_expand(struct mode_tree_data *mtd, uint64_t tag)
 	u_int	found;
 
 	if (!mode_tree_get_tag(mtd, tag, &found))
-	    return;
+		return;
 	if (!mtd->line_list[found].item->expanded) {
 		mtd->line_list[found].item->expanded = 1;
 		mode_tree_build(mtd);
@@ -403,6 +438,8 @@ mode_tree_set_current(struct mode_tree_data *mtd, uint64_t tag)
 		return (1);
 	}
 	if (mtd->current >= mtd->line_size) {
+		if (mtd->line_size == 0)
+			return (0);
 		mtd->current = mtd->line_size - 1;
 		if (mtd->current > mtd->height - 1)
 			mtd->offset = mtd->current - mtd->height + 1;
@@ -454,12 +491,11 @@ mode_tree_start(struct window_pane *wp, struct args *args,
     mode_tree_build_cb buildcb, mode_tree_draw_cb drawcb,
     mode_tree_search_cb searchcb, mode_tree_menu_cb menucb,
     mode_tree_height_cb heightcb, mode_tree_key_cb keycb,
-    mode_tree_swap_cb swapcb, void *modedata, const struct menu_item *menu,
-    const char **sort_list, u_int sort_size, struct screen **s)
+    mode_tree_swap_cb swapcb, mode_tree_sort_cb sortcb,
+    mode_tree_help_cb helpcb, void *modedata, const struct menu_item *menu,
+    struct screen **s)
 {
 	struct mode_tree_data	*mtd;
-	const char		*sort;
-	u_int			 i;
 
 	mtd = xcalloc(1, sizeof *mtd);
 	mtd->references = 1;
@@ -468,9 +504,6 @@ mode_tree_start(struct window_pane *wp, struct args *args,
 	mtd->modedata = modedata;
 	mtd->menu = menu;
 
-	mtd->sort_list = sort_list;
-	mtd->sort_size = sort_size;
-
 	if (args_has(args, 'N') > 1)
 		mtd->preview = MODE_TREE_PREVIEW_BIG;
 	else if (args_has(args, 'N'))
@@ -478,13 +511,7 @@ mode_tree_start(struct window_pane *wp, struct args *args,
 	else
 		mtd->preview = MODE_TREE_PREVIEW_NORMAL;
 
-	sort = args_get(args, 'O');
-	if (sort != NULL) {
-		for (i = 0; i < sort_size; i++) {
-			if (strcasecmp(sort, sort_list[i]) == 0)
-				mtd->sort_crit.field = i;
-		}
-	}
+	mtd->sort_crit.order = sort_order_from_string(args_get(args, 'O'));
 	mtd->sort_crit.reversed = args_has(args, 'r');
 
 	if (args_has(args, 'f'))
@@ -499,6 +526,8 @@ mode_tree_start(struct window_pane *wp, struct args *args,
 	mtd->heightcb = heightcb;
 	mtd->keycb = keycb;
 	mtd->swapcb = swapcb;
+	mtd->sortcb = sortcb;
+	mtd->helpcb = helpcb;
 
 	TAILQ_INIT(&mtd->children);
 
@@ -566,6 +595,8 @@ mode_tree_build(struct mode_tree_data *mtd)
 	TAILQ_CONCAT(&mtd->saved, &mtd->children, entry);
 	TAILQ_INIT(&mtd->children);
 
+	if (mtd->sortcb != NULL)
+		mtd->sortcb(&mtd->sort_crit);
 	mtd->buildcb(mtd->modedata, &mtd->sort_crit, &tag, mtd->filter);
 	mtd->no_matches = TAILQ_EMPTY(&mtd->children);
 	if (mtd->no_matches)
@@ -851,9 +882,9 @@ mode_tree_draw(struct mode_tree_data *mtd)
 	screen_write_cursormove(&ctx, 0, h, 0);
 	screen_write_box(&ctx, w, sy - h, BOX_LINES_DEFAULT, NULL, NULL);
 
-	if (mtd->sort_list != NULL) {
+	if (mtd->sort_crit.order_seq != NULL) {
 		xasprintf(&text, " %s (sort: %s%s)", mti->name,
-		    mtd->sort_list[mtd->sort_crit.field],
+		    sort_order_to_string(mtd->sort_crit.order),
 		    mtd->sort_crit.reversed ? ", reversed" : "");
 	} else
 		xasprintf(&text, " %s", mti->name);
@@ -1132,6 +1163,57 @@ mode_tree_display_menu(struct mode_tree_data *mtd, struct client *c, u_int x,
 	}
 }
 
+static void
+mode_tree_display_help(__unused struct mode_tree_data *mtd, struct client *c)
+{
+	struct session	  *s = c->session;
+	u_int		  px, py, w, h = 0;
+	const char	**line, **lines = NULL, *item = "item";
+	char		 *new_line;
+
+	if (mtd->helpcb == NULL)
+		w = MODE_TREE_HELP_DEFAULT_WIDTH;
+	else {
+		lines = mtd->helpcb(&w, &item);
+		if (w < MODE_TREE_HELP_DEFAULT_WIDTH)
+			w = MODE_TREE_HELP_DEFAULT_WIDTH;
+	}
+	for (line = mode_tree_help_start; *line != NULL; line++)
+		h++;
+	for (line = lines; line != NULL && *line != NULL; line++)
+		h++;
+	for (line = mode_tree_help_end; *line != NULL; line++)
+		h++;
+
+	if (c->tty.sx < w || c->tty.sy < h)
+		return;
+	px = (c->tty.sx - w) / 2;
+	py = (c->tty.sy - h) / 2;
+
+	if (popup_display(POPUP_CLOSEANYKEY|POPUP_NOJOB, BOX_LINES_DEFAULT,
+	    NULL, px, py, w, h, NULL, NULL, 0, NULL, NULL, NULL, c, s, NULL,
+	    NULL, NULL, NULL) != 0)
+		return;
+
+	popup_write(c, "\033[H\033[?25l\033[?7l\033)0", 17);
+	for (line = mode_tree_help_start; *line != NULL; line++) {
+		new_line = cmd_template_replace(*line, item, 1);
+		popup_write(c, new_line, strlen(new_line));
+		free(new_line);
+	}
+	for (line = lines; line != NULL && *line != NULL; line++) {
+		new_line = cmd_template_replace(*line, item, 1);
+		popup_write(c, new_line, strlen(new_line));
+		free(new_line);
+	}
+	for (line = mode_tree_help_end; *line != NULL; line++) {
+		new_line = cmd_template_replace(*line, item, 1);
+		popup_write(c, new_line, strlen(new_line));
+		free(new_line);
+	}
+	popup_write(c, "\033[H", 3);
+}
+
 int
 mode_tree_key(struct mode_tree_data *mtd, struct client *c, key_code *key,
     struct mouse_event *m, u_int *xp, u_int *yp)
@@ -1139,7 +1221,12 @@ mode_tree_key(struct mode_tree_data *mtd, struct client *c, key_code *key,
 	struct mode_tree_line	*line;
 	struct mode_tree_item	*current, *parent, *mti;
 	u_int			 i, x, y;
-	int			 choice;
+	int			 choice, preview;
+
+	if (mtd->line_size == 0) {
+		*key = KEYC_NONE;
+		return (1);
+	}
 
 	if (KEYC_IS_MOUSE(*key) && m != NULL) {
 		if (cmd_mouse_at(mtd->wp, m, &x, &y, 0) != 0) {
@@ -1151,9 +1238,10 @@ mode_tree_key(struct mode_tree_data *mtd, struct client *c, key_code *key,
 		if (yp != NULL)
 			*yp = y;
 		if (x > mtd->width || y > mtd->height) {
+			preview = mtd->preview;
 			if (*key == KEYC_MOUSEDOWN3_PANE)
 				mode_tree_display_menu(mtd, c, x, y, 1);
-			if (mtd->preview == MODE_TREE_PREVIEW_OFF)
+			if (preview == MODE_TREE_PREVIEW_OFF)
 				*key = KEYC_NONE;
 			return (0);
 		}
@@ -1200,8 +1288,13 @@ mode_tree_key(struct mode_tree_data *mtd, struct client *c, key_code *key,
 	switch (*key) {
 	case 'q':
 	case '\033': /* Escape */
+	case '['|KEYC_CTRL:
 	case 'g'|KEYC_CTRL:
 		return (1);
+	case KEYC_F1:
+	case 'h'|KEYC_CTRL:
+		mode_tree_display_help(mtd, c);
+		break;
 	case KEYC_UP:
 	case 'k':
 	case KEYC_WHEELUP_PANE:
@@ -1287,9 +1380,7 @@ mode_tree_key(struct mode_tree_data *mtd, struct client *c, key_code *key,
 		}
 		break;
 	case 'O':
-		mtd->sort_crit.field++;
-		if (mtd->sort_crit.field >= mtd->sort_size)
-			mtd->sort_crit.field = 0;
+		sort_next_order(&mtd->sort_crit);
 		mode_tree_build(mtd);
 		break;
 	case 'r':

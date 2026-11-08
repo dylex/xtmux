@@ -116,7 +116,6 @@ session_create(const char *prefix, const char *name, const char *cwd,
 	s = xcalloc(1, sizeof *s);
 	s->references = 1;
 	s->flags = 0;
-
 	s->cwd = xstrdup(cwd);
 
 	TAILQ_INIT(&s->lastw);
@@ -229,24 +228,6 @@ session_destroy(struct session *s, int notify, const char *from)
 	session_remove_ref(s, __func__);
 }
 
-/* Sanitize session name. */
-char *
-session_check_name(const char *name)
-{
-	char	*copy, *cp, *new_name;
-
-	if (*name == '\0')
-		return (NULL);
-	copy = xstrdup(name);
-	for (cp = copy; *cp != '\0'; cp++) {
-		if (*cp == ':' || *cp == '.')
-			*cp = '_';
-	}
-	utf8_stravis(&new_name, copy, VIS_OCTAL|VIS_CSTYLE|VIS_TAB|VIS_NL);
-	free(copy);
-	return (new_name);
-}
-
 /* Lock session if it has timed out. */
 static void
 session_lock_timer(__unused int fd, __unused short events, void *arg)
@@ -293,36 +274,48 @@ session_update_activity(struct session *s, struct timeval *from)
 
 /* Find the next usable session. */
 struct session *
-session_next_session(struct session *s)
+session_next_session(struct session *s, struct sort_criteria *sort_crit)
 {
-	struct session *s2;
+	struct session	**l;
+	u_int		  n, i;
 
 	if (RB_EMPTY(&sessions) || !session_alive(s))
 		return (NULL);
 
-	s2 = RB_NEXT(sessions, &sessions, s);
-	if (s2 == NULL)
-		s2 = RB_MIN(sessions, &sessions);
-	if (s2 == s)
-		return (NULL);
-	return (s2);
+	l = sort_get_sessions(&n, sort_crit);
+	for (i = 0; i < n; i++) {
+		if (l[i] == s)
+			break;
+	}
+	if (i == n)
+		fatalx("session %s not found in sorted list", s->name);
+	i++;
+	if (i == n)
+		i = 0;
+	return (l[i]);
 }
 
 /* Find the previous usable session. */
 struct session *
-session_previous_session(struct session *s)
+session_previous_session(struct session *s, struct sort_criteria *sort_crit)
 {
-	struct session *s2;
+	struct session	**l;
+	u_int		  n, i;
 
 	if (RB_EMPTY(&sessions) || !session_alive(s))
 		return (NULL);
 
-	s2 = RB_PREV(sessions, &sessions, s);
-	if (s2 == NULL)
-		s2 = RB_MAX(sessions, &sessions);
-	if (s2 == s)
-		return (NULL);
-	return (s2);
+	l = sort_get_sessions(&n, sort_crit);
+	for (i = 0; i < n; i++) {
+		if (l[i] == s)
+			break;
+	}
+	if (i == n)
+		fatalx("session %s not found in sorted list", s->name);
+	if (i == 0)
+		i = n;
+	i--;
+	return (l[i]);
 }
 
 /* Attach a window to a session. */
@@ -763,6 +756,32 @@ session_theme_changed(struct session *s)
 		RB_FOREACH(wl, winlinks, &s->windows) {
 			TAILQ_FOREACH(wp, &wl->window->panes, entry)
 			    wp->flags |= PANE_THEMECHANGED;
+		}
+	}
+}
+
+/* Update history for all panes. */
+void
+session_update_history(struct session *s)
+{
+	struct winlink		*wl;
+	struct window_pane	*wp;
+	struct grid		*gd;
+	u_int			 limit, osize;
+
+	limit = options_get_number(s->options, "history-limit");
+	RB_FOREACH(wl, winlinks, &s->windows) {
+		TAILQ_FOREACH(wp, &wl->window->panes, entry) {
+			gd = wp->base.grid;
+
+			osize = gd->hsize;
+			gd->hlimit = limit;
+			grid_collect_history(gd, 1);
+
+			if (gd->hsize != osize) {
+				log_debug("%s: %%%u %u -> %u", __func__, wp->id,
+				    osize, gd->hsize);
+			}
 		}
 	}
 }

@@ -37,6 +37,8 @@ static void printflike(1,2)	 yyerror(const char *, ...);
 static char			*yylex_token(int);
 static char			*yylex_format(void);
 
+#define CMD_PARSE_MAX_ENVIRON_LEN 16384
+
 struct cmd_parse_scope {
 	int				 flag;
 	TAILQ_ENTRY (cmd_parse_scope)	 entry;
@@ -232,6 +234,10 @@ assignment	: EQUALS
 					flag = flag && scope->flag;
 			}
 
+			if (strlen($1) > CMD_PARSE_MAX_ENVIRON_LEN) {
+				yyerror("environment variable is too long");
+				YYABORT;
+			}
 			if ((~flags & CMD_PARSE_PARSEONLY) && flag)
 				environ_put(global_environ, $1, 0);
 			free($1);
@@ -250,6 +256,10 @@ hidden_assignment : HIDDEN EQUALS
 					flag = flag && scope->flag;
 			}
 
+			if (strlen($2) > CMD_PARSE_MAX_ENVIRON_LEN) {
+				yyerror("environment variable is too long");
+				YYABORT;
+			}
 			if ((~flags & CMD_PARSE_PARSEONLY) && flag)
 				environ_put(global_environ, $2, ENVIRON_HIDDEN);
 			free($2);
@@ -758,7 +768,7 @@ static int
 cmd_parse_expand_alias(struct cmd_parse_command *cmd,
     struct cmd_parse_input *pi, struct cmd_parse_result *pr)
 {
-	struct cmd_parse_argument	*arg, *arg1, *first;
+	struct cmd_parse_argument	*first;
 	struct cmd_parse_commands	*cmds;
 	struct cmd_parse_command	*last;
 	char				*alias, *name, *cause;
@@ -798,10 +808,7 @@ cmd_parse_expand_alias(struct cmd_parse_command *cmd,
 	TAILQ_REMOVE(&cmd->arguments, first, entry);
 	cmd_parse_free_argument(first);
 
-	TAILQ_FOREACH_SAFE(arg, &cmd->arguments, entry, arg1) {
-		TAILQ_REMOVE(&cmd->arguments, arg, entry);
-		TAILQ_INSERT_TAIL(&last->arguments, arg, entry);
-	}
+	TAILQ_CONCAT(&last->arguments, &cmd->arguments, entry);
 	cmd_parse_log_commands(cmds, __func__);
 
 	pi->flags |= CMD_PARSE_NOALIAS;
@@ -1607,7 +1614,9 @@ yylex_token_tilde(char **buf, size_t *len)
 
 	if (*name == '\0') {
 		envent = environ_find(global_environ, "HOME");
-		if (envent != NULL && *envent->value != '\0')
+		if (envent != NULL &&
+		    envent->value != NULL &&
+		    *envent->value != '\0')
 			home = envent->value;
 		else if ((pw = getpwuid(getuid())) != NULL)
 			home = pw->pw_dir;

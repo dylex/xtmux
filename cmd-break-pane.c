@@ -58,9 +58,14 @@ cmd_break_pane_exec(struct cmd *self, struct cmdq_item *item)
 	struct session		*dst_s = target->s;
 	struct window_pane	*wp = source->wp;
 	struct window		*w = wl->window;
-	char			*name, *cause, *cp;
+	char			*newname, *cause, *cp;
 	int			 idx = target->idx, before;
-	const char		*template;
+	const char		*template, *name = args_get(args, 'n');
+
+	if (name != NULL && !check_name(name)) {
+		cmdq_error(item, "invalid window name: %s", name);
+		return (CMD_RETURN_ERROR);
+	}
 
 	before = args_has(args, 'b');
 	if (args_has(args, 'a') || before) {
@@ -73,15 +78,15 @@ cmd_break_pane_exec(struct cmd *self, struct cmdq_item *item)
 	}
 	server_unzoom_window(w);
 
-	if (window_count_panes(w) == 1) {
+	if (window_count_panes(w, 1) == 1) {
 		if (server_link_window(src_s, wl, dst_s, idx, 0,
 		    !args_has(args, 'd'), &cause) != 0) {
 			cmdq_error(item, "%s", cause);
 			free(cause);
 			return (CMD_RETURN_ERROR);
 		}
-		if (args_has(args, 'n')) {
-			window_set_name(w, args_get(args, 'n'));
+		if (name != NULL) {
+			window_set_name(w, name, 0);
 			options_set_number(w->options, "automatic-rename", 0);
 		}
 		server_unlink_window(src_s, wl);
@@ -96,6 +101,7 @@ cmd_break_pane_exec(struct cmd *self, struct cmdq_item *item)
 	}
 
 	TAILQ_REMOVE(&w->panes, wp, entry);
+	TAILQ_REMOVE(&w->z_index, wp, zentry);
 	server_client_remove_pane(wp);
 	window_lost_pane(w, wp);
 	layout_close_pane(wp);
@@ -104,15 +110,16 @@ cmd_break_pane_exec(struct cmd *self, struct cmdq_item *item)
 	options_set_parent(wp->options, w->options);
 	wp->flags |= (PANE_STYLECHANGED|PANE_THEMECHANGED);
 	TAILQ_INSERT_HEAD(&w->panes, wp, entry);
+	TAILQ_INSERT_HEAD(&w->z_index, wp, zentry);
 	w->active = wp;
 	w->latest = tc;
 
-	if (!args_has(args, 'n')) {
-		name = default_window_name(w);
-		window_set_name(w, name);
-		free(name);
+	if (name == NULL) {
+		newname = default_window_name(w);
+		window_set_name(w, newname, 0);
+		free(newname);
 	} else {
-		window_set_name(w, args_get(args, 'n'));
+		window_set_name(w, name, 0);
 		options_set_number(w->options, "automatic-rename", 0);
 	}
 

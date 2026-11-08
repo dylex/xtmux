@@ -103,7 +103,7 @@ cmd_select_pane_exec(struct cmd *self, struct cmdq_item *item)
 		 * spawned without being visited (for example split-window -d).
 		 */
 		lastwp = TAILQ_FIRST(&w->last_panes);
-		if (lastwp == NULL && window_count_panes(w) == 2) {
+		if (lastwp == NULL && window_count_panes(w, 1) == 2) {
 			lastwp = TAILQ_PREV(w->active, window_panes, entry);
 			if (lastwp == NULL)
 				lastwp = TAILQ_NEXT(w->active, entry);
@@ -160,6 +160,10 @@ cmd_select_pane_exec(struct cmd *self, struct cmdq_item *item)
 			server_redraw_window_borders(markedwp->window);
 			server_status_window(markedwp->window);
 		}
+		if (window_pane_is_floating(wp)) {
+			window_redraw_active_switch(w, wp);
+			window_set_active_pane(w, wp, 1);
+		}
 		return (CMD_RETURN_NORMAL);
 	}
 
@@ -213,7 +217,7 @@ cmd_select_pane_exec(struct cmd *self, struct cmdq_item *item)
 
 	if (args_has(args, 'T')) {
 		title = format_single_from_target(item, args_get(args, 'T'));
-		if (screen_set_title(&wp->base, title)) {
+		if (screen_set_title(&wp->base, title, 0)) {
 			notify_pane("pane-title-changed", wp);
 			server_redraw_window_borders(wp->window);
 			server_status_window(wp->window);

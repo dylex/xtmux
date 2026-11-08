@@ -749,7 +749,7 @@ options_get_number(struct options *oo, const char *name)
 	return (o->value.number);
 }
 
-const struct cmd_list *
+struct cmd_list *
 options_get_command(struct options *oo, const char *name)
 {
 	struct options_entry	*o;
@@ -1254,6 +1254,10 @@ options_push_changes(const char *name)
 		RB_FOREACH(wp, window_pane_tree, &all_window_panes)
 			wp->flags |= (PANE_STYLECHANGED|PANE_THEMECHANGED);
 	}
+	if (*name == '@') {
+		RB_FOREACH(wp, window_pane_tree, &all_window_panes)
+			wp->flags |= PANE_STYLECHANGED;
+	}
 	if (strcmp(name, "pane-colours") == 0) {
 		RB_FOREACH(wp, window_pane_tree, &all_window_panes)
 			colour_palette_from_option(&wp->palette, wp->options);
@@ -1261,8 +1265,13 @@ options_push_changes(const char *name)
 	if (strcmp(name, "pane-border-status") == 0 ||
 	    strcmp(name, "pane-scrollbars") == 0 ||
 	    strcmp(name, "pane-scrollbars-position") == 0) {
-		RB_FOREACH(w, windows, &windows)
+		RB_FOREACH(w, windows, &windows) {
+			w->sb = options_get_number(w->options,
+			    "pane-scrollbars");
+			w->sb_pos = options_get_number(w->options,
+			    "pane-scrollbars-position");
 			layout_fix_panes(w, NULL);
+		}
 	}
 	if (strcmp(name, "pane-scrollbars-style") == 0) {
 		RB_FOREACH(wp, window_pane_tree, &all_window_panes) {
@@ -1276,6 +1285,10 @@ options_push_changes(const char *name)
 		utf8_update_width_cache();
 	if (strcmp(name, "input-buffer-size") == 0)
 		input_set_buffer_size(options_get_number(global_options, name));
+	if (strcmp(name, "history-limit") == 0) {
+		RB_FOREACH(s, sessions, &sessions)
+			session_update_history(s);
+	}
 	RB_FOREACH(s, sessions, &sessions)
 		status_update_cache(s);
 

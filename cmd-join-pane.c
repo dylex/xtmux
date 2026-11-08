@@ -71,11 +71,8 @@ cmd_join_pane_exec(struct cmd *self, struct cmdq_item *item)
 	struct window		*src_w, *dst_w;
 	struct window_pane	*src_wp, *dst_wp;
 	char			*cause = NULL;
-	int			 size, dst_idx;
-	int			 flags;
-	enum layout_type	 type;
+	int			 flags = 0, dst_idx;
 	struct layout_cell	*lc;
-	u_int			 curval = 0;
 
 	dst_s = target->s;
 	dst_wl = target->wl;
@@ -94,50 +91,10 @@ cmd_join_pane_exec(struct cmd *self, struct cmdq_item *item)
 		return (CMD_RETURN_ERROR);
 	}
 
-	type = LAYOUT_TOPBOTTOM;
-	if (args_has(args, 'h'))
-		type = LAYOUT_LEFTRIGHT;
-
-	/* If the 'p' flag is dropped then this bit can be moved into 'l'. */
-	if (args_has(args, 'l') || args_has(args, 'p')) {
-		if (args_has(args, 'f')) {
-			if (type == LAYOUT_TOPBOTTOM)
-				curval = dst_w->sy;
-			else
-				curval = dst_w->sx;
-		} else {
-			if (type == LAYOUT_TOPBOTTOM)
-				curval = dst_wp->sy;
-			else
-				curval = dst_wp->sx;
-		}
-	}
-
-	size = -1;
-	if (args_has(args, 'l')) {
-		size = args_percentage_and_expand(args, 'l', 0, INT_MAX, curval,
-			   item, &cause);
-	} else if (args_has(args, 'p')) {
-		size = args_strtonum_and_expand(args, 'l', 0, 100, item,
-			   &cause);
-		if (cause == NULL)
-			size = curval * size / 100;
-	}
+	lc = layout_get_tiled_cell(item, args, dst_w, dst_wp, flags, &cause);
 	if (cause != NULL) {
-		cmdq_error(item, "size %s", cause);
+		cmdq_error(item, "size or position %s", cause);
 		free(cause);
-		return (CMD_RETURN_ERROR);
-	}
-
-	flags = 0;
-	if (args_has(args, 'b'))
-		flags |= SPAWN_BEFORE;
-	if (args_has(args, 'f'))
-		flags |= SPAWN_FULLSIZE;
-
-	lc = layout_split_pane(dst_wp, type, size, flags);
-	if (lc == NULL) {
-		cmdq_error(item, "create pane failed: pane too small");
 		return (CMD_RETURN_ERROR);
 	}
 
@@ -146,14 +103,18 @@ cmd_join_pane_exec(struct cmd *self, struct cmdq_item *item)
 	server_client_remove_pane(src_wp);
 	window_lost_pane(src_w, src_wp);
 	TAILQ_REMOVE(&src_w->panes, src_wp, entry);
+	TAILQ_REMOVE(&src_w->z_index, src_wp, zentry);
 
 	src_wp->window = dst_w;
 	options_set_parent(src_wp->options, dst_w->options);
 	src_wp->flags |= (PANE_STYLECHANGED|PANE_THEMECHANGED);
-	if (flags & SPAWN_BEFORE)
+	if (flags & SPAWN_BEFORE) {
 		TAILQ_INSERT_BEFORE(dst_wp, src_wp, entry);
-	else
+		TAILQ_INSERT_BEFORE(dst_wp, src_wp, zentry);
+	} else {
 		TAILQ_INSERT_AFTER(&dst_w->panes, dst_wp, src_wp, entry);
+		TAILQ_INSERT_AFTER(&dst_w->z_index, dst_wp, src_wp, zentry);
+	}
 	layout_assign_pane(lc, src_wp, 0);
 	colour_palette_from_option(&src_wp->palette, src_wp->options);
 
@@ -170,7 +131,7 @@ cmd_join_pane_exec(struct cmd *self, struct cmdq_item *item)
 	} else
 		server_status_session(dst_s);
 
-	if (window_count_panes(src_w) == 0)
+	if (window_count_panes(src_w, 1) == 0)
 		server_kill_window(src_w, 1);
 	else
 		notify_window("window-layout-changed", src_w);

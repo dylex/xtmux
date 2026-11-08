@@ -74,8 +74,6 @@ spawn_log(const char *from, struct spawn_context *sc)
 struct winlink *
 spawn_window(struct spawn_context *sc, char **cause)
 {
-	struct cmdq_item	*item = sc->item;
-	struct client		*c = cmdq_get_client(item);
 	struct session		*s = sc->s;
 	struct window		*w;
 	struct window_pane	*wp;
@@ -179,12 +177,12 @@ spawn_window(struct spawn_context *sc, char **cause)
 	/* Set the name of the new window. */
 	if (~sc->flags & SPAWN_RESPAWN) {
 		free(w->name);
-		if (sc->name != NULL) {
-			w->name = format_single(item, sc->name, c, s, NULL,
-			    NULL);
-			options_set_number(w->options, "automatic-rename", 0);
-		} else
+		if (sc->name == NULL || *sc->name == '\0')
 			w->name = default_window_name(w);
+		else {
+			w->name = xstrdup(sc->name);
+			options_set_number(w->options, "automatic-rename", 0);
+		}
 	}
 
 	/* Switch to the new window if required. */
@@ -211,7 +209,9 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	struct environ		 *child;
 	struct environ_entry	 *ee;
 	char			**argv, *cp, **argvp, *argv0, *cwd, *new_cwd;
-	const char		 *cmd, *tmp;
+	char			  path[PATH_MAX];
+	const char		 *cmd, *tmp, *home = find_home();
+	const char		 *actual_cwd = NULL;
 	int			  argc;
 	u_int			  idx;
 	struct termios		  now;
@@ -263,15 +263,26 @@ spawn_pane(struct spawn_context *sc, char **cause)
 		sc->wp0->ictx = NULL;
 		new_wp = sc->wp0;
 		new_wp->flags &= ~(PANE_STATUSREADY|PANE_STATUSDRAWN);
-	} else if (sc->lc == NULL) {
-		new_wp = window_add_pane(w, NULL, hlimit, sc->flags);
-		layout_init(w, new_wp);
 	} else {
-		new_wp = window_add_pane(w, sc->wp0, hlimit, sc->flags);
-		if (sc->flags & SPAWN_ZOOM)
-			layout_assign_pane(sc->lc, new_wp, 1);
-		else
-			layout_assign_pane(sc->lc, new_wp, 0);
+		if (sc->lc == NULL) {
+			new_wp = window_add_pane(w, NULL, hlimit, sc->flags);
+			layout_init(w, new_wp);
+		} else {
+			new_wp = window_add_pane(w, sc->wp0, hlimit, sc->flags);
+			if (sc->flags & SPAWN_ZOOM)
+				layout_assign_pane(sc->lc, new_wp, 1);
+			else
+				layout_assign_pane(sc->lc, new_wp, 0);
+		}
+		if (sc->flags & SPAWN_FLOATING)
+			new_wp->layout_cell->flags |= LAYOUT_CELL_FLOATING;
+
+		/*
+		 * If window currently zoomed, window_set_active_pane calls
+		 * window_unzoom which it copies back the saved_layout_cell.
+		 */
+		if (w->flags & WINDOW_ZOOMED)
+			new_wp->saved_layout_cell = new_wp->layout_cell;
 	}
 
 	/*
@@ -366,6 +377,16 @@ spawn_pane(struct spawn_context *sc, char **cause)
 		goto complete;
 	}
 
+	/* Store current working directory and change to new one. */
+	if (getcwd(path, sizeof path) != NULL) {
+		if (chdir(new_wp->cwd) == 0)
+			actual_cwd = new_wp->cwd;
+		else if (home != NULL && chdir(home) == 0)
+			actual_cwd = home;
+		else if (chdir("/") == 0)
+			actual_cwd = "/";
+	}
+
 	/* Fork the new process. */
 	new_wp->pid = fdforkpty(ptm_fd, &new_wp->fd, new_wp->tty, NULL, &ws);
 	if (new_wp->pid == -1) {
@@ -381,8 +402,15 @@ spawn_pane(struct spawn_context *sc, char **cause)
 		return (NULL);
 	}
 
-	/* In the parent process, everything is done now. */
+	/*
+	 * In the parent process, everything is done now. Change the working
+	 * directory back.
+	 */
 	if (new_wp->pid != 0) {
+		if (actual_cwd != NULL &&
+		    chdir(path) != 0 &&
+		    (home == NULL || chdir(home) != 0))
+			chdir("/");
 		goto complete;
 	}
 
@@ -397,17 +425,10 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	}
 #endif
 	/*
-	 * Child process. Change to the working directory or home if that
-	 * fails.
+	 * Child process. Set PWD to the working directory.
 	 */
-	if (chdir(new_wp->cwd) == 0)
-		environ_set(child, "PWD", 0, "%s", new_wp->cwd);
-	else if ((tmp = find_home()) != NULL && chdir(tmp) == 0)
-		environ_set(child, "PWD", 0, "%s", tmp);
-	else if (chdir("/") == 0)
-		environ_set(child, "PWD", 0, "/");
-	else
-		fatal("chdir failed");
+	if (actual_cwd != NULL)
+		environ_set(child, "PWD", 0, "%s", actual_cwd);
 
 	/*
 	 * Update terminal escape characters from the session if available and
