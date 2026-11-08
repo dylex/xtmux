@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: cmd-swap-pane.c,v 1.56 2026/10/02 12:23:44 nicm Exp $ */
 
 /*
  * Copyright (c) 2009 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -42,6 +42,22 @@ const struct cmd_entry cmd_swap_pane_entry = {
 	.exec = cmd_swap_pane_exec
 };
 
+static struct window_pane *
+cmd_swap_pane_next_tiled_pane(struct window_pane *wp)
+{
+	while (wp != NULL && !layout_cell_is_tiled(wp->layout_cell))
+		wp = TAILQ_NEXT(wp, entry);
+	return (wp);
+}
+
+static struct window_pane *
+cmd_swap_pane_prev_tiled_pane(struct window_pane *wp)
+{
+	while (wp != NULL && !layout_cell_is_tiled(wp->layout_cell))
+		wp = TAILQ_PREV(wp, window_panes, entry);
+	return (wp);
+}
+
 static enum cmd_retval
 cmd_swap_pane_exec(struct cmd *self, struct cmdq_item *item)
 {
@@ -52,25 +68,47 @@ cmd_swap_pane_exec(struct cmd *self, struct cmdq_item *item)
 	struct window_pane	*tmp_wp, *src_wp, *dst_wp;
 	struct layout_cell	*src_lc, *dst_lc;
 	u_int			 sx, sy, xoff, yoff;
+	int			 src_idx, dst_idx;
 
 	dst_w = target->wl->window;
 	dst_wp = target->wp;
+	dst_idx = target->wl->idx;
 	src_w = source->wl->window;
 	src_wp = source->wp;
+	src_idx = source->wl->idx;
+
+	if (src_wp == src_w->modal || dst_wp == dst_w->modal) {
+		cmdq_error(item, "pane is modal");
+		return (CMD_RETURN_ERROR);
+	}
 
 	if (window_push_zoom(dst_w, 0, args_has(args, 'Z')))
 		server_redraw_window(dst_w);
 
 	if (args_has(args, 'D')) {
+		if (window_pane_is_floating(dst_wp)) {
+			cmdq_error(item, "cannot swap down on floating pane");
+			goto error;
+		}
 		src_w = dst_w;
 		src_wp = TAILQ_NEXT(dst_wp, entry);
-		if (src_wp == NULL)
+		src_wp = cmd_swap_pane_next_tiled_pane(src_wp);
+		if (src_wp == NULL) {
 			src_wp = TAILQ_FIRST(&dst_w->panes);
+			src_wp = cmd_swap_pane_next_tiled_pane(src_wp);
+		}
 	} else if (args_has(args, 'U')) {
+		if (window_pane_is_floating(dst_wp)) {
+			cmdq_error(item, "cannot swap up on floating pane");
+			goto error;
+		}
 		src_w = dst_w;
 		src_wp = TAILQ_PREV(dst_wp, window_panes, entry);
-		if (src_wp == NULL)
+		src_wp = cmd_swap_pane_prev_tiled_pane(src_wp);
+		if (src_wp == NULL) {
 			src_wp = TAILQ_LAST(&dst_w->panes, window_panes);
+			src_wp = cmd_swap_pane_prev_tiled_pane(src_wp);
+		}
 	}
 
 	if (src_w != dst_w && window_push_zoom(src_w, 0, args_has(args, 'Z')))
@@ -78,12 +116,6 @@ cmd_swap_pane_exec(struct cmd *self, struct cmdq_item *item)
 
 	if (src_wp == dst_wp)
 		goto out;
-
-	if (window_pane_is_floating(src_wp) ||
-	    window_pane_is_floating(dst_wp)) {
-		cmdq_error(item, "cannot swap floating panes");
-		return (CMD_RETURN_ERROR);
-	}
 
 	server_client_remove_pane(src_wp);
 	server_client_remove_pane(dst_wp);
@@ -114,10 +146,6 @@ cmd_swap_pane_exec(struct cmd *self, struct cmdq_item *item)
 	dst_wp->layout_cell = src_lc;
 	dst_lc->wp = src_wp;
 	src_wp->layout_cell = dst_lc;
-	if (window_pane_is_floating(src_wp) != window_pane_is_floating(dst_wp)) {
-		src_wp->layout_cell->flags ^= LAYOUT_CELL_FLOATING;
-		dst_wp->layout_cell->flags ^= LAYOUT_CELL_FLOATING;
-	}
 
 	src_wp->window = dst_w;
 	options_set_parent(src_wp->options, dst_w->options);
@@ -153,14 +181,20 @@ cmd_swap_pane_exec(struct cmd *self, struct cmdq_item *item)
 		colour_palette_from_option(&src_wp->palette, src_wp->options);
 		colour_palette_from_option(&dst_wp->palette, dst_wp->options);
 		layout_fix_panes(src_w, NULL);
+		redraw_invalidate_scene(src_w);
 		server_redraw_window(src_w);
 	}
 	layout_fix_panes(dst_w, NULL);
+	redraw_invalidate_scene(dst_w);
 	server_redraw_window(dst_w);
 
-	notify_window("window-layout-changed", src_w);
+	if (src_w != dst_w) {
+		window_fire_pane_moved(src_wp, src_w, src_idx, dst_w, dst_idx);
+		window_fire_pane_moved(dst_wp, dst_w, dst_idx, src_w, src_idx);
+	}
+	events_fire_window("window-layout-changed", src_w);
 	if (src_w != dst_w)
-		notify_window("window-layout-changed", dst_w);
+		events_fire_window("window-layout-changed", dst_w);
 
 out:
 	if (window_pop_zoom(src_w))
@@ -168,4 +202,9 @@ out:
 	if (src_w != dst_w && window_pop_zoom(dst_w))
 		server_redraw_window(dst_w);
 	return (CMD_RETURN_NORMAL);
+
+error:
+	if (window_pop_zoom(dst_w))
+		server_redraw_window(dst_w);
+	return (CMD_RETURN_ERROR);
 }

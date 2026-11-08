@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: tty-keys.c,v 1.215 2026/09/25 10:37:05 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -59,6 +59,7 @@ static int	tty_keys_device_attributes2(struct tty *, const char *, size_t,
 		    size_t *);
 static int	tty_keys_extended_device_attributes(struct tty *, const char *,
 		    size_t, size_t *);
+static int	tty_keys_sync(struct tty *, const char *, size_t, size_t *);
 static int	tty_keys_palette(struct tty *, const char *, size_t, size_t *);
 
 /* A key tree entry. */
@@ -495,7 +496,6 @@ tty_keys_build(struct tty *tty)
 	u_int					 i, j;
 	const char				*s;
 	struct options_entry			*o;
-	struct options_array_item		*a;
 	union options_value			*ov;
 	char					 copy[16];
 	key_code				 key;
@@ -532,12 +532,10 @@ tty_keys_build(struct tty *tty)
 
 	o = options_get(global_options, "user-keys");
 	if (o != NULL) {
-		a = options_array_first(o);
-		while (a != NULL) {
-			i = options_array_item_index(a);
-			ov = options_array_item_value(a);
-			tty_keys_add(tty, ov->string, KEYC_USER + i);
-			a = options_array_next(a);
+		for (i = 0; i <= KEYC_NUSER; i++) {
+			ov = options_array_getv(o, "%u", i);
+			if (ov != NULL)
+				tty_keys_add(tty, ov->string, KEYC_USER + i);
 		}
 	}
 }
@@ -751,7 +749,7 @@ tty_keys_next(struct tty *tty)
 	const char		*buf;
 	size_t			 len, size;
 	cc_t			 bspace;
-	int			 delay, expired = 0, n;
+	int			 delay, expired = 0, n, bg = tty->bg;
 	key_code		 key, onlykey;
 	struct mouse_event	 m = { 0 };
 	struct key_event	*event;
@@ -763,8 +761,29 @@ tty_keys_next(struct tty *tty)
 		return (0);
 	log_debug("%s: keys are %zu (%.*s)", c->name, len, (int)len, buf);
 
+	/* If the client has no session, there is nowhere to send input. */
+	if (c->session == NULL) {
+		log_debug("%s: discard keys with no session", c->name);
+		if (event_initialized(&tty->key_timer))
+			evtimer_del(&tty->key_timer);
+		tty->flags &= ~TTY_TIMER;
+		evbuffer_drain(tty->in, len);
+		return (1);
+	}
+
 	/* Is this a clipboard response? */
 	switch (tty_keys_clipboard(tty, buf, len, &size)) {
+	case 0:		/* yes */
+		key = KEYC_UNKNOWN;
+		goto complete_key;
+	case -1:	/* no, or not valid */
+		break;
+	case 1:		/* partial */
+		goto partial_key;
+	}
+
+	/* Is this a synchronized update mode response? */
+	switch (tty_keys_sync(tty, buf, len, &size)) {
 	case 0:		/* yes */
 		key = KEYC_UNKNOWN;
 		goto complete_key;
@@ -811,11 +830,15 @@ tty_keys_next(struct tty *tty)
 	switch (tty_keys_colours(tty, buf, len, &size, &tty->fg, &tty->bg)) {
 	case 0:		/* yes */
 		key = KEYC_UNKNOWN;
+		if (tty->bg != bg)
+			server_client_update_theme_colours(c);
 		session_theme_changed(c->session);
 		goto complete_key;
 	case -1:	/* no, or not valid */
 		break;
 	case 1:		/* partial */
+		if (tty->bg != bg)
+			server_client_update_theme_colours(c);
 		session_theme_changed(c->session);
 		goto partial_key;
 	}
@@ -976,8 +999,9 @@ partial_key:
 		if (delay < 500)
 			delay = 500;
 	}
-	if ((tty->flags & (TTY_WAITFG|TTY_WAITBG) ||
-	    (tty->flags & TTY_ALL_REQUEST_FLAGS) != TTY_ALL_REQUEST_FLAGS) ||
+	if (tty->flags & (TTY_WAITFG|TTY_WAITBG) ||
+	    tty->flags & (TTY_OSC52QUERY|TTY_WINSIZEQUERY) ||
+	    (tty->flags & TTY_ALL_REQUEST_FLAGS) != TTY_ALL_REQUEST_FLAGS ||
 	    !TAILQ_EMPTY(&c->input_requests)) {
 		log_debug("%s: increasing delay (active query)", c->name);
 		if (delay < 500)
@@ -1007,10 +1031,10 @@ complete_key:
 	if (key == KEYC_FOCUS_OUT) {
 		c->flags &= ~CLIENT_FOCUSED;
 		window_update_focus(c->session->curw->window);
-		notify_client("client-focus-out", c);
+		events_fire_client("client-focus-out", c);
 	} else if (key == KEYC_FOCUS_IN) {
 		c->flags |= CLIENT_FOCUSED;
-		notify_client("client-focus-in", c);
+		events_fire_client("client-focus-in", c);
 		window_update_focus(c->session->curw->window);
 	}
 
@@ -1445,7 +1469,6 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
     size_t *size)
 {
 	struct client	*c = tty->client;
-	int		*features = &c->term_features;
 	u_int		 i, n = 0;
 	char		 tmp[128], *endptr, p[32] = { 0 }, *cp, *next;
 
@@ -1502,13 +1525,13 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
 		for (i = 1; i < n; i++) {
 			log_debug("%s: DA feature: %d", c->name, p[i]);
 			if (p[i] == 4)
-				tty_add_features(features, "sixel", ",");
+				tty_parse_client_features(c, "sixel", ",");
 			if (p[i] == 21)
-				tty_add_features(features, "margins", ",");
+				tty_parse_client_features(c, "margins", ",");
 			if (p[i] == 28)
-				tty_add_features(features, "rectfill", ",");
+				tty_parse_client_features(c, "rectfill", ",");
 			if (p[i] == 52)
-				tty_add_features(features, "clipboard", ",");
+				tty_parse_client_features(c, "clipboard", ",");
 		}
 		break;
 	}
@@ -1516,6 +1539,54 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
 
 	tty_update_features(tty);
 	tty->flags |= TTY_HAVEDA;
+
+	return (0);
+}
+
+/*
+ * Handle a synchronized update mode response. Returns 0 for success, -1 for
+ * failure, 1 for partial.
+ */
+static int
+tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
+{
+	struct client		*c = tty->client;
+	static const char	 prefix[] = "\033[?2026;";
+	size_t			 i;
+	int			 status;
+
+	*size = 0;
+	if (tty->flags & TTY_HAVESYNC)
+		return (-1);
+
+	/* The response is always \033[?2026;Ps$y. */
+	for (i = 0; i < (sizeof prefix) - 1; i++) {
+		if (i == len)
+			return (1);
+		if (buf[i] != prefix[i])
+			return (-1);
+	}
+	if (i == len)
+		return (1);
+	if (buf[i] < '0' || buf[i] > '4')
+		return (-1);
+	status = buf[i++] - '0';
+	if (i == len)
+		return (1);
+	if (buf[i++] != '$')
+		return (-1);
+	if (i == len)
+		return (1);
+	if (buf[i++] != 'y')
+		return (-1);
+	*size = i;
+
+	if (status == 1 || status == 2 || status == 3) {
+		tty_parse_client_features(c, "sync", ",");
+		tty_update_features(tty);
+	}
+	log_debug("%s: received DECRPM %.*s", c->name, (int)*size, buf);
+	tty->flags |= TTY_HAVESYNC;
 
 	return (0);
 }
@@ -1529,7 +1600,6 @@ tty_keys_device_attributes2(struct tty *tty, const char *buf, size_t len,
     size_t *size)
 {
 	struct client	*c = tty->client;
-	int		*features = &c->term_features;
 	u_int		 i, n = 0;
 	char		 tmp[128], *endptr, p[32] = { 0 }, *cp, *next;
 
@@ -1583,13 +1653,13 @@ tty_keys_device_attributes2(struct tty *tty, const char *buf, size_t len,
 	 */
 	switch (p[0]) {
 	case 'M': /* mintty */
-		tty_default_features(features, "mintty", 0);
+		tty_default_features(c, "mintty", 0);
 		break;
 	case 'T': /* tmux */
-		tty_default_features(features, "tmux", 0);
+		tty_default_features(c, "tmux", 0);
 		break;
 	case 'U': /* rxvt-unicode */
-		tty_default_features(features, "rxvt-unicode", 0);
+		tty_default_features(c, "rxvt-unicode", 0);
 		break;
 	}
 	log_debug("%s: received secondary DA %.*s", c->name, (int)*size, buf);
@@ -1609,7 +1679,6 @@ tty_keys_extended_device_attributes(struct tty *tty, const char *buf,
     size_t len, size_t *size)
 {
 	struct client	*c = tty->client;
-	int		*features = &c->term_features;
 	u_int		 i;
 	char		 tmp[128];
 
@@ -1652,17 +1721,21 @@ tty_keys_extended_device_attributes(struct tty *tty, const char *buf,
 
 	/* Add terminal features. */
 	if (strncmp(tmp, "iTerm2 ", 7) == 0)
-		tty_default_features(features, "iTerm2", 0);
+		tty_default_features(c, "iTerm2", 0);
 	else if (strncmp(tmp, "tmux ", 5) == 0)
-		tty_default_features(features, "tmux", 0);
+		tty_default_features(c, "tmux", 0);
 	else if (strncmp(tmp, "XTerm(", 6) == 0)
-		tty_default_features(features, "XTerm", 0);
+		tty_default_features(c, "XTerm", 0);
 	else if (strncmp(tmp, "mintty ", 7) == 0)
-		tty_default_features(features, "mintty", 0);
+		tty_default_features(c, "mintty", 0);
 	else if (strncmp(tmp, "foot(", 5) == 0)
-		tty_default_features(features, "foot", 0);
+		tty_default_features(c, "foot", 0);
 	else if (strncmp(tmp, "WezTerm ", 7) == 0)
-		tty_default_features(features, "WezTerm", 0);
+		tty_default_features(c, "WezTerm", 0);
+	else if (strncmp(tmp, "ghostty ", 8) == 0)
+		tty_default_features(c, "ghostty", 0);
+	else if (strncmp(tmp, "Rio ", 4) == 0)
+		tty_default_features(c, "Rio", 0);
 	log_debug("%s: received extended DA %.*s", c->name, (int)*size, buf);
 
 	free(c->term_type);

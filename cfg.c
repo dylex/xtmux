@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: cfg.c,v 1.91 2026/08/03 13:38:42 nicm Exp $ */
 
 /*
  * Copyright (c) 2008 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -56,7 +56,7 @@ cfg_done(__unused struct cmdq_item *item, __unused void *data)
 	if (cfg_item != NULL)
 		cmdq_continue(cfg_item);
 
-	status_prompt_load_history();
+	prompt_load_history();
 
 	return (CMD_RETURN_NORMAL);
 }
@@ -223,13 +223,15 @@ cfg_print_causes(struct cmdq_item *item)
 {
 	struct client	*c = cmdq_get_client(item);
 	u_int		 i;
+	char		*cause;
 
 	for (i = 0; i < cfg_ncauses; i++) {
+		cause = cfg_causes[i];
 		if (c != NULL && (c->flags & CLIENT_CONTROL))
-			control_write(c, "%%config-error %s", cfg_causes[i]);
+			control_notify_write(c, "%%config-error %s", cause);
 		else
-			cmdq_print(item, "%s", cfg_causes[i]);
-		free(cfg_causes[i]);
+			cmdq_print(item, "%s", cause);
+		free(cause);
 	}
 
 	free(cfg_causes);
@@ -244,14 +246,16 @@ cfg_show_causes(struct session *s)
 	struct window_pane		*wp;
 	struct window_mode_entry	*wme;
 	u_int				 i;
+	char				*cause;
 
 	if (cfg_ncauses == 0)
 		return;
 
 	if (c != NULL && (c->flags & CLIENT_CONTROL)) {
 		for (i = 0; i < cfg_ncauses; i++) {
-			control_write(c, "%%config-error %s", cfg_causes[i]);
-			free(cfg_causes[i]);
+			cause = cfg_causes[i];
+			control_notify_write(c, "%%config-error %s", cause);
+			free(cause);
 		}
 		goto out;
 	}
@@ -268,7 +272,8 @@ cfg_show_causes(struct session *s)
 
 	wme = TAILQ_FIRST(&wp->modes);
 	if (wme == NULL || wme->mode != &window_view_mode)
-		window_pane_set_mode(wp, NULL, &window_view_mode, NULL, NULL);
+		window_pane_set_mode(wp, NULL, &window_view_mode, NULL, NULL,
+		    NULL);
 	for (i = 0; i < cfg_ncauses; i++) {
 		window_copy_add(wp, 0, "%s", cfg_causes[i]);
 		free(cfg_causes[i]);

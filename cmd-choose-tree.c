@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: cmd-choose-tree.c,v 1.58 2026/07/14 17:17:17 nicm Exp $ */
 
 /*
  * Copyright (c) 2012 Thomas Adam <thomas@xteddy.org>
@@ -33,8 +33,8 @@ const struct cmd_entry cmd_choose_tree_entry = {
 	.name = "choose-tree",
 	.alias = NULL,
 
-	.args = { "F:f:GK:NO:rst:wyZ", 0, 1, cmd_choose_tree_args_parse },
-	.usage = "[-GNrswZ] [-F format] [-f filter] [-K key-format] "
+	.args = { "F:f:GhK:kNO:rst:wyZ", 0, 1, cmd_choose_tree_args_parse },
+	.usage = "[-GhkNrswZ] [-F format] [-f filter] [-K key-format] "
 		 "[-O sort-order] " CMD_TARGET_PANE_USAGE " [template]",
 
 	.target = { 't', CMD_FIND_PANE, 0 },
@@ -47,8 +47,8 @@ const struct cmd_entry cmd_choose_client_entry = {
 	.name = "choose-client",
 	.alias = NULL,
 
-	.args = { "F:f:K:NO:rt:yZ", 0, 1, cmd_choose_tree_args_parse },
-	.usage = "[-NrZ] [-F format] [-f filter] [-K key-format] "
+	.args = { "F:f:hiK:kNO:rt:yZ", 0, 1, cmd_choose_tree_args_parse },
+	.usage = "[-hikNrZ] [-F format] [-f filter] [-K key-format] "
 		 "[-O sort-order] " CMD_TARGET_PANE_USAGE " [template]",
 
 	.target = { 't', CMD_FIND_PANE, 0 },
@@ -61,8 +61,8 @@ const struct cmd_entry cmd_choose_buffer_entry = {
 	.name = "choose-buffer",
 	.alias = NULL,
 
-	.args = { "F:f:K:NO:rt:yZ", 0, 1, cmd_choose_tree_args_parse },
-	.usage = "[-NrZ] [-F format] [-f filter] [-K key-format] "
+	.args = { "F:f:K:kNO:rt:yZ", 0, 1, cmd_choose_tree_args_parse },
+	.usage = "[-kNrZ] [-F format] [-f filter] [-K key-format] "
 		 "[-O sort-order] " CMD_TARGET_PANE_USAGE " [template]",
 
 	.target = { 't', CMD_FIND_PANE, 0 },
@@ -75,12 +75,40 @@ const struct cmd_entry cmd_customize_mode_entry = {
 	.name = "customize-mode",
 	.alias = NULL,
 
-	.args = { "F:f:Nt:yZ", 0, 0, NULL },
-	.usage = "[-NZ] [-F format] [-f filter] " CMD_TARGET_PANE_USAGE,
+	.args = { "F:f:kNt:yZ", 0, 0, NULL },
+	.usage = "[-kNZ] [-F format] [-f filter] " CMD_TARGET_PANE_USAGE,
 
 	.target = { 't', CMD_FIND_PANE, 0 },
 
 	.flags = 0,
+	.exec = cmd_choose_tree_exec
+};
+
+const struct cmd_entry cmd_switch_mode_entry = {
+	.name = "switch-mode",
+	.alias = NULL,
+
+	.args = { "F:kst:wZ", 0, 1, cmd_choose_tree_args_parse },
+	.usage = "[-kswZ] [-F format] " CMD_TARGET_PANE_USAGE " [command]",
+
+	.target = { 't', CMD_FIND_PANE, 0 },
+
+	.flags = 0,
+	.exec = cmd_choose_tree_exec
+};
+
+const struct cmd_entry cmd_display_panes_entry = {
+	.name = "display-panes",
+	.alias = "displayp",
+
+	.args = { "d:kNs:t:Z", 0, 1, cmd_choose_tree_args_parse },
+	.usage = "[-kNZ] [-d duration] [-s source-window] "
+		 CMD_TARGET_PANE_USAGE " [template]",
+
+	.source = { 's', CMD_FIND_WINDOW, 0 },
+	.target = { 't', CMD_FIND_PANE, 0 },
+
+	.flags = CMD_AFTERHOOK,
 	.exec = cmd_choose_tree_exec
 };
 
@@ -116,9 +144,13 @@ cmd_choose_tree_exec(struct cmd *self, struct cmdq_item *item)
 		mode = &window_client_mode;
 	} else if (cmd_get_entry(self) == &cmd_customize_mode_entry)
 		mode = &window_customize_mode;
+	else if (cmd_get_entry(self) == &cmd_switch_mode_entry)
+		mode = &window_switch_mode;
+	else if (cmd_get_entry(self) == &cmd_display_panes_entry)
+		mode = &window_panes_mode;
 	else
 		mode = &window_tree_mode;
 
-	window_pane_set_mode(wp, NULL, mode, target, args);
+	window_pane_set_mode(wp, NULL, mode, item, target, args);
 	return (CMD_RETURN_NORMAL);
 }

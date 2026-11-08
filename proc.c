@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: proc.c,v 1.32 2026/08/04 13:16:03 claudio Exp $ */
 
 /*
  * Copyright (c) 2015 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -32,6 +32,11 @@
 #include <ncurses.h>
 #endif
 
+#ifdef HAVE_JEMALLOC
+#define JEMALLOC_MANGLE
+#include <jemalloc/jemalloc.h>
+#endif
+
 #include "tmux.h"
 
 struct tmuxproc {
@@ -58,6 +63,7 @@ struct tmuxpeer {
 	struct imsgbuf	 ibuf;
 	struct event	 event;
 	uid_t		 uid;
+	gid_t		 gid;
 
 	int		 flags;
 #define PEER_BAD 0x1
@@ -75,7 +81,7 @@ static void
 proc_event_cb(__unused int fd, short events, void *arg)
 {
 	struct tmuxpeer	*peer = arg;
-	ssize_t		 n;
+	int		 n;
 	struct imsg	 imsg;
 
 	if (!(peer->flags & PEER_BAD) && (events & EV_READ)) {
@@ -84,7 +90,7 @@ proc_event_cb(__unused int fd, short events, void *arg)
 			return;
 		}
 		for (;;) {
-			if ((n = imsg_get(&peer->ibuf, &imsg)) == -1) {
+			if ((n = imsgbuf_get(&peer->ibuf, &imsg)) == -1) {
 				peer->dispatchcb(NULL, peer->arg);
 				return;
 			}
@@ -181,6 +187,10 @@ proc_start(const char *name)
 {
 	struct tmuxproc	*tp;
 	struct utsname	 u;
+#ifdef HAVE_JEMALLOC
+	const char	*version;
+	size_t		 size = sizeof version;
+#endif
 
 	log_open(name);
 	setproctitle("%s (%s)", name, socket_path);
@@ -194,6 +204,11 @@ proc_start(const char *name)
 	log_debug("using libevent %s %s", event_get_version(), event_get_method());
 #ifdef HAVE_UTF8PROC
 	log_debug("using utf8proc %s", utf8proc_version());
+#endif
+#ifdef HAVE_JEMALLOC
+	if (mallctl("version", &version, &size, NULL, 0) != 0)
+		version = "(unknown version)";
+	log_debug("using jemalloc %s", version);
 #endif
 #ifdef NCURSES_VERSION
 	log_debug("using ncurses %s %06u", NCURSES_VERSION, NCURSES_VERSION_PATCH);
@@ -302,7 +317,6 @@ proc_add_peer(struct tmuxproc *tp, int fd,
     void (*dispatchcb)(struct imsg *, void *), void *arg)
 {
 	struct tmuxpeer	*peer;
-	gid_t		 gid;
 
 	peer = xcalloc(1, sizeof *peer);
 	peer->parent = tp;
@@ -315,8 +329,10 @@ proc_add_peer(struct tmuxproc *tp, int fd,
 	imsgbuf_allow_fdpass(&peer->ibuf);
 	event_set(&peer->event, fd, EV_READ, proc_event_cb, peer);
 
-	if (getpeereid(fd, &peer->uid, &gid) != 0)
+	if (getpeereid(fd, &peer->uid, &peer->gid) != 0) {
 		peer->uid = (uid_t)-1;
+		peer->gid = (gid_t)-1;
+	}
 
 	log_debug("add peer %p: %d (%p)", peer, fd, arg);
 	TAILQ_INSERT_TAIL(&tp->peers, peer, entry);
@@ -387,4 +403,10 @@ uid_t
 proc_get_peer_uid(struct tmuxpeer *peer)
 {
 	return (peer->uid);
+}
+
+gid_t
+proc_get_peer_gid(struct tmuxpeer *peer)
+{
+	return (peer->gid);
 }

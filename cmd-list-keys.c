@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: cmd-list-keys.c,v 1.78 2026/07/01 13:12:17 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -223,11 +223,16 @@ cmd_list_keys_exec(struct cmd *self, struct cmdq_item *item)
 		cmd_list_keys_filter_key_list(filter_notes, filter_key, only, l,
 		    &n);
 	}
-	if (single)
+	if (filter_key && n == 0) {
+		cmdq_error(item, "unknown key: %s", keystr);
+		free(prefix);
+		return (CMD_RETURN_ERROR);
+	}
+	if (single && n > 1)
 		n = 1;
 
 	ft = format_create(cmdq_get_client(item), item, FORMAT_NONE, 0);
-	format_defaults(ft, NULL, NULL, NULL, NULL);
+	format_defaults(ft, tc, NULL, NULL, NULL);
 	format_add(ft, "notes_only", "%d", notes_only);
 	format_add(ft, "key_has_repeat", "%d", key_bindings_has_repeat(l, n));
 	format_add(ft, "key_string_width", "%u", cmd_list_keys_get_width(l, n));
@@ -237,7 +242,7 @@ cmd_list_keys_exec(struct cmd *self, struct cmdq_item *item)
 		cmd_list_keys_format_add_key_binding(ft, l[i], prefix);
 
 		line = format_expand(ft, template);
-		if ((single && tc != NULL) || n == 1)
+		if (single && tc != NULL && (~tc->flags & CLIENT_CONTROL))
 			status_message_set(tc, -1, 1, 0, 0, "%s", line);
 		else if (*line != '\0')
 			cmdq_print(item, "%s", line);

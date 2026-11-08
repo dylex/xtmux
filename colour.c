@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: colour.c,v 1.35 2026/07/06 14:29:10 nicm Exp $ */
 
 /*
  * Copyright (c) 2008 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -25,6 +25,85 @@
 #include <math.h>
 
 #include "tmux.h"
+
+/* Theme colour slots and their server options. */
+static const struct {
+	const char	*name;
+	const char	*dark_option;
+	const char	*light_option;
+	int		 terminal_colour;
+} colour_theme_table[] = {
+	{ "themeblack",
+	  "dark-theme-black",
+	  "light-theme-black",
+	  0
+	},
+	{ "themewhite",
+	  "dark-theme-white",
+	  "light-theme-white",
+	  7
+	},
+	{ "themelightgrey",
+	  "dark-theme-light-grey",
+	  "light-theme-light-grey",
+	  7
+	},
+	{ "themedarkgrey",
+	  "dark-theme-dark-grey",
+	  "light-theme-dark-grey",
+	  0
+	},
+	{ "themegreen",
+	  "dark-theme-green",
+	  "light-theme-green",
+	  2
+	},
+	{ "themeyellow",
+	  "dark-theme-yellow",
+	  "light-theme-yellow",
+	  3
+	},
+	{ "themered",
+	  "dark-theme-red",
+	  "light-theme-red",
+	  1
+	},
+	{ "themeblue",
+	  "dark-theme-blue",
+	  "light-theme-blue",
+	  4
+	},
+	{ "themecyan",
+	  "dark-theme-cyan",
+	  "light-theme-cyan",
+	  6
+	},
+	{ "thememagenta",
+	  "dark-theme-magenta",
+	  "light-theme-magenta",
+	  5
+	}
+};
+
+/* Get theme colour option. */
+const char *
+colour_theme_option(u_int n, enum client_theme theme)
+{
+	if (n >= nitems(colour_theme_table))
+		return (NULL);
+	if (theme == THEME_LIGHT)
+		return (colour_theme_table[n].light_option);
+	return (colour_theme_table[n].dark_option);
+}
+
+/* Get theme terminal colour. */
+int
+colour_theme_terminal_colour(u_int n)
+{
+	if (n >= nitems(colour_theme_table))
+		return (8);
+	return (colour_theme_table[n].terminal_colour);
+}
 
 static int
 colour_dist_sq(int R, int G, int B, int r, int g, int b)
@@ -120,6 +199,28 @@ colour_force_rgb(int c)
 	return (-1);
 }
 
+/* Dim colour by a percentage. */
+int
+colour_dim(int c, u_int dim)
+{
+	u_char	r, g, b;
+
+	if (dim == 0 || COLOUR_DEFAULT(c) || (c & COLOUR_FLAG_THEME))
+		return (c);
+	if (dim >= 100)
+		return (colour_join_rgb(0, 0, 0));
+
+	c = colour_force_rgb(c);
+	if (c == -1)
+		return (-1);
+	colour_split_rgb(c, &r, &g, &b);
+
+	r = (r * (100 - dim)) / 100;
+	g = (g * (100 - dim)) / 100;
+	b = (b * (100 - dim)) / 100;
+	return (colour_join_rgb(r, g, b));
+}
+
 /* Convert colour to a string. */
 const char *
 colour_tostring(int c)
@@ -129,6 +230,13 @@ colour_tostring(int c)
 
 	if (c == -1)
 		return ("none");
+
+	if (c & COLOUR_FLAG_THEME) {
+		c &= 0xff;
+		if (c >= 0 && (u_int)c < nitems(colour_theme_table))
+			return (colour_theme_table[c].name);
+		return ("invalid");
+	}
 
 	if (c & COLOUR_FLAG_RGB) {
 		colour_split_rgb(c, &r, &g, &b);
@@ -182,6 +290,58 @@ colour_tostring(int c)
 	return ("invalid");
 }
 
+/* Convert colour to an SGR escape sequence. */
+const char *
+colour_toescape(struct client *c, int colour, int bg)
+{
+	static char	s[32];
+	u_char		r, g, b;
+	int		n, flags = (TERM_256COLOURS|TERM_RGBCOLOURS);
+	u_int		o = (bg ? 40 : 30);
+
+	if (c != NULL && (c->tty.flags & TTY_OPENED) && c->tty.term != NULL)
+		flags = c->tty.term->flags;
+
+	if (colour & COLOUR_FLAG_THEME) {
+		n = colour & 0xff;
+		if (c != NULL && (u_int)n < COLOUR_THEME_COUNT)
+			colour = c->theme_colours[n];
+		else
+			colour = colour_theme_terminal_colour(n);
+	}
+
+	if (colour == 8 || colour == 9) {
+		xsnprintf(s, sizeof s, "\033[%dm", o + 9);
+		return (s);
+	}
+
+	if ((~flags & TERM_RGBCOLOURS) & (colour & COLOUR_FLAG_RGB)) {
+		colour_split_rgb(colour, &r, &g, &b);
+		colour = colour_find_rgb(r, g, b);
+	}
+	if ((~flags & TERM_256COLOURS) & (colour & COLOUR_FLAG_256))
+		colour = colour_256to16(colour);
+
+	if (colour & COLOUR_FLAG_RGB) {
+		colour_split_rgb(colour, &r, &g, &b);
+		xsnprintf(s, sizeof s, "\033[%d;2;%u;%u;%um", o + 8, r, g, b);
+		return (s);
+	}
+	if (colour & COLOUR_FLAG_256) {
+		xsnprintf(s, sizeof s, "\033[%d;5;%um", o + 8, colour & 0xff);
+		return (s);
+	}
+	if (colour >= 0 && colour <= 7) {
+		xsnprintf(s, sizeof s, "\033[%dm", colour + o);
+		return (s);
+	}
+	if (colour >= 90 && colour <= 97) {
+		xsnprintf(s, sizeof s, "\033[%dm", colour + o - 30);
+		return (s);
+	}
+	return (NULL);
+}
+
 /* Convert background colour to theme. */
 enum client_theme
 colour_totheme(int c)
@@ -231,6 +391,7 @@ colour_fromstring(const char *s)
 	const char	*cp;
 	int		 n;
 	u_char		 r, g, b;
+	u_int		 i;
 
 	if (*s == '#' && strlen(s) == 7) {
 		for (cp = s + 1; isxdigit((u_char) *cp); cp++)
@@ -261,6 +422,11 @@ colour_fromstring(const char *s)
 		return (8);
 	if (strcasecmp(s, "terminal") == 0)
 		return (9);
+
+	for (i = 0; i < nitems(colour_theme_table); i++) {
+		if (strcasecmp(s, colour_theme_table[i].name) == 0)
+			return (i|COLOUR_FLAG_THEME);
+	}
 
 	if (strcasecmp(s, "black") == 0 || strcmp(s, "0") == 0)
 		return (0);
@@ -1130,7 +1296,8 @@ colour_palette_from_option(struct colour_palette *p, struct options *oo)
 {
 	struct options_entry		*o;
 	struct options_array_item	*a;
-	u_int				 i, n;
+	union options_value		*ov;
+	u_int				 i;
 	int				 c;
 
 	if (p == NULL)
@@ -1148,12 +1315,11 @@ colour_palette_from_option(struct colour_palette *p, struct options *oo)
 		p->default_palette = xcalloc(256, sizeof *p->default_palette);
 	for (i = 0; i < 256; i++)
 		p->default_palette[i] = -1;
-	while (a != NULL) {
-		n = options_array_item_index(a);
-		if (n < 256) {
-			c = options_array_item_value(a)->number;
-			p->default_palette[n] = c;
+	for (i = 0; i < 256; i++) {
+		ov = options_array_getv(o, "%u", i);
+		if (ov != NULL) {
+			c = ov->number;
+			p->default_palette[i] = c;
 		}
-		a = options_array_next(a);
 	}
 }

@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: session.c,v 1.109 2026/09/25 08:46:06 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -206,7 +206,7 @@ session_destroy(struct session *s, int notify, const char *from)
 
 	RB_REMOVE(sessions, &sessions, s);
 	if (notify)
-		notify_session("session-closed", s);
+		events_fire_session("session-closed", s);
 
 	free(s->tio);
 
@@ -219,7 +219,7 @@ session_destroy(struct session *s, int notify, const char *from)
 		winlink_stack_remove(&s->lastw, TAILQ_FIRST(&s->lastw));
 	while (!RB_EMPTY(&s->windows)) {
 		wl = RB_ROOT(&s->windows);
-		notify_session_window("window-unlinked", s, wl->window);
+		events_fire_winlink("window-unlinked", wl);
 		winlink_remove(&s->windows, wl);
 	}
 
@@ -330,30 +330,35 @@ session_attach(struct session *s, struct window *w, int idx, char **cause)
 	}
 	wl->session = s;
 	winlink_set_window(wl, w);
-	notify_session_window("window-linked", s, w);
+	events_fire_winlink("window-linked", wl);
 
 	session_group_synchronize_from(s);
 	return (wl);
 }
 
-/* Detach a window from a session. */
+/*
+ * Detach a window from a session. Returns 1 if the window has not been
+ * detached - the caller must destroy the session.
+ */
 int
 session_detach(struct session *s, struct winlink *wl)
 {
+	if (RB_MIN(winlinks, &s->windows) == wl &&
+	    RB_MAX(winlinks, &s->windows) == wl)
+		return (1);
+
 	if (s->curw == wl &&
 	    session_last(s) != 0 &&
 	    session_previous(s, 0) != 0)
 		session_next(s, 0);
 
 	wl->flags &= ~WINLINK_ALERTFLAGS;
-	notify_session_window("window-unlinked", s, wl->window);
+	events_fire_winlink("window-unlinked", wl);
 	winlink_stack_remove(&s->lastw, wl);
 	winlink_remove(&s->windows, wl);
 
 	session_group_synchronize_from(s);
 
-	if (RB_EMPTY(&s->windows))
-		return (1);
 	return (0);
 }
 
@@ -471,6 +476,29 @@ session_last(struct session *s)
 	return (session_set_current(s, wl));
 }
 
+/* Fire session window changed. */
+static void
+session_fire_window_changed(struct session *s, struct winlink *wl,
+    struct winlink *old)
+{
+	struct event_payload	*ep;
+	struct cmd_find_state	 fs;
+
+	ep = event_payload_create();
+	cmd_find_from_winlink(&fs, wl, 0);
+	event_payload_set_target(ep, &fs);
+	event_payload_set_session(ep, "session", s);
+	event_payload_set_window(ep, "window", wl->window);
+	event_payload_set_window(ep, "new_window", wl->window);
+	event_payload_set_int(ep, "window_index", wl->idx);
+	event_payload_set_int(ep, "new_window_index", wl->idx);
+	if (old != NULL) {
+		event_payload_set_window(ep, "old_window", old->window);
+		event_payload_set_int(ep, "old_window_index", old->idx);
+	}
+	events_fire("session-window-changed", ep);
+}
+
 /* Set current winlink to wl .*/
 int
 session_set_current(struct session *s, struct winlink *wl)
@@ -493,7 +521,7 @@ session_set_current(struct session *s, struct winlink *wl)
 	winlink_clear_flags(wl);
 	window_update_activity(wl->window);
 	tty_update_window_offset(wl->window);
-	notify_session("session-window-changed", s);
+	session_fire_window_changed(s, wl, old);
 	return (0);
 }
 
@@ -540,12 +568,33 @@ session_group_new(const char *name)
 	return (sg);
 }
 
+/* Fire session group changed. */
+static void
+session_group_fire(const char *name, struct session_group *sg,
+    struct session *s)
+{
+	struct event_payload	*ep;
+	struct cmd_find_state	 fs;
+
+	ep = event_payload_create();
+	if (session_alive(s)) {
+		cmd_find_from_session(&fs, s, 0);
+		event_payload_set_target(ep, &fs);
+	}
+	event_payload_set_session(ep, "session", s);
+	event_payload_set_string(ep, "group", "%s", sg->name);
+	event_payload_set_uint(ep, "group_size", session_group_count(sg));
+	events_fire(name, ep);
+}
+
 /* Add a session to a session group. */
 void
 session_group_add(struct session_group *sg, struct session *s)
 {
-	if (session_group_contains(s) == NULL)
+	if (session_group_contains(s) == NULL) {
 		TAILQ_INSERT_TAIL(&sg->sessions, s, gentry);
+		session_group_fire("session-added-to-group", sg, s);
+	}
 }
 
 /* Remove a session from its group and destroy the group if empty. */
@@ -556,6 +605,7 @@ session_group_remove(struct session *s)
 
 	if ((sg = session_group_contains(s)) == NULL)
 		return;
+	session_group_fire("session-removed-from-group", sg, s);
 	TAILQ_REMOVE(&sg->sessions, s, gentry);
 	if (TAILQ_EMPTY(&sg->sessions)) {
 		RB_REMOVE(session_groups, &session_groups, sg);
@@ -657,15 +707,17 @@ session_group_synchronize1(struct session *target, struct session *s)
 		wl2 = winlink_add(&s->windows, wl->idx);
 		wl2->session = s;
 		winlink_set_window(wl2, wl->window);
-		notify_session_window("window-linked", s, wl2->window);
+		events_fire_winlink("window-linked", wl2);
 		wl2->flags |= wl->flags & WINLINK_ALERTFLAGS;
 	}
 
 	/* Fix up the current window. */
 	if (s->curw != NULL)
 		s->curw = winlink_find_by_index(&s->windows, s->curw->idx);
-	else
+	else if (target->curw != NULL)
 		s->curw = winlink_find_by_index(&s->windows, target->curw->idx);
+	if (s->curw == NULL)
+		s->curw = RB_MIN(winlinks, &s->windows);
 
 	/* Fix up the last window stack. */
 	memcpy(&old_lastw, &s->lastw, sizeof old_lastw);
@@ -683,7 +735,7 @@ session_group_synchronize1(struct session *target, struct session *s)
 		wl = RB_ROOT(&old_windows);
 		wl2 = winlink_find_by_window_id(&s->windows, wl->window->id);
 		if (wl2 == NULL)
-			notify_session_window("window-unlinked", s, wl->window);
+			events_fire_winlink("window-unlinked", wl);
 		winlink_remove(&old_windows, wl);
 	}
 }
@@ -695,14 +747,21 @@ session_renumber_windows(struct session *s)
 	struct winlink		*wl, *wl1, *wl_new;
 	struct winlinks		 old_wins;
 	struct winlink_stack	 old_lastw;
+	u_int			 n;
 	int			 new_idx, new_curw_idx, marked_idx = -1;
+
+	/* Start renumbering from the base-index if it's set. */
+	new_idx = options_get_number(s->options, "base-index");
+
+	/* Leave the indexes alone if they do not all fit from there. */
+	n = winlink_count(&s->windows);
+	if (n > (u_int)INT_MAX - (u_int)new_idx + 1)
+		return;
 
 	/* Save and replace old window list. */
 	memcpy(&old_wins, &s->windows, sizeof old_wins);
 	RB_INIT(&s->windows);
 
-	/* Start renumbering from the base-index if it's set. */
-	new_idx = options_get_number(s->options, "base-index");
 	new_curw_idx = 0;
 
 	/* Go through the winlinks and assign new indexes. */
@@ -717,7 +776,8 @@ session_renumber_windows(struct session *s)
 		if (wl == s->curw)
 			new_curw_idx = wl_new->idx;
 
-		new_idx++;
+		if (RB_NEXT(winlinks, &old_wins, wl) != NULL)
+			new_idx++;
 	}
 
 	/* Fix the stack of last windows now. */

@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: server.c,v 1.216 2026/08/18 07:24:49 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -129,6 +129,7 @@ server_create_socket(uint64_t flags, char **cause)
 		mask = umask(S_IXUSR|S_IRWXG|S_IRWXO);
 	if (bind(fd, (struct sockaddr *)&sa, sizeof sa) == -1) {
 		saved_errno = errno;
+		umask(mask);
 		close(fd);
 		errno = saved_errno;
 		goto fail;
@@ -214,6 +215,8 @@ server_start(struct tmuxproc *client, uint64_t flags, struct event_base *base,
 	TAILQ_INIT(&clients);
 	RB_INIT(&sessions);
 	key_bindings_init();
+	control_build_events();
+	hooks_build_events();
 	TAILQ_INIT(&message_log);
 	gettimeofday(&start_time, NULL);
 
@@ -238,6 +241,7 @@ server_start(struct tmuxproc *client, uint64_t flags, struct event_base *base,
 	if (cause != NULL) {
 		if (c != NULL) {
 			c->exit_message = cause;
+			c->retval = 1;
 			c->flags |= CLIENT_EXIT;
 		} else {
 			fprintf(stderr, "%s\n", cause);
@@ -254,7 +258,7 @@ server_start(struct tmuxproc *client, uint64_t flags, struct event_base *base,
 	proc_loop(server_proc, server_loop);
 
 	job_kill_all();
-	status_prompt_save_history();
+	prompt_save_history();
 
 	exit(0);
 }
@@ -396,6 +400,7 @@ server_accept(int fd, short events, __unused void *data)
 	c = server_client_create(newfd);
 	if (!server_acl_join(c)) {
 		c->exit_message = xstrdup("access not allowed");
+		c->retval = 1;
 		c->flags |= CLIENT_EXIT;
 	}
 }
@@ -496,6 +501,9 @@ server_child_exited(pid_t pid, int status)
 
 				log_debug("%%%u exited", wp->id);
 				wp->flags |= PANE_EXITED;
+
+				window_pane_wait_finish(wp);
+				spawn_editor_finish(wp);
 
 				if (window_pane_destroy_ready(wp))
 					server_destroy_pane(wp, 1);

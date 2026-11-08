@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: screen.c,v 1.107 2026/07/26 09:20:54 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -69,6 +69,7 @@ screen_free_titles(struct screen *s)
 
 	free(s->titles);
 	s->titles = NULL;
+	s->ntitles = 0;
 }
 
 /* Create a new screen. */
@@ -80,6 +81,7 @@ screen_init(struct screen *s, u_int sx, u_int sy, u_int hlimit)
 
 	s->title = xstrdup("");
 	s->titles = NULL;
+	s->ntitles = 0;
 	s->path = NULL;
 
 	s->cstyle = SCREEN_CURSOR_DEFAULT;
@@ -99,12 +101,12 @@ screen_init(struct screen *s, u_int sx, u_int sy, u_int hlimit)
 	s->write_list = NULL;
 	s->hyperlinks = NULL;
 
-	screen_reinit(s);
+	screen_reinit(s, 1);
 }
 
 /* Reinitialise screen. */
 void
-screen_reinit(struct screen *s)
+screen_reinit(struct screen *s, int check)
 {
 	s->cx = 0;
 	s->cy = 0;
@@ -123,7 +125,8 @@ screen_reinit(struct screen *s)
 	s->saved_cy = UINT_MAX;
 
 	screen_reset_tabs(s);
-
+	if (check)
+		grid_check_is_clear(s->grid);
 	grid_clear_lines(s->grid, s->grid->hsize, s->grid->sy, 8);
 
 	screen_clear_selection(s);
@@ -151,6 +154,10 @@ screen_reset_hyperlinks(struct screen *s)
 void
 screen_free(struct screen *s)
 {
+#ifdef ENABLE_SIXEL
+	struct image	*im;
+#endif
+
 	free(s->sel);
 	free(s->tabs);
 	free(s->path);
@@ -168,6 +175,14 @@ screen_free(struct screen *s)
 	screen_free_titles(s);
 
 #ifdef ENABLE_SIXEL
+	/*
+	 * Images saved when entering the alternate screen stay linked in the
+	 * global list; move them back so they are freed and unlinked here, or
+	 * a later eviction would write through this freed screen.
+	 */
+	TAILQ_CONCAT(&s->images, &s->saved_images, entry);
+	TAILQ_FOREACH(im, &s->images, entry)
+		im->list = &s->images;
 	image_free_all(s);
 #endif
 }
@@ -190,10 +205,11 @@ screen_reset_tabs(struct screen *s)
 void
 screen_set_default_cursor(struct screen *s, struct options *oo)
 {
-	int	c;
+	struct grid_cell	gc;
+	int			c;
 
-	c = options_get_number(oo, "cursor-colour");
-	s->default_ccolour = c;
+	style_apply(&gc, oo, "cursor-colour", NULL);
+	s->default_ccolour = gc.fg;
 
 	c = options_get_number(oo, "cursor-style");
 	s->default_mode = 0;
@@ -672,7 +688,7 @@ screen_reflow(struct screen *s, u_int new_x, u_int *cx, u_int *cy, int cursor)
  * Enter alternative screen mode. A copy of the visible screen is saved and the
  * history is not updated.
  */
-void
+int
 screen_alternate_on(struct screen *s, struct grid_cell *gc, int cursor)
 {
 	u_int		 sx, sy;
@@ -681,7 +697,7 @@ screen_alternate_on(struct screen *s, struct grid_cell *gc, int cursor)
 #endif
 
 	if (SCREEN_IS_ALTERNATE(s))
-		return;
+		return 0;
 	sx = screen_size_x(s);
 	sy = screen_size_y(s);
 
@@ -703,10 +719,12 @@ screen_alternate_on(struct screen *s, struct grid_cell *gc, int cursor)
 
 	s->saved_flags = s->grid->flags;
 	s->grid->flags &= ~GRID_HISTORY;
+
+	return 1;
 }
 
 /* Exit alternate screen mode and restore the copied grid. */
-void
+int
 screen_alternate_off(struct screen *s, struct grid_cell *gc, int cursor)
 {
 	u_int		 sx = screen_size_x(s), sy = screen_size_y(s);
@@ -738,7 +756,7 @@ screen_alternate_off(struct screen *s, struct grid_cell *gc, int cursor)
 			s->cx = screen_size_x(s) - 1;
 		if (s->cy > screen_size_y(s) - 1)
 			s->cy = screen_size_y(s) - 1;
-		return;
+		return 0;
 	}
 
 	/* Restore the saved grid. */
@@ -767,6 +785,8 @@ screen_alternate_off(struct screen *s, struct grid_cell *gc, int cursor)
 		s->cx = screen_size_x(s) - 1;
 	if (s->cy > screen_size_y(s) - 1)
 		s->cy = screen_size_y(s) - 1;
+
+	return 1;
 }
 
 /* Get mode as a string. */

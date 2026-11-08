@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: window-clock.c,v 1.35 2026/07/14 17:17:18 nicm Exp $ */
 
 /*
  * Copyright (c) 2009 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -25,7 +25,8 @@
 #include "tmux.h"
 
 static struct screen *window_clock_init(struct window_mode_entry *,
-		    struct cmd_find_state *, struct args *);
+		     struct cmdq_item *, struct cmd_find_state *,
+		     struct args *);
 static void	window_clock_free(struct window_mode_entry *);
 static void	window_clock_resize(struct window_mode_entry *, u_int, u_int);
 static void	window_clock_key(struct window_mode_entry *, struct client *,
@@ -169,13 +170,14 @@ window_clock_timer_callback(__unused int fd, __unused short events, void *arg)
 
 static struct screen *
 window_clock_init(struct window_mode_entry *wme,
-    __unused struct cmd_find_state *fs, __unused struct args *args)
+    __unused struct cmdq_item *item, __unused struct cmd_find_state *fs,
+    __unused struct args *args)
 {
 	struct window_pane		*wp = wme->wp;
 	struct window_clock_mode_data	*data;
 	struct screen			*s;
 
-	wme->data = data = xmalloc(sizeof *data);
+	wme->data = data = xcalloc(1, sizeof *data);
 	data->tim = time(NULL);
 
 	evtimer_set(&data->timer, window_clock_timer_callback, wme);
@@ -222,18 +224,23 @@ static void
 window_clock_draw_screen(struct window_mode_entry *wme)
 {
 	struct window_pane		*wp = wme->wp;
+	struct window			*w = wp->window;
 	struct window_clock_mode_data	*data = wme->data;
 	struct screen_write_ctx		 ctx;
 	int				 colour, style;
 	struct screen			*s = &data->screen;
 	struct grid_cell		 gc;
+	struct format_tree		*ft;
 	char				 tim[64], *ptr;
 	time_t				 t;
 	struct tm			*tm;
 	u_int				 i, j, x, y, idx;
 
-	colour = options_get_number(wp->window->options, "clock-mode-colour");
-	style = options_get_number(wp->window->options, "clock-mode-style");
+	ft = format_create_defaults(NULL, NULL, NULL, NULL, wp);
+	style_apply(&gc, w->options, "clock-mode-colour", ft);
+	format_free(ft);
+	colour = gc.fg;
+	style = options_get_number(w->options, "clock-mode-style");
 
 	screen_write_start(&ctx, s);
 
