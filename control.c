@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: control.c,v 1.68 2026/09/09 08:30:05 nicm Exp $ */
 
 /*
  * Copyright (c) 2012 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -19,6 +19,9 @@
 
 #include <sys/types.h>
 
+#include <errno.h>
+#include <event.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -50,6 +53,17 @@ struct control_block {
 	TAILQ_ENTRY(control_block)	 all_entry;
 };
 
+/*
+ * A notification line deferred because it was generated while a command's
+ * %begin/%end guard block was open. Notifications must never appear inside a
+ * guard block, so they are held here and flushed once the block closes.
+ */
+struct control_line {
+	char				*line;
+
+	TAILQ_ENTRY(control_line)	 entry;
+};
+
 /* Control client pane. */
 struct control_pane {
 	u_int				 pane;
@@ -75,56 +89,38 @@ struct control_pane {
 };
 RB_HEAD(control_panes, control_pane);
 
-/* Subscription pane. */
-struct control_sub_pane {
-	u_int				 pane;
-	u_int				 idx;
-	char				*last;
-
-	RB_ENTRY(control_sub_pane)	 entry;
-};
-RB_HEAD(control_sub_panes, control_sub_pane);
-
-/* Subscription window. */
-struct control_sub_window {
+/* Control client window size. */
+struct control_window {
 	u_int				 window;
-	u_int				 idx;
-	char				*last;
+	u_int				 sx;
+	u_int				 sy;
 
-	RB_ENTRY(control_sub_window)	 entry;
+	RB_ENTRY(control_window)	 entry;
 };
-RB_HEAD(control_sub_windows, control_sub_window);
-
-/* Control client subscription. */
-struct control_sub {
-	char				*name;
-	char				*format;
-
-	enum control_sub_type		 type;
-	u_int				 id;
-
-	char				*last;
-	struct control_sub_panes	 panes;
-	struct control_sub_windows	 windows;
-
-	RB_ENTRY(control_sub)		 entry;
-};
-RB_HEAD(control_subs, control_sub);
+RB_HEAD(control_windows, control_window);
 
 /* Control client state. */
 struct control_state {
 	struct control_panes		 panes;
+	struct control_windows		 windows;
 
 	TAILQ_HEAD(, control_pane)	 pending_list;
 	u_int				 pending_count;
 
 	TAILQ_HEAD(, control_block)	 all_blocks;
+	size_t				 queued_reply_bytes;
 
 	struct bufferevent		*read_event;
 	struct bufferevent		*write_event;
 
-	struct control_subs		 subs;
-	struct event			 subs_timer;
+	struct monitor_set		*subs;
+
+	/*
+	 * Depth of open %begin/%end guard blocks and notifications deferred
+	 * until the outermost block closes.
+	 */
+	int				 guard_depth;
+	TAILQ_HEAD(, control_line)	 deferred;
 };
 
 /* Low and high watermarks. */
@@ -136,6 +132,9 @@ struct control_state {
 
 /* Maximum age for clients that are not using pause mode. */
 #define CONTROL_MAXIMUM_AGE 300000
+
+/* Maximum buffered command replies for a client that is not reading. */
+#define CONTROL_MAXIMUM_REPLY_BUFFER (64 * 1024 * 1024)
 
 /* Flags to ignore client. */
 #define CONTROL_IGNORE_FLAGS \
@@ -154,79 +153,31 @@ control_pane_cmp(struct control_pane *cp1, struct control_pane *cp2)
 }
 RB_GENERATE_STATIC(control_panes, control_pane, entry, control_pane_cmp);
 
-/* Compare client subs. */
+/* Compare control windows. */
 static int
-control_sub_cmp(struct control_sub *csub1, struct control_sub *csub2)
+control_window_cmp(struct control_window *cw1, struct control_window *cw2)
 {
-	return (strcmp(csub1->name, csub2->name));
-}
-RB_GENERATE_STATIC(control_subs, control_sub, entry, control_sub_cmp);
-
-/* Compare client subscription panes. */
-static int
-control_sub_pane_cmp(struct control_sub_pane *csp1,
-    struct control_sub_pane *csp2)
-{
-	if (csp1->pane < csp2->pane)
+	if (cw1->window < cw2->window)
 		return (-1);
-	if (csp1->pane > csp2->pane)
-		return (1);
-	if (csp1->idx < csp2->idx)
-		return (-1);
-	if (csp1->idx > csp2->idx)
+	if (cw1->window > cw2->window)
 		return (1);
 	return (0);
 }
-RB_GENERATE_STATIC(control_sub_panes, control_sub_pane, entry,
-    control_sub_pane_cmp);
-
-/* Compare client subscription windows. */
-static int
-control_sub_window_cmp(struct control_sub_window *csw1,
-    struct control_sub_window *csw2)
-{
-	if (csw1->window < csw2->window)
-		return (-1);
-	if (csw1->window > csw2->window)
-		return (1);
-	if (csw1->idx < csw2->idx)
-		return (-1);
-	if (csw1->idx > csw2->idx)
-		return (1);
-	return (0);
-}
-RB_GENERATE_STATIC(control_sub_windows, control_sub_window, entry,
-    control_sub_window_cmp);
-
-/* Free a subscription. */
-static void
-control_free_sub(struct control_state *cs, struct control_sub *csub)
-{
-	struct control_sub_pane		*csp, *csp1;
-	struct control_sub_window	*csw, *csw1;
-
-	RB_FOREACH_SAFE(csp, control_sub_panes, &csub->panes, csp1) {
-		RB_REMOVE(control_sub_panes, &csub->panes, csp);
-		free(csp->last);
-		free(csp);
-	}
-	RB_FOREACH_SAFE(csw, control_sub_windows, &csub->windows, csw1) {
-		RB_REMOVE(control_sub_windows, &csub->windows, csw);
-		free(csw->last);
-		free(csw);
-	}
-	free(csub->last);
-
-	RB_REMOVE(control_subs, &cs->subs, csub);
-	free(csub->name);
-	free(csub->format);
-	free(csub);
-}
+RB_GENERATE_STATIC(control_windows, control_window, entry, control_window_cmp);
 
 /* Free a block. */
 static void
 control_free_block(struct control_state *cs, struct control_block *cb)
 {
+	size_t	 size;
+
+	if (cb->size == 0 && cb->line != NULL) {
+		size = strlen(cb->line) + 1;
+		if (cs->queued_reply_bytes > size)
+			cs->queued_reply_bytes -= size;
+		else
+			cs->queued_reply_bytes = 0;
+	}
 	free(cb->line);
 	TAILQ_REMOVE(&cs->all_blocks, cb, all_entry);
 	free(cb);
@@ -262,6 +213,66 @@ control_add_pane(struct client *c, struct window_pane *wp)
 	TAILQ_INIT(&cp->blocks);
 
 	return (cp);
+}
+
+/* Get window for this client. */
+static struct control_window *
+control_get_window(struct client *c, u_int window)
+{
+	struct control_state	*cs = c->control_state;
+	struct control_window	 cw = { .window = window };
+
+	if (cs == NULL)
+		return (NULL);
+	return (RB_FIND(control_windows, &cs->windows, &cw));
+}
+
+/* Set window size for this client. */
+void
+control_set_window_size(struct client *c, u_int window, u_int sx, u_int sy)
+{
+	struct control_state	*cs = c->control_state;
+	struct control_window	*cw;
+
+	if (cs == NULL)
+		return;
+	cw = control_get_window(c, window);
+	if (cw == NULL) {
+		cw = xcalloc(1, sizeof *cw);
+		cw->window = window;
+		RB_INSERT(control_windows, &cs->windows, cw);
+	}
+	cw->sx = sx;
+	cw->sy = sy;
+}
+
+/* Get window size for this client. */
+int
+control_get_window_size(struct client *c, u_int window, u_int *sx, u_int *sy)
+{
+	struct control_window	*cw;
+
+	if ((cw = control_get_window(c, window)) == NULL)
+		return (0);
+	*sx = cw->sx;
+	*sy = cw->sy;
+	return (1);
+}
+
+/* Clear window size for this client. */
+void
+control_clear_window_size(struct client *c, u_int window)
+{
+	struct control_state	*cs = c->control_state;
+	struct control_window	*cw;
+
+	if (cs == NULL)
+		return;
+	cw = control_get_window(c, window);
+	if (cw != NULL) {
+		RB_REMOVE(control_windows, &cs->windows, cw);
+		free(cw);
+	}
 }
 
 /* Discard output for a pane. */
@@ -372,7 +383,7 @@ control_continue_pane(struct client *c, struct window_pane *wp)
 		cp->flags &= ~CONTROL_PANE_PAUSED;
 		memcpy(&cp->offset, &wp->offset, sizeof cp->offset);
 		memcpy(&cp->queued, &wp->offset, sizeof cp->queued);
-		control_write(c, "%%continue %%%u", wp->id);
+		control_notify_write(c, "%%continue %%%u", wp->id);
 	}
 }
 
@@ -386,52 +397,186 @@ control_pause_pane(struct client *c, struct window_pane *wp)
 	if (~cp->flags & CONTROL_PANE_PAUSED) {
 		cp->flags |= CONTROL_PANE_PAUSED;
 		control_discard_pane(c, cp);
-		control_write(c, "%%pause %%%u", wp->id);
+		control_notify_write(c, "%%pause %%%u", wp->id);
 	}
 }
 
-/* Write a line. */
-static void printflike(2, 0)
-control_vwrite(struct client *c, const char *fmt, va_list ap)
+/*
+ * Reset a pane after its buffer has been replaced: drop any output still
+ * queued from the old buffer and start again from the pane's own offset.
+ */
+void
+control_reset_pane(struct client *c, struct window_pane *wp)
 {
-	struct control_state	*cs = c->control_state;
-	char			*s;
+	struct control_pane	*cp;
 
-	xvasprintf(&s, fmt, ap);
-	log_debug("%s: %s: writing line: %s", __func__, c->name, s);
-
-	bufferevent_write(cs->write_event, s, strlen(s));
-	bufferevent_write(cs->write_event, "\n", 1);
-
-	bufferevent_enable(cs->write_event, EV_WRITE);
-	free(s);
+	if (c->control_state == NULL)
+		return;
+	cp = control_get_pane(c, wp);
+	if (cp == NULL)
+		return;
+	control_discard_pane(c, cp);
+	memcpy(&cp->offset, &wp->offset, sizeof cp->offset);
+	memcpy(&cp->queued, &wp->offset, sizeof cp->queued);
 }
 
-/* Write a line. */
-void
-control_write(struct client *c, const char *fmt, ...)
+/*
+ * Check if the replies buffered for a client, including one about to be
+ * added, have grown too large and kill it if so. Returns 1 if further output
+ * for the client should be dropped.
+ */
+static int
+control_check_reply_buffer(struct client *c, size_t added)
+{
+	struct control_state	*cs = c->control_state;
+	size_t			 size;
+
+	if (c->flags & CLIENT_CONTROL_DISCARD)
+		return (1);
+	size = EVBUFFER_LENGTH(cs->write_event->output);
+	size += cs->queued_reply_bytes;
+	size += added;
+	if (size < CONTROL_MAXIMUM_REPLY_BUFFER)
+		return (0);
+
+	log_debug("%s: %s: %zu bytes of replies buffered", __func__, c->name,
+	    size);
+	if (~c->flags & CLIENT_EXIT) {
+		c->exit_message = xstrdup("too far behind");
+		c->flags |= CLIENT_EXIT;
+		control_discard(c);
+	}
+	c->flags |= CLIENT_CONTROL_DISCARD;
+	return (1);
+}
+
+/* Write an already-formatted line, queueing it behind %output if needed. */
+static void
+control_write_line(struct client *c, char *line)
 {
 	struct control_state	*cs = c->control_state;
 	struct control_block	*cb;
-	va_list			 ap;
+	size_t			 size = strlen(line) + 1;
 
-	va_start(ap, fmt);
+	if (control_check_reply_buffer(c, size)) {
+		free(line);
+		return;
+	}
 
 	if (TAILQ_EMPTY(&cs->all_blocks)) {
-		control_vwrite(c, fmt, ap);
-		va_end(ap);
+		log_debug("%s: %s: writing line: %s", __func__, c->name, line);
+		bufferevent_write(cs->write_event, line, size - 1);
+		bufferevent_write(cs->write_event, "\n", 1);
+		bufferevent_enable(cs->write_event, EV_WRITE);
+		free(line);
 		return;
 	}
 
 	cb = xcalloc(1, sizeof *cb);
-	xvasprintf(&cb->line, fmt, ap);
+	cb->line = line;
 	TAILQ_INSERT_TAIL(&cs->all_blocks, cb, all_entry);
+	cs->queued_reply_bytes += size;
 	cb->t = get_timer();
 
 	log_debug("%s: %s: storing line: %s", __func__, c->name, cb->line);
 	bufferevent_enable(cs->write_event, EV_WRITE);
+}
 
+/* Flush notifications that were deferred while a guard block was open. */
+static void
+control_flush_deferred(struct client *c)
+{
+	struct control_state	*cs = c->control_state;
+	struct control_line	*cl, *cl1;
+
+	TAILQ_FOREACH_SAFE(cl, &cs->deferred, entry, cl1) {
+		TAILQ_REMOVE(&cs->deferred, cl, entry);
+		control_write_line(c, cl->line);
+		free(cl);
+	}
+}
+
+/*
+ * Write a line of command output or error text. This is a sink for arbitrary
+ * user-controlled text (command output, capture-pane, error messages), so it
+ * must never try to interpret the content: guard tracking is done only in
+ * control_write_guard.
+ */
+void
+control_write(struct client *c, const char *fmt, ...)
+{
+	struct control_state	*cs = c->control_state;
+	char			*line;
+	va_list			 ap;
+
+	if (cs == NULL)
+		return;
+
+	va_start(ap, fmt);
+	xvasprintf(&line, fmt, ap);
 	va_end(ap);
+
+	control_write_line(c, line);
+}
+
+/*
+ * Write a %begin, %end or %error guard around a command's output. This is the
+ * only place guard lines are produced, so the block depth is maintained here;
+ * when the outermost block closes any deferred notifications are flushed after
+ * it. "guard" is always one of the fixed strings from cmdq_guard, never user
+ * text.
+ */
+void
+control_write_guard(struct client *c, const char *guard, long t, u_int number,
+    int flags)
+{
+	struct control_state	*cs = c->control_state;
+	char			*line;
+
+	if (cs == NULL)
+		return;
+
+	if (strcmp(guard, "begin") == 0)
+		cs->guard_depth++;
+
+	xasprintf(&line, "%%%s %ld %u %d", guard, t, number, flags);
+	control_write_line(c, line);
+
+	if (strcmp(guard, "begin") != 0 && cs->guard_depth > 0 &&
+	    --cs->guard_depth == 0)
+		control_flush_deferred(c);
+}
+
+/*
+ * Write a notification line. Notifications must never appear inside a command's
+ * %begin/%end guard block, so if one is open the line is deferred until it
+ * closes.
+ */
+void
+control_notify_write(struct client *c, const char *fmt, ...)
+{
+	struct control_state	*cs = c->control_state;
+	struct control_line	*cl;
+	va_list			 ap;
+	char			*line;
+
+	if (cs == NULL)
+		return;
+
+	va_start(ap, fmt);
+	xvasprintf(&line, fmt, ap);
+	va_end(ap);
+
+	if (cs->guard_depth == 0) {
+		control_write_line(c, line);
+		return;
+	}
+
+	log_debug("%s: %s: deferring notification: %s", __func__, c->name,
+	    line);
+	cl = xcalloc(1, sizeof *cl);
+	cl->line = line;
+	TAILQ_INSERT_TAIL(&cs->deferred, cl, entry);
 }
 
 /* Check age for this pane. */
@@ -458,7 +603,7 @@ control_check_age(struct client *c, struct window_pane *wp,
 			return (0);
 		cp->flags |= CONTROL_PANE_PAUSED;
 		control_discard_pane(c, cp);
-		control_write(c, "%%pause %%%u", wp->id);
+		control_notify_write(c, "%%pause %%%u", wp->id);
 	} else {
 		if (age < CONTROL_MAXIMUM_AGE)
 			return (0);
@@ -481,7 +626,7 @@ control_write_output(struct client *c, struct window_pane *wp)
 	if (winlink_find_by_window(&c->session->windows, wp->window) == NULL)
 		return;
 
-	if (c->flags & CONTROL_IGNORE_FLAGS) {
+	if (c->flags & (CONTROL_IGNORE_FLAGS|CLIENT_EXIT)) {
 		cp = control_get_pane(c, wp);
 		if (cp != NULL)
 			goto ignore;
@@ -589,6 +734,53 @@ control_all_done(struct client *c)
 	if (!TAILQ_EMPTY(&cs->all_blocks))
 		return (0);
 	return (EVBUFFER_LENGTH(cs->write_event->output) == 0);
+}
+
+/*
+ * Wait for the terminal to send an empty line or close, used by a control
+ * client after printing %exit so a wrapping terminal (such as iTerm2) can
+ * finish reading.
+ */
+void
+control_wait_exit(int fd)
+{
+	struct pollfd	 pfd;
+	struct evbuffer	*evb;
+	char		*line;
+	int		 n;
+
+	evb = evbuffer_new();
+	if (evb == NULL)
+		fatalx("out of memory");
+
+	for (;;) {
+		line = evbuffer_readln(evb, NULL, EVBUFFER_EOL_LF);
+		if (line != NULL) {
+			if (*line == '\0') { /* empty line, stop */
+				free(line);
+				break;
+			}
+			free(line);
+			continue; /* drain buffered lines first */
+		}
+
+		memset(&pfd, 0, sizeof pfd);
+		pfd.fd = fd;
+		pfd.events = POLLIN;
+		if (poll(&pfd, 1, INFTIM) == -1) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+
+		n = evbuffer_read(evb, fd, -1);
+		if (n == 0)
+			break;
+		if (n == -1 && errno != EAGAIN && errno != EINTR)
+			break;
+	}
+
+	evbuffer_free(evb);
 }
 
 /* Flush all blocks until output. */
@@ -766,6 +958,33 @@ control_write_callback(__unused struct bufferevent *bufev, void *data)
 		bufferevent_disable(cs->write_event, EV_WRITE);
 }
 
+/* Write a subscription change. */
+static void
+control_sub_change(struct monitor_change *change, __unused void *data)
+{
+	struct client		*c = change->c;
+	struct session		*s = change->s;
+	struct winlink		*wl = change->wl;
+	struct window_pane	*wp = change->wp;
+	struct window		*w;
+
+	if (wp != NULL) {
+		w = wp->window;
+		control_notify_write(c,
+		    "%%subscription-changed %s $%u @%u %u %%%u : %s",
+		    change->name, s->id, w->id, wl->idx, wp->id, change->value);
+	} else if (wl != NULL) {
+		w = wl->window;
+		control_notify_write(c,
+		    "%%subscription-changed %s $%u @%u %u - : %s",
+		    change->name, s->id, w->id, wl->idx, change->value);
+	} else {
+		control_notify_write(c,
+		    "%%subscription-changed %s $%u - - - : %s",
+		    change->name, s->id, change->value);
+	}
+}
+
 /* Initialize for control mode. */
 void
 control_start(struct client *c)
@@ -781,9 +1000,11 @@ control_start(struct client *c)
 
 	cs = c->control_state = xcalloc(1, sizeof *cs);
 	RB_INIT(&cs->panes);
+	RB_INIT(&cs->windows);
 	TAILQ_INIT(&cs->pending_list);
 	TAILQ_INIT(&cs->all_blocks);
-	RB_INIT(&cs->subs);
+	TAILQ_INIT(&cs->deferred);
+	cs->subs = monitor_create_client(c, control_sub_change, NULL);
 
 	cs->read_event = bufferevent_new(c->fd, control_read_callback,
 	    control_write_callback, control_error_callback, c);
@@ -826,27 +1047,49 @@ control_discard(struct client *c)
 	bufferevent_disable(cs->read_event, EV_READ);
 }
 
+/* Discard all tmux-owned queued control blocks and stop writing. */
+void
+control_discard_all(struct client *c)
+{
+	struct control_state	*cs = c->control_state;
+	struct control_block	*cb, *cb1;
+
+	control_discard(c);
+	TAILQ_FOREACH_SAFE(cb, &cs->all_blocks, all_entry, cb1)
+		control_free_block(cs, cb);
+	cs->queued_reply_bytes = 0;
+	bufferevent_disable(cs->write_event, EV_WRITE);
+}
+
 /* Stop control mode. */
 void
 control_stop(struct client *c)
 {
 	struct control_state	*cs = c->control_state;
 	struct control_block	*cb, *cb1;
-	struct control_sub	*csub, *csub1;
+	struct control_window	*cw, *cw1;
+	struct control_line	*cl, *cl1;
 
 	if (cs == NULL)
 		return;
+
+	monitor_destroy(cs->subs);
+
+	TAILQ_FOREACH_SAFE(cl, &cs->deferred, entry, cl1) {
+		TAILQ_REMOVE(&cs->deferred, cl, entry);
+		free(cl->line);
+		free(cl);
+	}
 
 	if (~c->flags & CLIENT_CONTROLCONTROL)
 		bufferevent_free(cs->write_event);
 	bufferevent_free(cs->read_event);
 
-	RB_FOREACH_SAFE(csub, control_subs, &cs->subs, csub1)
-		control_free_sub(cs, csub);
-	if (evtimer_initialized(&cs->subs_timer))
-		evtimer_del(&cs->subs_timer);
-
 	control_reset_offsets(c);
+	RB_FOREACH_SAFE(cw, control_windows, &cs->windows, cw1) {
+		RB_REMOVE(control_windows, &cs->windows, cw);
+		free(cw);
+	}
 	TAILQ_FOREACH_SAFE(cb, &cs->all_blocks, all_entry, cb1)
 		control_free_block(cs, cb);
 
@@ -854,313 +1097,14 @@ control_stop(struct client *c)
 	free(cs);
 }
 
-/* Check session subscription. */
-static void
-control_check_subs_session(struct client *c, struct control_sub *csub,
-    struct format_tree *ft)
-{
-	struct session		*s = c->session;
-	char			*value;
-
-	value = format_expand(ft, csub->format);
-
-	if (csub->last != NULL && strcmp(value, csub->last) == 0) {
-		free(value);
-		return;
-	}
-	control_write(c,
-	    "%%subscription-changed %s $%u - - - : %s",
-	    csub->name, s->id, value);
-	free(csub->last);
-	csub->last = value;
-}
-
-/* Check pane subscription. */
-static void
-control_check_subs_pane(struct client *c, struct control_sub *csub)
-{
-	struct session		*s = c->session;
-	struct window_pane	*wp;
-	struct window		*w;
-	struct winlink		*wl;
-	struct format_tree	*ft;
-	char			*value;
-	struct control_sub_pane	*csp, find;
-
-	wp = window_pane_find_by_id(csub->id);
-	if (wp == NULL || wp->fd == -1)
-		return;
-	w = wp->window;
-
-	TAILQ_FOREACH(wl, &w->winlinks, wentry) {
-		if (wl->session != s)
-			continue;
-
-		ft = format_create_defaults(NULL, c, s, wl, wp);
-		value = format_expand(ft, csub->format);
-		format_free(ft);
-
-		find.pane = wp->id;
-		find.idx = wl->idx;
-
-		csp = RB_FIND(control_sub_panes, &csub->panes, &find);
-		if (csp == NULL) {
-			csp = xcalloc(1, sizeof *csp);
-			csp->pane = wp->id;
-			csp->idx = wl->idx;
-			RB_INSERT(control_sub_panes, &csub->panes, csp);
-		}
-
-		if (csp->last != NULL && strcmp(value, csp->last) == 0) {
-			free(value);
-			continue;
-		}
-		control_write(c,
-		    "%%subscription-changed %s $%u @%u %u %%%u : %s",
-		    csub->name, s->id, w->id, wl->idx, wp->id, value);
-		free(csp->last);
-		csp->last = value;
-	}
-}
-
-/* Check all-panes subscription for a pane. */
-static void
-control_check_subs_all_panes_one(struct client *c, struct control_sub *csub,
-    struct format_tree *ft, struct winlink *wl, struct window_pane *wp)
-{
-	struct session		*s = c->session;
-	struct window		*w = wl->window;
-	char			*value;
-	struct control_sub_pane	*csp, find;
-
-	value = format_expand(ft, csub->format);
-
-	find.pane = wp->id;
-	find.idx = wl->idx;
-
-	csp = RB_FIND(control_sub_panes, &csub->panes, &find);
-	if (csp == NULL) {
-		csp = xcalloc(1, sizeof *csp);
-		csp->pane = wp->id;
-		csp->idx = wl->idx;
-		RB_INSERT(control_sub_panes, &csub->panes, csp);
-	}
-
-	if (csp->last != NULL && strcmp(value, csp->last) == 0) {
-		free(value);
-		return;
-	}
-	control_write(c,
-	    "%%subscription-changed %s $%u @%u %u %%%u : %s",
-	    csub->name, s->id, w->id, wl->idx, wp->id, value);
-	free(csp->last);
-	csp->last = value;
-}
-
-/* Check window subscription. */
-static void
-control_check_subs_window(struct client *c, struct control_sub *csub)
-{
-	struct session			*s = c->session;
-	struct window			*w;
-	struct winlink			*wl;
-	struct format_tree		*ft;
-	char				*value;
-	struct control_sub_window	*csw, find;
-
-	w = window_find_by_id(csub->id);
-	if (w == NULL)
-		return;
-
-	TAILQ_FOREACH(wl, &w->winlinks, wentry) {
-		if (wl->session != s)
-			continue;
-
-		ft = format_create_defaults(NULL, c, s, wl, NULL);
-		value = format_expand(ft, csub->format);
-		format_free(ft);
-
-		find.window = w->id;
-		find.idx = wl->idx;
-
-		csw = RB_FIND(control_sub_windows, &csub->windows, &find);
-		if (csw == NULL) {
-			csw = xcalloc(1, sizeof *csw);
-			csw->window = w->id;
-			csw->idx = wl->idx;
-			RB_INSERT(control_sub_windows, &csub->windows, csw);
-		}
-
-		if (csw->last != NULL && strcmp(value, csw->last) == 0) {
-			free(value);
-			continue;
-		}
-		control_write(c,
-		    "%%subscription-changed %s $%u @%u %u - : %s",
-		    csub->name, s->id, w->id, wl->idx, value);
-		free(csw->last);
-		csw->last = value;
-	}
-}
-
-/* Check all-windows subscription for a window. */
-static void
-control_check_subs_all_windows_one(struct client *c, struct control_sub *csub,
-    struct format_tree *ft, struct winlink *wl)
-{
-	struct session			*s = c->session;
-	struct window			*w = wl->window;
-	char				*value;
-	struct control_sub_window	*csw, find;
-
-	value = format_expand(ft, csub->format);
-
-	find.window = w->id;
-	find.idx = wl->idx;
-
-	csw = RB_FIND(control_sub_windows, &csub->windows, &find);
-	if (csw == NULL) {
-		csw = xcalloc(1, sizeof *csw);
-		csw->window = w->id;
-		csw->idx = wl->idx;
-		RB_INSERT(control_sub_windows, &csub->windows, csw);
-	}
-
-	if (csw->last != NULL && strcmp(value, csw->last) == 0) {
-		free(value);
-		return;
-	}
-	control_write(c,
-	    "%%subscription-changed %s $%u @%u %u - : %s",
-	    csub->name, s->id, w->id, wl->idx, value);
-	free(csw->last);
-	csw->last = value;
-}
-
-/* Check subscriptions timer. */
-static void
-control_check_subs_timer(__unused int fd, __unused short events, void *data)
-{
-	struct client		*c = data;
-	struct control_state	*cs = c->control_state;
-	struct control_sub	*csub, *csub1;
-	struct session		*s = c->session;
-	struct format_tree	*ft;
-	struct winlink		*wl;
-	struct window_pane	*wp;
-	struct timeval		 tv = { .tv_sec = 1 };
-	int			 have_session = 0, have_all_panes = 0;
-	int			 have_all_windows = 0;
-
-	log_debug("%s: timer fired", __func__);
-	evtimer_add(&cs->subs_timer, &tv);
-
-	if (s == NULL)
-		return;
-
-	/* Find which subscription types are present. */
-	RB_FOREACH(csub, control_subs, &cs->subs) {
-		switch (csub->type) {
-		case CONTROL_SUB_SESSION:
-			have_session = 1;
-			break;
-		case CONTROL_SUB_ALL_PANES:
-			have_all_panes = 1;
-			break;
-		case CONTROL_SUB_ALL_WINDOWS:
-			have_all_windows = 1;
-			break;
-		default:
-			break;
-		}
-	}
-
-	/* Check session subscriptions. */
-	if (have_session) {
-		ft = format_create_defaults(NULL, c, s, NULL, NULL);
-		RB_FOREACH_SAFE(csub, control_subs, &cs->subs, csub1) {
-			if (csub->type == CONTROL_SUB_SESSION)
-				control_check_subs_session(c, csub, ft);
-		}
-		format_free(ft);
-	}
-
-	/* Check pane and window subscriptions. */
-	RB_FOREACH_SAFE(csub, control_subs, &cs->subs, csub1) {
-		switch (csub->type) {
-		case CONTROL_SUB_PANE:
-			control_check_subs_pane(c, csub);
-			break;
-		case CONTROL_SUB_WINDOW:
-			control_check_subs_window(c, csub);
-			break;
-		case CONTROL_SUB_SESSION:
-		case CONTROL_SUB_ALL_PANES:
-		case CONTROL_SUB_ALL_WINDOWS:
-			break;
-		}
-	}
-
-	/* Check all-panes subscriptions. */
-	if (have_all_panes) {
-		RB_FOREACH(wl, winlinks, &s->windows) {
-			TAILQ_FOREACH(wp, &wl->window->panes, entry) {
-				ft = format_create_defaults(NULL, c, s, wl, wp);
-				RB_FOREACH_SAFE(csub, control_subs, &cs->subs,
-				    csub1) {
-					if (csub->type != CONTROL_SUB_ALL_PANES)
-						continue;
-					control_check_subs_all_panes_one(c,
-					    csub, ft, wl, wp);
-				}
-				format_free(ft);
-			}
-		}
-	}
-
-	/* Check all-windows subscriptions. */
-	if (have_all_windows) {
-		RB_FOREACH(wl, winlinks, &s->windows) {
-			ft = format_create_defaults(NULL, c, s, wl, NULL);
-			RB_FOREACH_SAFE(csub, control_subs, &cs->subs,
-			    csub1) {
-				if (csub->type != CONTROL_SUB_ALL_WINDOWS)
-					continue;
-				control_check_subs_all_windows_one(c, csub, ft,
-				    wl);
-			}
-			format_free(ft);
-		}
-	}
-}
-
 /* Add a subscription. */
 void
-control_add_sub(struct client *c, const char *name, enum control_sub_type type,
+control_add_sub(struct client *c, const char *name, enum monitor_type type,
     int id, const char *format)
 {
 	struct control_state	*cs = c->control_state;
-	struct control_sub	*csub, find;
-	struct timeval		 tv = { .tv_sec = 1 };
 
-	find.name = (char *)name;
-	if ((csub = RB_FIND(control_subs, &cs->subs, &find)) != NULL)
-		control_free_sub(cs, csub);
-
-	csub = xcalloc(1, sizeof *csub);
-	csub->name = xstrdup(name);
-	csub->type = type;
-	csub->id = id;
-	csub->format = xstrdup(format);
-	RB_INSERT(control_subs, &cs->subs, csub);
-
-	RB_INIT(&csub->panes);
-	RB_INIT(&csub->windows);
-
-	if (!evtimer_initialized(&cs->subs_timer))
-		evtimer_set(&cs->subs_timer, control_check_subs_timer, c);
-	if (!evtimer_pending(&cs->subs_timer, NULL))
-		evtimer_add(&cs->subs_timer, &tv);
+	monitor_add(cs->subs, name, type, id, format, MONITOR_NOTIFY_INITIAL);
 }
 
 /* Remove a subscription. */
@@ -1168,11 +1112,6 @@ void
 control_remove_sub(struct client *c, const char *name)
 {
 	struct control_state	*cs = c->control_state;
-	struct control_sub	*csub, find;
 
-	find.name = (char *)name;
-	if ((csub = RB_FIND(control_subs, &cs->subs, &find)) != NULL)
-		control_free_sub(cs, csub);
-	if (RB_EMPTY(&cs->subs))
-		evtimer_del(&cs->subs_timer);
+	monitor_remove(cs->subs, name);
 }

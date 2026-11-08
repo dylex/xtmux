@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: cmd-copy-mode.c,v 1.55 2026/10/02 12:12:51 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -30,8 +30,8 @@ const struct cmd_entry cmd_copy_mode_entry = {
 	.name = "copy-mode",
 	.alias = NULL,
 
-	.args = { "deHMqSs:t:u", 0, 0, NULL },
-	.usage = "[-deHMqSu] [-s src-pane] " CMD_TARGET_PANE_USAGE,
+	.args = { "dekHMqSs:t:u", 0, 0, NULL },
+	.usage = "[-dekHMqSu] [-s src-pane] " CMD_TARGET_PANE_USAGE,
 
 	.source =  { 's', CMD_FIND_PANE, 0 },
 	.target = { 't', CMD_FIND_PANE, 0 },
@@ -79,7 +79,8 @@ cmd_copy_mode_exec(struct cmd *self, struct cmdq_item *item)
 	}
 
 	if (cmd_get_entry(self) == &cmd_clock_mode_entry) {
-		window_pane_set_mode(wp, NULL, &window_clock_mode, NULL, NULL);
+		window_pane_set_mode(wp, NULL, &window_clock_mode, item, NULL,
+		    NULL);
 		return (CMD_RETURN_NORMAL);
 	}
 
@@ -90,7 +91,8 @@ cmd_copy_mode_exec(struct cmd *self, struct cmdq_item *item)
 	line_numbers = 1;
 	if (event != NULL && KEYC_IS_MOUSE(event->key))
 		line_numbers = 0;
-	if (!window_pane_set_mode(wp, swp, &window_copy_mode, NULL, args)) {
+	if (!window_pane_set_mode(wp, swp, &window_copy_mode, item, NULL,
+	    args)) {
 		window_copy_set_line_numbers(wp, line_numbers);
 		if (args_has(args, 'M'))
 			window_copy_start_drag(c, &event->m);
@@ -101,6 +103,8 @@ cmd_copy_mode_exec(struct cmd *self, struct cmdq_item *item)
 	if (args_has(args, 'd'))
 		window_copy_pagedown(wp, 0, args_has(args, 'e'));
 	if (args_has(args, 'S')) {
+		if (c == NULL)
+			return (CMD_RETURN_NORMAL);
 		tty_window_offset(&c->tty, &tty_ox, &tty_oy, &tty_sx, &tty_sy);
 		window_copy_scroll(wp, c->tty.mouse_slider_mpos, event->m.y,
 		    tty_oy, args_has(args, 'e'));

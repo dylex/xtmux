@@ -4,7 +4,7 @@ PATH=/bin:/usr/bin
 TERM=screen
 
 [ -z "$TEST_TMUX" ] && TEST_TMUX=$(readlink -f ../tmux)
-TMUX="$TEST_TMUX -Ltest -f/dev/null"
+TMUX="$TEST_TMUX -LtestA$$ -f/dev/null"
 $TMUX kill-server 2>/dev/null
 sleep 1
 $TMUX -f/dev/null new -x20 -y2 -d \; set -g escape-time 0 || exit 1
@@ -22,7 +22,19 @@ assert_key () {
 	      clear-history -t$W \; \
 	      send-keys -t$W "$key" 'EOL' || exit 1
 
-	actual_code=$($TMUX capturep -pt$W | \
+	# cat echoes the keys back asynchronously, so wait for the EOL marker
+	# to reach the pane instead of capturing straight away.
+	i=0
+	while [ $i -lt 50 ]; do
+		screen=$($TMUX capturep -pt$W)
+		case "$screen" in
+		*EOL*) break ;;
+		esac
+		i=$((i + 1))
+		sleep 0.1
+	done
+
+	actual_code=$(printf '%s\n' "$screen" | \
 			      head -1 | \
 			      sed -e 's/EOL.*$//')
 

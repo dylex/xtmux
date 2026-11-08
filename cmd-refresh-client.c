@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: cmd-refresh-client.c,v 1.55 2026/07/17 08:37:29 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -46,36 +46,17 @@ const struct cmd_entry cmd_refresh_client_entry = {
 static void
 cmd_refresh_client_update_subscription(struct client *tc, const char *value)
 {
-	char			*copy, *split, *name, *what;
-	enum control_sub_type	 subtype;
-	int			 subid = -1;
+	char			*name, *format;
+	enum monitor_type	 type;
+	int			 id;
 
-	copy = name = xstrdup(value);
-	if ((split = strchr(copy, ':')) == NULL) {
-		control_remove_sub(tc, copy);
-		goto out;
+	if (monitor_parse(value, &name, &type, &id, &format) != 0) {
+		control_remove_sub(tc, value);
+		return;
 	}
-	*split++ = '\0';
-
-	what = split;
-	if ((split = strchr(what, ':')) == NULL)
-		goto out;
-	*split++ = '\0';
-
-	if (strcmp(what, "%*") == 0)
-		subtype = CONTROL_SUB_ALL_PANES;
-	else if (sscanf(what, "%%%d", &subid) == 1 && subid >= 0)
-		subtype = CONTROL_SUB_PANE;
-	else if (strcmp(what, "@*") == 0)
-		subtype = CONTROL_SUB_ALL_WINDOWS;
-	else if (sscanf(what, "@%d", &subid) == 1 && subid >= 0)
-		subtype = CONTROL_SUB_WINDOW;
-	else
-		subtype = CONTROL_SUB_SESSION;
-	control_add_sub(tc, name, subtype, subid, split);
-
-out:
-	free(copy);
+	control_add_sub(tc, name, type, id, format);
+	free(name);
+	free(format);
 }
 
 static enum cmd_retval
@@ -85,7 +66,6 @@ cmd_refresh_client_control_client_size(struct cmd *self, struct cmdq_item *item)
 	struct client		*tc = cmdq_get_target_client(item);
 	const char		*size = args_get(args, 'C');
 	u_int			 w, x, y;
-	struct client_window	*cw;
 
 	if (sscanf(size, "@%u:%ux%u", &w, &x, &y) == 3) {
 		if (x < WINDOW_MINIMUM || x > WINDOW_MAXIMUM ||
@@ -95,22 +75,16 @@ cmd_refresh_client_control_client_size(struct cmd *self, struct cmdq_item *item)
 		}
 		log_debug("%s: client %s window @%u: size %ux%u", __func__,
 		    tc->name, w, x, y);
-		cw = server_client_add_client_window(tc, w);
-		cw->sx = x;
-		cw->sy = y;
+		control_set_window_size(tc, w, x, y);
 		tc->flags |= CLIENT_WINDOWSIZECHANGED;
 		recalculate_sizes_now(1);
 		return (CMD_RETURN_NORMAL);
 	}
 	if (sscanf(size, "@%u:", &w) == 1) {
-		cw = server_client_get_client_window(tc, w);
-		if (cw != NULL) {
-			log_debug("%s: client %s window @%u: no size", __func__,
-			    tc->name, w);
-			cw->sx = 0;
-			cw->sy = 0;
-			recalculate_sizes_now(1);
-		}
+		log_debug("%s: client %s window @%u: no size", __func__,
+		    tc->name, w);
+		control_clear_window_size(tc, w);
+		recalculate_sizes_now(1);
 		return (CMD_RETURN_NORMAL);
 	}
 
@@ -168,6 +142,7 @@ cmd_refresh_report(struct tty *tty, const char *value)
 {
 	struct window_pane	*wp;
 	u_int			 pane;
+	int			 fg, bg;
 	size_t			 size = 0;
 	char			*copy, *split;
 
@@ -184,8 +159,14 @@ cmd_refresh_report(struct tty *tty, const char *value)
 	if (wp == NULL)
 		goto out;
 
-	tty_keys_colours(tty, split, strlen(split), &size, &wp->control_fg,
-	    &wp->control_bg);
+	fg = wp->control_fg;
+	bg = wp->control_bg;
+	if (tty_keys_colours(tty, split, strlen(split), &size, &fg, &bg) == 0) {
+		if (bg != wp->control_bg)
+			wp->flags |= PANE_THEMECHANGED;
+		wp->control_fg = fg;
+	        wp->control_bg = bg;
+	}
 
 out:
 	free(copy);

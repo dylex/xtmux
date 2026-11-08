@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: tty-features.c,v 1.46 2026/09/24 08:16:13 nicm Exp $ */
 
 /*
  * Copyright (c) 2020 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -189,6 +189,18 @@ static const struct tty_feature tty_feature_focus = {
 	0
 };
 
+/* Terminal supports application escape key mode. */
+static const char *const tty_feature_appesc_capabilities[] = {
+	"Enesc=\\E[?7727h",
+	"Dsesc=\\E[?7727l",
+	NULL
+};
+static const struct tty_feature tty_feature_appesc = {
+	"appesc",
+	tty_feature_appesc_capabilities,
+	0
+};
+
 /* Terminal supports cursor styles. */
 static const char *const tty_feature_cstyle_capabilities[] = {
 	"Ss=\\E[%p1%d q",
@@ -198,7 +210,7 @@ static const char *const tty_feature_cstyle_capabilities[] = {
 static const struct tty_feature tty_feature_cstyle = {
 	"cstyle",
 	tty_feature_cstyle_capabilities,
-	0
+	TERM_NOREPLACE
 };
 
 /* Terminal supports cursor colours. */
@@ -368,9 +380,17 @@ static const struct tty_feature tty_feature_progressbar = {
 	0
 };
 
+/* Terminal supports UTF-8. */
+static const struct tty_feature tty_feature_utf8 = {
+	"utf8",
+	NULL,
+	0
+};
+
 /* Available terminal features. */
 static const struct tty_feature *const tty_features[] = {
 	&tty_feature_256,
+	&tty_feature_appesc,
 	&tty_feature_bpaste,
 	&tty_feature_ccolour,
 	&tty_feature_clipboard,
@@ -390,20 +410,33 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_strikethrough,
 	&tty_feature_sync,
 	&tty_feature_title,
-	&tty_feature_usstyle
+	&tty_feature_usstyle,
+	&tty_feature_utf8
 };
 
+/* Parse features for client. */
 void
-tty_add_features(int *feat, const char *s, const char *separators)
+tty_parse_client_features(struct client *c, const char *s, const char *sep)
+{
+	tty_parse_features(s, sep, &c->term_features, &c->term_nofeatures);
+}
+
+/* Parse features list. */
+void
+tty_parse_features(const char *s, const char *sep, int *enabled, int *disabled)
 {
 	const struct tty_feature	 *tf;
 	char				 *next, *loop, *copy;
 	u_int				  i;
+	int				  remove;
 
 	log_debug("adding terminal features %s", s);
 
 	loop = copy = xstrdup(s);
-	while ((next = strsep(&loop, separators)) != NULL) {
+	while ((next = strsep(&loop, sep)) != NULL) {
+		remove = (*next != '\0' && next[strlen(next) - 1] == '@');
+		if (remove)
+			next[strlen(next) - 1] = '\0';
 		for (i = 0; i < nitems(tty_features); i++) {
 			tf = tty_features[i];
 			if (strcasecmp(tf->name, next) == 0)
@@ -413,14 +446,24 @@ tty_add_features(int *feat, const char *s, const char *separators)
 			log_debug("unknown terminal feature: %s", next);
 			break;
 		}
-		if (~(*feat) & (1 << i)) {
+		if (remove) {
+			log_debug("removing terminal feature: %s", tf->name);
+			*enabled &= ~(1 << i);
+			if (disabled != NULL)
+				*disabled |= 1 << i;
+			continue;
+		}
+		if (disabled != NULL && *disabled & (1 << i))
+			continue;
+		if (~(*enabled) & (1 << i)) {
 			log_debug("adding terminal feature: %s", tf->name);
-			(*feat) |= (1 << i);
+			(*enabled) |= (1 << i);
 		}
 	}
 	free(copy);
 }
 
+/* Get features as string. */
 const char *
 tty_get_features(int feat)
 {
@@ -442,19 +485,67 @@ tty_get_features(int feat)
 	return (s);
 }
 
+/* Check if feature is present. */
 int
-tty_apply_features(struct tty_term *term, int feat)
+tty_feature_present(struct tty_term *term, const char *name)
 {
-	const struct tty_feature	*tf;
+	const struct tty_feature	*tf = NULL;
 	const char *const		*capability;
 	u_int				 i;
+	char				*copy;
 
+	if (strcmp(name, "utf8") == 0)
+		return ((term->tty->client->flags & CLIENT_UTF8) != 0);
+
+	for (i = 0; i < nitems(tty_features); i++) {
+		tf = tty_features[i];
+		if (strcmp(tf->name, name) == 0) {
+			if (term->applied_features & (1 << i))
+				return (1);
+			break;
+		}
+	}
+
+	/*
+	 * We don't just have the feature flag set. Check if the capabilities
+	 * supported by the client are actual set instead.
+	 */
+	if (tf == NULL || tf->capabilities == NULL ||
+	    strcmp(name, "ignorefkeys") == 0)
+		return (0);
+	if (tf->flags != 0 && (term->flags & tf->flags) != tf->flags)
+		return (0);
+	capability = tf->capabilities;
+	while (*capability != NULL) {
+		copy = xstrdup(*capability);
+		copy[strcspn(copy, "=")] = '\0';
+		if (!tty_term_has_name(term, copy)) {
+			free(copy);
+			return (0);
+		}
+		free(copy);
+		capability++;
+	}
+	return (1);
+}
+
+/* Apply featurs to terminal. */
+int
+tty_apply_features(struct tty_term *term)
+{
+	struct client			*c = term->tty->client;
+	const struct tty_feature	*tf;
+	const char *const		*capability;
+	int				 feat;
+	u_int				 i;
+
+	feat = (c->term_features & ~c->term_nofeatures);
 	if (feat == 0)
 		return (0);
 	log_debug("applying terminal features: %s", tty_get_features(feat));
 
 	for (i = 0; i < nitems(tty_features); i++) {
-		if ((term->features & (1 << i)) || (~feat & (1 << i)))
+		if ((term->applied_features & (1 << i)) || (~feat & (1 << i)))
 			continue;
 		tf = tty_features[i];
 
@@ -463,20 +554,23 @@ tty_apply_features(struct tty_term *term, int feat)
 			capability = tf->capabilities;
 			while (*capability != NULL) {
 				log_debug("adding capability: %s", *capability);
-				tty_term_apply(term, *capability, 1);
+				tty_term_apply(term, *capability, 1, tf->flags);
 				capability++;
 			}
 		}
-		term->flags |= tf->flags;
+		term->flags |= (tf->flags & ~TERM_NOREPLACE);
+		if (tf == &tty_feature_utf8)
+			c->flags |= CLIENT_UTF8;
 	}
-	if ((term->features | feat) == term->features)
+	if ((term->applied_features|feat) == term->applied_features)
 		return (0);
-	term->features |= feat;
+	term->applied_features |= feat;
 	return (1);
 }
 
+/* Add default features for a terminal identified by name and version. */
 void
-tty_default_features(int *feat, const char *name, u_int version)
+tty_default_features(struct client *c, const char *name, u_int version)
 {
 	static const struct {
 		const char	*name;
@@ -487,6 +581,7 @@ tty_default_features(int *feat, const char *name, u_int version)
 	"256,RGB,bpaste,clipboard,mouse,strikethrough,title"
 		{ .name = "mintty",
 		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "appesc,"
 			      "ccolour,"
 			      "cstyle,"
 			      "extkeys,"
@@ -541,7 +636,35 @@ tty_default_features(int *feat, const char *name, u_int version)
 			      "cstyle,"
 			      "extkeys,"
 			      "focus,"
+		  	      "hyperlinks,"
+			      "margins,"
 			      "usstyle"
+		},
+		{ .name = "ghostty",
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "ccolour,"
+			      "cstyle,"
+			      "extkeys,"
+			      "focus,"
+			      "margins,"
+			      "overline,"
+			      "hyperlinks,"
+			      "osc7,"
+			      "sync,"
+			      "usstyle,"
+			      "progressbar"
+		},
+		{ .name = "Rio",
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "ccolour,"
+			      "cstyle,"
+			      "focus,"
+			      "overline,"
+			      "hyperlinks,"
+			      "osc7,"
+			      "sync,"
+			      "usstyle,"
+			      "progressbar"
 		},
 		{ .name = "XTerm",
 		  /*
@@ -554,7 +677,7 @@ tty_default_features(int *feat, const char *name, u_int version)
 			      "cstyle,"
 			      "extkeys,"
 			      "focus"
-		}
+		},
 	};
 	u_int	i;
 
@@ -563,6 +686,6 @@ tty_default_features(int *feat, const char *name, u_int version)
 			continue;
 		if (version != 0 && version < table[i].version)
 			continue;
-		tty_add_features(feat, table[i].features, ",");
+		tty_parse_client_features(c, table[i].features, ",");
 	}
 }

@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: cmd-find.c,v 1.88 2026/09/07 12:05:12 nicm Exp $ */
 
 /*
  * Copyright (c) 2015 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -147,6 +147,18 @@ cmd_find_session_better(struct session *s, struct session *than, int flags)
 	return (timercmp(&s->activity_time, &than->activity_time, >));
 }
 
+/* Can this session be usefully targeted? */
+static int
+cmd_find_session_valid(struct session *s)
+{
+	if (!session_alive(s) ||
+	    s->curw == NULL ||
+	    s->curw->window == NULL ||
+	    s->curw->window->active == NULL)
+		return (0);
+	return (1);
+}
+
 /* Find best session from a list, or all if list is NULL. */
 static struct session *
 cmd_find_best_session(struct session **slist, u_int ssize, int flags)
@@ -159,11 +171,15 @@ cmd_find_best_session(struct session **slist, u_int ssize, int flags)
 	s = NULL;
 	if (slist != NULL) {
 		for (i = 0; i < ssize; i++) {
+			if (!cmd_find_session_valid(slist[i]))
+				continue;
 			if (cmd_find_session_better(slist[i], s, flags))
 				s = slist[i];
 		}
 	} else {
 		RB_FOREACH(s_loop, sessions, &sessions) {
+			if (!cmd_find_session_valid(s_loop))
+				continue;
 			if (cmd_find_session_better(s_loop, s, flags))
 				s = s_loop;
 		}
@@ -372,9 +388,11 @@ cmd_find_get_window_with_session(struct cmd_find_state *fs, const char *window)
 
 	/* Try as an offset. */
 	if (!exact && (window[0] == '+' || window[0] == '-')) {
-		if (window[1] != '\0')
-			n = strtonum(window + 1, 1, INT_MAX, NULL);
-		else
+		if (window[1] != '\0') {
+			n = strtonum(window + 1, 1, INT_MAX, &errstr);
+			if (errstr != NULL)
+				return (-1);
+		} else
 			n = 1;
 		s = fs->s;
 		if (fs->flags & CMD_FIND_WINDOW_INDEX) {
@@ -610,9 +628,11 @@ cmd_find_get_pane_with_window(struct cmd_find_state *fs, const char *pane)
 
 	/* Try as an offset. */
 	if (pane[0] == '+' || pane[0] == '-') {
-		if (pane[1] != '\0')
-			n = strtonum(pane + 1, 1, INT_MAX, NULL);
-		else
+		if (pane[1] != '\0') {
+			n = strtonum(pane + 1, 1, INT_MAX, &errstr);
+			if (errstr != NULL)
+				return (-1);
+		} else
 			n = 1;
 		wp = fs->w->active;
 		if (pane[0] == '+')
@@ -869,7 +889,7 @@ cmd_find_from_client(struct cmd_find_state *fs, struct client *c, int flags)
 	if (c->session != NULL) {
 		cmd_find_clear_state(fs, flags);
 
-		fs->wp = server_client_get_pane(c);
+		fs->wp = c->session->curw->window->active;
 		if (fs->wp == NULL) {
 			cmd_find_from_session(fs, c->session, flags);
 			fs->c = c;
@@ -999,7 +1019,7 @@ cmd_find_target(struct cmd_find_state *fs, struct cmdq_item *item,
 	    strcmp(target, "{active}") == 0 ||
 	    strcmp(target, "{current}") == 0) {
 		c = cmdq_get_client(item);
-		if (c == NULL) {
+		if (c == NULL || c->session == NULL) {
 			cmdq_error(item, "no current client");
 			goto error;
 		}

@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: window-buffer.c,v 1.52 2026/08/24 21:19:40 nicm Exp $ */
 
 /*
  * Copyright (c) 2017 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -28,7 +28,8 @@
 #include "tmux.h"
 
 static struct screen	*window_buffer_init(struct window_mode_entry *,
-			     struct cmd_find_state *, struct args *);
+			     struct cmdq_item *, struct cmd_find_state *,
+			     struct args *);
 static void		 window_buffer_free(struct window_mode_entry *);
 static void		 window_buffer_resize(struct window_mode_entry *, u_int,
 			     u_int);
@@ -87,6 +88,8 @@ struct window_buffer_modedata {
 	struct cmd_find_state		  fs;
 
 	struct mode_tree_data		 *data;
+	struct spawn_editor_state	 *editor;
+	struct window_buffer_editdata	 *edit;
 	char				 *command;
 	char				 *format;
 	char				 *key_format;
@@ -99,7 +102,11 @@ struct window_buffer_editdata {
 	u_int			 wp_id;
 	char			*name;
 	struct paste_buffer	*pb;
+	struct spawn_editor_state *editor;
 };
+
+static void	window_buffer_finish_edit(struct window_buffer_editdata *);
+static void	window_buffer_draw_waiting(struct window_buffer_modedata *);
 
 static enum sort_order window_buffer_order_seq[] = {
 	SORT_CREATION,
@@ -330,13 +337,20 @@ window_buffer_sort(struct sort_criteria *sort_crit)
 }
 
 static const char* window_buffer_help_lines[] = {
-	"\r\033[1m      Enter \033[0m\016x\017 \033[0mPaste selected %1\n",
-	"\r\033[1m          p \033[0m\016x\017 \033[0mPaste selected %1\n",
-	"\r\033[1m          P \033[0m\016x\017 \033[0mPaste tagged %1s\n",
-	"\r\033[1m          d \033[0m\016x\017 \033[0mDelete selected %1\n",
-	"\r\033[1m          D \033[0m\016x\017 \033[0mDelete tagged %1s\n",
-	"\r\033[1m          e \033[0m\016x\017 \033[0mOpen %1 in editor\n",
-	"\r\033[1m          f \033[0m\016x\017 \033[0mEnter a filter\n",
+	"#[fg=themelightgrey]"
+	"      Enter #[#{E:tree-mode-border-style},acs]x#[default] Paste selected %1",
+	"#[fg=themelightgrey]"
+	"          p #[#{E:tree-mode-border-style},acs]x#[default] Paste selected %1",
+	"#[fg=themelightgrey]"
+	"          P #[#{E:tree-mode-border-style},acs]x#[default] Paste tagged %1s",
+	"#[fg=themelightgrey]"
+	"          d #[#{E:tree-mode-border-style},acs]x#[default] Delete selected %1",
+	"#[fg=themelightgrey]"
+	"          D #[#{E:tree-mode-border-style},acs]x#[default] Delete tagged %1s",
+	"#[fg=themelightgrey]"
+	"          e #[#{E:tree-mode-border-style},acs]x#[default] Open %1 in editor",
+	"#[fg=themelightgrey]"
+	"          f #[#{E:tree-mode-border-style},acs]x#[default] Enter a filter",
 	NULL
 };
 
@@ -349,7 +363,8 @@ window_buffer_help(u_int *width, const char **item)
 }
 
 static struct screen *
-window_buffer_init(struct window_mode_entry *wme, struct cmd_find_state *fs,
+window_buffer_init(struct window_mode_entry *wme,
+    __unused struct cmdq_item *item, struct cmd_find_state *fs,
     struct args *args)
 {
 	struct window_pane		*wp = wme->wp;
@@ -394,6 +409,11 @@ window_buffer_free(struct window_mode_entry *wme)
 	if (data == NULL)
 		return;
 
+	if (data->editor != NULL) {
+		spawn_cancel_editor(data->editor);
+		window_buffer_finish_edit(data->edit);
+	}
+
 	mode_tree_free(data->data);
 
 	for (i = 0; i < data->item_size; i++)
@@ -422,6 +442,7 @@ window_buffer_update(struct window_mode_entry *wme)
 
 	mode_tree_build(data->data);
 	mode_tree_draw(data->data);
+	window_buffer_draw_waiting(data);
 	data->wp->flags |= PANE_REDRAW;
 }
 
@@ -467,6 +488,51 @@ window_buffer_finish_edit(struct window_buffer_editdata *ed)
 }
 
 static void
+window_buffer_draw_waiting(struct window_buffer_modedata *data)
+{
+	struct screen_write_ctx	 ctx;
+	struct screen		*s = data->wp->screen;
+	struct grid_cell	 gc;
+	char			 text[128];
+	u_int			 sx, sy, box_w, box_h, x, y, text_x;
+	size_t			 textlen;
+	pid_t			 pid;
+
+	if (data->editor == NULL)
+		return;
+	sx = screen_size_x(s);
+	sy = screen_size_y(s);
+	if (sx == 0 || sy == 0)
+		return;
+
+	pid = spawn_get_editor_pid(data->editor);
+	if (pid == -1)
+		xsnprintf(text, sizeof text, "WAITING FOR EDITOR");
+	else
+		xsnprintf(text, sizeof text, "WAITING FOR EDITOR (PID %ld)",
+		    (long)pid);
+
+	textlen = strlen(text);
+	box_w = textlen + 4;
+	box_h = 3;
+	if (sx < box_w || sy < box_h)
+		return;
+	x = (sx - box_w) / 2;
+	y = (sy - box_h) / 2;
+	text_x = x + (box_w - textlen) / 2;
+
+	memcpy(&gc, &grid_default_cell, sizeof gc);
+	screen_write_start(&ctx, s);
+	screen_write_cursormove(&ctx, x, y, 0);
+	screen_write_box(&ctx, box_w, box_h, BOX_LINES_DEFAULT, &gc, NULL);
+	screen_write_cursormove(&ctx, x + 1, y + 1, 0);
+	screen_write_clearcharacter(&ctx, box_w - 2, gc.bg);
+	screen_write_cursormove(&ctx, text_x, y + 1, 0);
+	screen_write_nputs(&ctx, box_w - 2, &gc, "%s", text);
+	screen_write_stop(&ctx);
+}
+
+static void
 window_buffer_edit_close_cb(char *buf, size_t len, void *arg)
 {
 	struct window_buffer_editdata	*ed = arg;
@@ -476,6 +542,18 @@ window_buffer_edit_close_cb(char *buf, size_t len, void *arg)
 	struct window_pane		*wp;
 	struct window_buffer_modedata	*data;
 	struct window_mode_entry	*wme;
+
+	wp = window_pane_find_by_id(ed->wp_id);
+	if (wp != NULL) {
+		wme = TAILQ_FIRST(&wp->modes);
+		if (wme != NULL && wme->mode == &window_buffer_mode) {
+			data = wme->data;
+			if (data->editor == ed->editor) {
+				data->editor = NULL;
+				data->edit = NULL;
+			}
+		}
+	}
 
 	if (buf == NULL || len == 0) {
 		window_buffer_finish_edit(ed);
@@ -489,9 +567,7 @@ window_buffer_edit_close_cb(char *buf, size_t len, void *arg)
 	}
 
 	oldbuf = paste_buffer_data(pb, &oldlen);
-	if (oldlen != '\0' &&
-	    oldbuf[oldlen - 1] != '\n' &&
-	    buf[len - 1] == '\n')
+	if (oldlen != 0 && oldbuf[oldlen - 1] != '\n' && buf[len - 1] == '\n')
 		len--;
 	if (len != 0)
 		paste_replace(pb, buf, len);
@@ -499,10 +575,11 @@ window_buffer_edit_close_cb(char *buf, size_t len, void *arg)
 	wp = window_pane_find_by_id(ed->wp_id);
 	if (wp != NULL) {
 		wme = TAILQ_FIRST(&wp->modes);
-		if (wme->mode == &window_buffer_mode) {
+		if (wme != NULL && wme->mode == &window_buffer_mode) {
 			data = wme->data;
 			mode_tree_build(data->data);
 			mode_tree_draw(data->data);
+			window_buffer_draw_waiting(data);
 		}
 		wp->flags |= PANE_REDRAW;
 	}
@@ -518,6 +595,8 @@ window_buffer_start_edit(struct window_buffer_modedata *data,
 	size_t				 len;
 	struct window_buffer_editdata	*ed;
 
+	if (data->editor != NULL)
+		return;
 	if ((pb = paste_get_name(item->name)) == NULL)
 		return;
 	buf = paste_buffer_data(pb, &len);
@@ -527,8 +606,13 @@ window_buffer_start_edit(struct window_buffer_modedata *data,
 	ed->name = xstrdup(paste_buffer_name(pb));
 	ed->pb = pb;
 
-	if (popup_editor(c, buf, len, window_buffer_edit_close_cb, ed) != 0)
+	ed->editor = spawn_editor(c, buf, len, window_buffer_edit_close_cb, ed);
+	if (ed->editor == NULL)
 		window_buffer_finish_edit(ed);
+	else {
+		data->editor = ed->editor;
+		data->edit = ed;
+	}
 }
 
 static void
@@ -544,6 +628,13 @@ window_buffer_key(struct window_mode_entry *wme, struct client *c,
 
 	if (paste_is_empty()) {
 		finished = 1;
+		goto out;
+	}
+	if (data->editor != NULL) {
+		if (key == 'q' || key == '\033' || key == '\003')
+			finished = 1;
+		else
+			finished = 0;
 		goto out;
 	}
 
@@ -579,6 +670,7 @@ out:
 		window_pane_reset_mode(wp);
 	else {
 		mode_tree_draw(mtd);
+		window_buffer_draw_waiting(data);
 		wp->flags |= PANE_REDRAW;
 	}
 }

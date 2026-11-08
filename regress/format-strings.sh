@@ -6,7 +6,9 @@ PATH=/bin:/usr/bin
 TERM=screen
 
 [ -z "$TEST_TMUX" ] && TEST_TMUX=$(readlink -f ../tmux)
-TMUX="$TEST_TMUX -Ltest -f/dev/null"
+TMUX="$TEST_TMUX -LtestA$$ -f/dev/null"
+trap '$TMUX kill-server 2>/dev/null' 0
+trap 'exit 1' 1 2 15
 
 # test_format $format $expected_result
 test_format()
@@ -67,6 +69,7 @@ $TMUX set @true 1 || exit 1
 $TMUX set @false 0 || exit 1
 $TMUX set @warm Summer || exit 1
 $TMUX set @cold Winter || exit 1
+$TMUX set @v 'foo:bar' || exit 1
 
 # Plain string without substitutions et al
 test_format "abc xyz" "abc xyz"
@@ -74,6 +77,8 @@ test_format "abc xyz" "abc xyz"
 # Test basic escapes for "#", "{", "#{" "}", "#}", ","
 test_format "##" "#"
 test_format "#," ","
+test_format "#{s/#:/_/:@v}" "foo_bar"
+test_format "#{s/o/#:/:@v}" "f:::bar"
 test_format "{" "{"
 test_format "##{" "#{"
 test_format "#}" "}"

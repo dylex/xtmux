@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: spawn.c,v 1.53 2026/09/21 12:43:36 nicm Exp $ */
 
 /*
  * Copyright (c) 2019 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -17,9 +17,11 @@
  */
 
 #include <sys/types.h>
+#include <sys/wait.h>
 
 #include <errno.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -54,11 +56,10 @@ spawn_log(const char *from, struct spawn_context *sc)
 	struct session		*s = sc->s;
 	struct winlink		*wl = sc->wl;
 	struct window_pane	*wp0 = sc->wp0;
-	const char		*name = cmdq_get_name(sc->item);
+	const char		*name = (sc->name == NULL ? "none" : sc->name);
 	char			 tmp[128];
 
-	log_debug("%s: %s, flags=%#x", from, name, sc->flags);
-
+	log_debug("%s: name=%s, flags=%#x", from, name, sc->flags);
 	if (wl != NULL && wp0 != NULL)
 		xsnprintf(tmp, sizeof tmp, "wl=%d wp0=%%%u", wl->idx, wp0->id);
 	else if (wl != NULL)
@@ -68,7 +69,45 @@ spawn_log(const char *from, struct spawn_context *sc)
 	else
 		xsnprintf(tmp, sizeof tmp, "wl=none wp0=none");
 	log_debug("%s: s=$%u %s idx=%d", from, s->id, tmp, sc->idx);
-	log_debug("%s: name=%s", from, sc->name == NULL ? "none" : sc->name);
+}
+
+static void
+spawn_fire_pane_created(struct spawn_context *sc, struct window_pane *wp)
+{
+	struct event_payload	*ep;
+	struct cmd_find_state	 fs;
+	char			*cmd = NULL;
+	const char		*cwd = wp->cwd;
+
+	ep = event_payload_create();
+	cmd_find_from_winlink_pane(&fs, sc->wl, wp, 0);
+	event_payload_set_target(ep, &fs);
+	event_payload_set_session(ep, "session", sc->s);
+	event_payload_set_window(ep, "window", wp->window);
+	event_payload_set_int(ep, "window_index", sc->wl->idx);
+	event_payload_set_pane(ep, "pane", wp);
+
+	if (wp->argc != 0)
+		cmd = cmd_stringify_argv(wp->argc, wp->argv);
+	if (cmd != NULL && *cmd != '\0')
+		event_payload_set_string(ep, "pane_command", "%s", cmd);
+	else if (wp->shell != NULL)
+		event_payload_set_string(ep, "pane_command", "%s", wp->shell);
+	free(cmd);
+
+	if (cwd != NULL)
+		event_payload_set_string(ep, "pane_current_path", "%s", cwd);
+
+	if (sc->flags & SPAWN_EMPTY)
+		event_payload_set_int(ep, "created_empty", 1);
+	else
+		event_payload_set_int(ep, "created_empty", 0);
+	if (sc->flags & SPAWN_RESPAWN)
+		event_payload_set_int(ep, "created_respawn", 1);
+	else
+		event_payload_set_int(ep, "created_respawn", 0);
+
+	events_fire("pane-created", ep);
 }
 
 struct winlink *
@@ -104,7 +143,7 @@ spawn_window(struct spawn_context *sc, char **cause)
 		sc->wp0 = TAILQ_FIRST(&w->panes);
 		TAILQ_REMOVE(&w->panes, sc->wp0, entry);
 
-		layout_free(w);
+		layout_free(w, 0);
 		window_destroy_panes(w);
 
 		TAILQ_INSERT_HEAD(&w->panes, sc->wp0, entry);
@@ -127,11 +166,11 @@ spawn_window(struct spawn_context *sc, char **cause)
 		}
 		if (wl != NULL) {
 			/*
-			 * Can't use session_detach as it will destroy session
-			 * if this makes it empty.
+			 * Can't use session_detach as it won't detach the only
+			 * window.
 			 */
 			wl->flags &= ~WINLINK_ALERTFLAGS;
-			notify_session_window("window-unlinked", s, wl->window);
+			events_fire_winlink("window-unlinked", wl);
 			winlink_stack_remove(&s->lastw, wl);
 			winlink_remove(&s->windows, wl);
 
@@ -177,12 +216,13 @@ spawn_window(struct spawn_context *sc, char **cause)
 	/* Set the name of the new window. */
 	if (~sc->flags & SPAWN_RESPAWN) {
 		free(w->name);
-		if (sc->name == NULL || *sc->name == '\0')
+		if (sc->name == NULL)
 			w->name = default_window_name(w);
 		else {
 			w->name = xstrdup(sc->name);
 			options_set_number(w->options, "automatic-rename", 0);
 		}
+		window_set_fill_cells(w);
 	}
 
 	/* Switch to the new window if required. */
@@ -190,8 +230,10 @@ spawn_window(struct spawn_context *sc, char **cause)
 		session_select(s, sc->wl->idx);
 
 	/* Fire notification if new window. */
-	if (~sc->flags & SPAWN_RESPAWN)
-		notify_session_window("window-linked", s, w);
+	if (~sc->flags & SPAWN_RESPAWN) {
+		events_fire_window("window-created", w);
+		events_fire_winlink("window-linked", sc->wl);
+	}
 
 	session_group_synchronize_from(s);
 	return (sc->wl);
@@ -201,9 +243,9 @@ struct window_pane *
 spawn_pane(struct spawn_context *sc, char **cause)
 {
 	struct cmdq_item	 *item = sc->item;
-	struct cmd_find_state	 *target = cmdq_get_target(item);
-	struct client		 *c = cmdq_get_client(item);
+	struct client		 *c, *loop;
 	struct session		 *s = sc->s;
+	struct session		 *ts;
 	struct window		 *w = sc->wl->window;
 	struct window_pane	 *new_wp;
 	struct environ		 *child;
@@ -220,23 +262,45 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	sigset_t		  set, oldset;
 	key_code		  key;
 
+	if (item != NULL) {
+		ts = cmdq_get_target(item)->s;
+		c = cmdq_get_client(item);
+	} else {
+		ts = s;
+		c = sc->tc;
+	}
+
 	spawn_log(__func__, sc);
+
+	if (sc->flags & SPAWN_MODAL) {
+		if (~sc->flags & SPAWN_FLOATING) {
+			xasprintf(cause, "modal pane must be floating");
+			return (NULL);
+		}
+		if (w->modal != NULL) {
+			xasprintf(cause, "window already has a modal pane");
+			return (NULL);
+		}
+	}
 
 	/*
 	 * Work out the current working directory. If respawning, use
 	 * the pane's stored one unless specified.
 	 */
 	if (sc->cwd != NULL) {
-		cwd = format_single(item, sc->cwd, c, target->s, NULL, NULL);
+		if (item != NULL)
+			cwd = format_single(item, sc->cwd, c, ts, NULL, NULL);
+		else
+			cwd = xstrdup(sc->cwd);
 		if (*cwd != '/') {
 			xasprintf(&new_cwd, "%s%s%s",
-			    server_client_get_cwd(c, target->s),
+			    server_client_get_cwd(c, ts),
 			    *cwd != '\0' ? "/" : "", cwd);
 			free(cwd);
 			cwd = new_cwd;
 		}
 	} else if (~sc->flags & SPAWN_RESPAWN)
-		cwd = xstrdup(server_client_get_cwd(c, target->s));
+		cwd = xstrdup(server_client_get_cwd(c, ts));
 	else
 		cwd = NULL;
 
@@ -253,14 +317,34 @@ spawn_pane(struct spawn_context *sc, char **cause)
 			free(cwd);
 			return (NULL);
 		}
-		if (sc->wp0->fd != -1) {
+		if (sc->wp0->event != NULL) {
 			bufferevent_free(sc->wp0->event);
+			sc->wp0->event = NULL;
+		}
+		if (sc->wp0->fd != -1) {
 			close(sc->wp0->fd);
+			sc->wp0->fd = -1;
 		}
 		window_pane_reset_mode_all(sc->wp0);
-		screen_reinit(&sc->wp0->base);
-		input_free(sc->wp0->ictx);
-		sc->wp0->ictx = NULL;
+		screen_reinit(&sc->wp0->base, 0);
+		if (sc->wp0->ictx != NULL) {
+			input_free(sc->wp0->ictx);
+			sc->wp0->ictx = NULL;
+		}
+
+		/*
+		 * The old buffer is gone and the new one starts empty, so
+		 * offsets into the old buffer no longer mean anything. Reset
+		 * them, and drop output control clients still had queued.
+		 */
+		sc->wp0->offset.used = 0;
+		sc->wp0->base_offset = 0;
+		sc->wp0->pipe_offset.used = 0;
+		TAILQ_FOREACH(loop, &clients, entry) {
+			if (loop->flags & CLIENT_CONTROL)
+				control_reset_pane(loop, sc->wp0);
+		}
+
 		new_wp = sc->wp0;
 		new_wp->flags &= ~(PANE_STATUSREADY|PANE_STATUSDRAWN);
 	} else {
@@ -276,6 +360,8 @@ spawn_pane(struct spawn_context *sc, char **cause)
 		}
 		if (sc->flags & SPAWN_FLOATING)
 			new_wp->layout_cell->flags |= LAYOUT_CELL_FLOATING;
+		if (sc->flags & SPAWN_FLOATOVERZOOM)
+			new_wp->flags |= PANE_FLOATOVERZOOM;
 
 		/*
 		 * If window currently zoomed, window_set_active_pane calls
@@ -376,6 +462,7 @@ spawn_pane(struct spawn_context *sc, char **cause)
 		new_wp->base.mode |= MODE_CRLF;
 		goto complete;
 	}
+	new_wp->flags &= ~PANE_EMPTY;
 
 	/* Store current working directory and change to new one. */
 	if (getcwd(path, sizeof path) != NULL) {
@@ -501,18 +588,199 @@ complete:
 
 	sigprocmask(SIG_SETMASK, &oldset, NULL);
 	window_pane_set_event(new_wp);
-
 	environ_free(child);
+	spawn_fire_pane_created(sc, new_wp);
 
 	if (sc->flags & SPAWN_RESPAWN)
 		return (new_wp);
-	if ((~sc->flags & SPAWN_DETACHED) || w->active == NULL) {
+	if (sc->flags & SPAWN_MODAL) {
+		w->modal_last = w->active;
+		w->modal = new_wp;
+		window_redraw_active_switch(w, new_wp);
+		if (sc->flags & SPAWN_NONOTIFY)
+			window_set_active_pane(w, new_wp, 0);
+		else
+			window_set_active_pane(w, new_wp, 1);
+	} else if (((~sc->flags & SPAWN_DETACHED) || w->active == NULL) &&
+	    w->modal == NULL) {
 		if (sc->flags & SPAWN_NONOTIFY)
 			window_set_active_pane(w, new_wp, 0);
 		else
 			window_set_active_pane(w, new_wp, 1);
 	}
 	if (~sc->flags & SPAWN_NONOTIFY)
-		notify_window("window-layout-changed", w);
+		events_fire_window("window-layout-changed", w);
 	return (new_wp);
+}
+
+struct spawn_editor_state {
+	char			*path;
+	pid_t			 pid;
+	spawn_finish_edit_cb	 cb;
+	void			*arg;
+};
+
+static void
+spawn_editor_free(struct spawn_editor_state *es)
+{
+	unlink(es->path);
+	free(es->path);
+	free(es);
+}
+
+void
+spawn_cancel_editor(struct spawn_editor_state *es)
+{
+	if (es == NULL)
+		return;
+	es->cb = NULL;
+	es->arg = NULL;
+}
+
+pid_t
+spawn_get_editor_pid(struct spawn_editor_state *es)
+{
+	if (es == NULL)
+		return (-1);
+	return (es->pid);
+}
+
+void
+spawn_editor_finish(struct window_pane *wp)
+{
+	struct spawn_editor_state	*es = wp->editor;
+	FILE				*f;
+	char				*buf = NULL;
+	off_t				 len = 0;
+	int				 status = 128 + SIGHUP;
+
+	if (es == NULL)
+		return;
+	wp->editor = NULL;
+
+	if (wp->flags & PANE_STATUSREADY) {
+		if (WIFEXITED(wp->status))
+			status = WEXITSTATUS(wp->status);
+		else if (WIFSIGNALED(wp->status))
+			status = WTERMSIG(wp->status) + 128;
+	}
+
+	if (es->cb == NULL) {
+		spawn_editor_free(es);
+		return;
+	}
+	if (status != 0) {
+		es->cb(NULL, 0, es->arg);
+		spawn_editor_free(es);
+		return;
+	}
+
+	f = fopen(es->path, "r");
+	if (f != NULL) {
+		if (fseeko(f, 0, SEEK_END) == 0) {
+			len = ftello(f);
+			if (len > 0 && (uintmax_t)len <= (uintmax_t)SIZE_MAX) {
+				if (fseeko(f, 0, SEEK_SET) == 0) {
+					buf = malloc(len);
+					if (buf != NULL &&
+					    fread(buf, len, 1, f) != 1) {
+						free(buf);
+						buf = NULL;
+						len = 0;
+					}
+				}
+			} else
+				len = 0;
+		}
+		fclose(f);
+	}
+
+	es->cb(buf, len, es->arg);
+	spawn_editor_free(es);
+}
+
+struct spawn_editor_state *
+spawn_editor(struct client *c, const char *buf, size_t len,
+    spawn_finish_edit_cb cb, void *arg)
+{
+	struct spawn_editor_state	*es;
+	struct spawn_context		 sc = { 0 };
+	struct session			*s = c->session;
+	struct winlink			*wl = s->curw;
+	struct window			*w = wl->window;
+	struct window_pane		*wp;
+	struct layout_cell		*lc;
+	struct layout_geometry		 lg;
+	struct environ			*env;
+	FILE				*f;
+	char				*cmd, *cause = NULL;
+	char				 path[] = _PATH_TMP "tmux.XXXXXXXX";
+	const char			*editor;
+	int				 fd;
+
+	if (w->modal != NULL)
+		return (NULL);
+
+	editor = options_get_string(global_options, "editor");
+	fd = mkstemp(path);
+	if (fd == -1)
+		return (NULL);
+	f = fdopen(fd, "w");
+	if (f == NULL) {
+		close(fd);
+		unlink(path);
+		return (NULL);
+	}
+	if (fwrite(buf, len, 1, f) != 1) {
+		fclose(f);
+		unlink(path);
+		return (NULL);
+	}
+	fclose(f);
+
+	es = xcalloc(1, sizeof *es);
+	es->path = xstrdup(path);
+	es->cb = cb;
+	es->arg = arg;
+
+	lg.sx = w->sx * 9 / 10;
+	lg.sy = w->sy * 9 / 10;
+	lg.xoff = w->sx / 2 - lg.sx / 2;
+	lg.yoff = w->sy / 2 - lg.sy / 2;
+	window_push_zoom(w, 0, 1);
+	lc = layout_floating_pane(w, NULL, &lg);
+	if (lc == NULL) {
+		window_pop_zoom(w);
+		spawn_editor_free(es);
+		return (NULL);
+	}
+
+	xasprintf(&cmd, "%s %s", editor, path);
+	env = environ_create();
+	sc.s = s;
+	sc.wl = wl;
+	sc.tc = c;
+	sc.wp0 = w->active;
+	sc.lc = lc;
+	sc.argc = 1;
+	sc.argv = &cmd;
+	sc.environ = env;
+	sc.idx = -1;
+	sc.cwd = _PATH_TMP;
+	sc.flags = SPAWN_FLOATING|SPAWN_MODAL|SPAWN_FLOATOVERZOOM;
+
+	wp = spawn_pane(&sc, &cause);
+	free(cmd);
+	environ_free(env);
+	if (wp == NULL) {
+		free(cause);
+		window_pop_zoom(w);
+		spawn_editor_free(es);
+		return (NULL);
+	}
+	window_pop_zoom(w);
+	options_set_number(wp->options, "remain-on-exit", 0);
+	es->pid = wp->pid;
+	wp->editor = es;
+	return (es);
 }

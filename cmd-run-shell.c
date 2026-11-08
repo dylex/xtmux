@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: cmd-run-shell.c,v 1.95 2026/09/20 07:59:55 nicm Exp $ */
 
 /*
  * Copyright (c) 2009 Tiago Cunha <me@tiagocunha.org>
@@ -90,8 +90,8 @@ cmd_run_shell_print(struct job *job, const char *msg)
 			cmdq_print(cdata->item, "%s", msg);
 			return;
 		}
-		if (cdata->item != NULL && cdata->client != NULL)
-			wp = server_client_get_pane(cdata->client);
+		if (cdata->client != NULL && cdata->client->session != NULL)
+			wp = cdata->client->session->curw->window->active;
 		if (wp == NULL && cmd_find_from_nothing(&fs, 0) == 0)
 			wp = fs.wp;
 		if (wp == NULL)
@@ -100,7 +100,8 @@ cmd_run_shell_print(struct job *job, const char *msg)
 
 	wme = TAILQ_FIRST(&wp->modes);
 	if (wme == NULL || wme->mode != &window_view_mode)
-		window_pane_set_mode(wp, NULL, &window_view_mode, NULL, NULL);
+		window_pane_set_mode(wp, NULL, &window_view_mode, NULL, NULL,
+		    NULL);
 	window_copy_add(wp, 1, "%s", msg);
 }
 
@@ -163,7 +164,7 @@ cmd_run_shell_exec(struct cmd *self, struct cmdq_item *item)
 	if (cdata->client != NULL)
 		cdata->client->references++;
 	if (args_has(args, 'c'))
-		cdata->cwd = xstrdup(args_get(args, 'c'));
+		cdata->cwd = format_single_from_target(item, args_get(args, 'c'));
 	else
 		cdata->cwd = xstrdup(server_client_get_cwd(c, s));
 
@@ -232,9 +233,11 @@ cmd_run_shell_timer(__unused int fd, __unused short events, void* arg)
 	} else if (item == NULL) {
 		new_item = cmdq_get_command(cmdlist, NULL);
 		cmdq_append(c, new_item);
+		cmd_list_free(cmdlist);
 	} else {
 		new_item = cmdq_get_command(cmdlist, cmdq_get_state(item));
 		cmdq_insert_after(item, new_item);
+		cmd_list_free(cmdlist);
 	}
 
 	if (cdata->item != NULL)

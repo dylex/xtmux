@@ -1,0 +1,12 @@
+TILE01 abcdefghij  │TILE01 abcdefghij
+TILE02 abcdefghij  │TILE02 abcdefghij
+TILE03 abcdefghij  │TILE03 abcdefghij
+TILE04 abcd╔══════════════╗abcdefghij
+           ║FLT           ║
+───────────║              ║─────────────
+TILE00 abcd║              ║abcdefghij
+TILE01 abcd║              ║abcdefghij
+TILE02 abcd╚══════════════╝abcdefghij
+TILE03 abcdefghij  │TILE03 abcdefghij
+TILE04 abcdefghij  │TILE04 abcdefghij
+                   │

@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: style.c,v 1.47 2026/06/29 17:08:52 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -32,6 +32,7 @@
 static struct style style_default = {
 	{ { { ' ' }, 0, 1, 1 }, 0, 0, 8, 8, 0, 0 },
 	0,
+	0,
 
 	8,
 	STYLE_ALIGN_DEFAULT,
@@ -41,8 +42,16 @@ static struct style style_default = {
 
 	STYLE_WIDTH_DEFAULT, 0, STYLE_PAD_DEFAULT,
 
-	STYLE_DEFAULT_BASE
+	STYLE_DEFAULT_BASE,
+
+	0
 };
+
+/*
+ * Global hyperlink set holding the URIs for #[link=...] styles, so a style
+ * only needs to store a small ID rather than the URI itself.
+ */
+static struct hyperlinks	*style_hyperlinks;
 
 /* Set range string. */
 static void
@@ -90,6 +99,7 @@ style_parse(struct style *sy, const struct grid_cell *base, const char *in)
 			sy->gc.us = base->us;
 			sy->gc.attr = base->attr;
 			sy->gc.flags = base->flags;
+			sy->link = 0;
 		} else if (strcasecmp(tmp, "ignore") == 0)
 			sy->ignore = 1;
 		else if (strcasecmp(tmp, "noignore") == 0)
@@ -201,6 +211,13 @@ style_parse(struct style *sy, const struct grid_cell *base, const char *in)
 			if ((value = colour_fromstring(tmp + 5)) == -1)
 				goto error;
 			sy->fill = value;
+		} else if (end > 4 && strncasecmp(tmp, "dim=", 4) == 0) {
+			if (tmp[end - 1] == '%')
+				tmp[end - 1] = '\0';
+			n = strtonum(tmp + 4, 0, 100, &errstr);
+			if (errstr != NULL)
+				goto error;
+			sy->dim = n;
 		} else if (end > 3 && strncasecmp(tmp + 1, "g=", 2) == 0) {
 			if ((value = colour_fromstring(tmp + 3)) == -1)
 				goto error;
@@ -226,7 +243,9 @@ style_parse(struct style *sy, const struct grid_cell *base, const char *in)
 		} else if (strcasecmp(tmp, "none") == 0)
 			sy->gc.attr = 0;
 		else if (end > 2 && strncasecmp(tmp, "no", 2) == 0) {
-			if (strcmp(tmp + 2, "attr") == 0)
+			if (strcmp(tmp + 2, "link") == 0)
+				sy->link = 0;
+			else if (strcmp(tmp + 2, "attr") == 0)
 				sy->gc.attr |= GRID_ATTR_NOATTR;
 			else {
 				value = attributes_fromstring(tmp + 2);
@@ -254,6 +273,15 @@ style_parse(struct style *sy, const struct grid_cell *base, const char *in)
 			if (errstr != NULL)
 				goto error;
 			sy->pad = (int)n;
+		} else if (strncasecmp(tmp, "link=", 5) == 0) {
+			if (tmp[5] == '\0')
+				sy->link = 0;
+			else {
+				if (style_hyperlinks == NULL)
+					style_hyperlinks = hyperlinks_init();
+				sy->link = hyperlinks_put(style_hyperlinks,
+				    tmp + 5, tmp + 5);
+			}
 		} else {
 			if ((value = attributes_fromstring(tmp)) == -1)
 				goto error;
@@ -276,8 +304,8 @@ style_tostring(struct style *sy)
 {
 	struct grid_cell	*gc = &sy->gc;
 	int			 off = 0;
-	const char		*comma = "", *tmp = "";
-	static char		 s[256];
+	const char		*comma = "", *tmp = "", *uri;
+	static char		 s[2048];
 	char			 b[21];
 
 	*s = '\0';
@@ -346,6 +374,11 @@ style_tostring(struct style *sy)
 		    colour_tostring(sy->fill));
 		comma = ",";
 	}
+	if (sy->dim != 0) {
+		off += xsnprintf(s + off, sizeof s - off, "%sdim=%d%%", comma,
+		    sy->dim);
+		comma = ",";
+	}
 	if (gc->fg != 8) {
 		off += xsnprintf(s + off, sizeof s - off, "%sfg=%s", comma,
 		    colour_tostring(gc->fg));
@@ -376,8 +409,13 @@ style_tostring(struct style *sy)
 		comma = ",";
 	}
 	if (sy->pad >= 0) {
-		xsnprintf(s + off, sizeof s - off, "%spad=%u", comma,
+		off += xsnprintf(s + off, sizeof s - off, "%spad=%u", comma,
 		    sy->pad);
+		comma = ",";
+	}
+	uri = style_link(sy);
+	if (uri != NULL) {
+		xsnprintf(s + off, sizeof s - off, "%slink=%s", comma, uri);
 		comma = ",";
 	}
 	if (*s == '\0')
@@ -385,8 +423,21 @@ style_tostring(struct style *sy)
 	return (s);
 }
 
+/* Get the hyperlink URI for a style, or NULL if it has none. */
+const char *
+style_link(struct style *sy)
+{
+	const char	*uri;
+
+	if (sy->link == 0 || style_hyperlinks == NULL)
+		return (NULL);
+	if (!hyperlinks_get(style_hyperlinks, sy->link, &uri, NULL, NULL))
+		return (NULL);
+	return (uri);
+}
+
 /* Apply a style on top of the given style. */
-void
+struct style *
 style_add(struct grid_cell *gc, struct options *oo, const char *name,
     struct format_tree *ft)
 {
@@ -409,6 +460,7 @@ style_add(struct grid_cell *gc, struct options *oo, const char *name,
 
 	if (ft0 != NULL)
 		format_free(ft0);
+	return (sy);
 }
 
 /* Apply a style on top of the default style. */
@@ -418,6 +470,29 @@ style_apply(struct grid_cell *gc, struct options *oo, const char *name,
 {
 	memcpy(gc, &grid_default_cell, sizeof *gc);
 	style_add(gc, oo, name, ft);
+}
+
+/* Parse a single colour into a style */
+int
+style_parse_colour(struct style *sy, const struct grid_cell *base,
+    const char *s)
+{
+	int	c;
+
+	style_set(sy, base);
+
+	if (*s == '\0') {
+		sy->gc.fg = -1;
+		return (0);
+	}
+
+	if ((c = colour_fromstring(s)) == -1)
+		return (-1);
+	if (c == 8)
+		sy->gc.fg = base->fg;
+	else
+		sy->gc.fg = c;
+	return (0);
 }
 
 /* Initialize style from cell. */
@@ -440,22 +515,33 @@ void
 style_set_scrollbar_style_from_option(struct style *sb_style,
     struct options *oo)
 {
-	struct style	*sy;
+	const struct options_table_entry	*oe;
+	struct options_entry			*o;
+	const char				*s;
+	char					*style, *expanded;
 
-	sy = options_string_to_style(oo, "pane-scrollbars-style", NULL);
-	if (sy == NULL) {
-		style_set(sb_style, &grid_default_cell);
-		sb_style->width = PANE_SCROLLBARS_DEFAULT_WIDTH;
-		sb_style->pad = PANE_SCROLLBARS_DEFAULT_PADDING;
-		utf8_set(&sb_style->gc.data, PANE_SCROLLBARS_CHARACTER);
-	} else {
-		style_copy(sb_style, sy);
-		if (sb_style->width < 1)
-			sb_style->width = PANE_SCROLLBARS_DEFAULT_WIDTH;
-		if (sb_style->pad < 0)
-			sb_style->pad = PANE_SCROLLBARS_DEFAULT_PADDING;
-		utf8_set(&sb_style->gc.data, PANE_SCROLLBARS_CHARACTER);
+	style_set(sb_style, &grid_default_cell);
+	o = options_get(oo, "pane-scrollbars-style");
+	if (o == NULL)
+		fatalx("missing pane-scrollbars-style");
+	oe = options_table_entry(o);
+	style = format_single(NULL, oe->default_str, NULL, NULL, NULL, NULL);
+	if (style_parse(sb_style, &grid_default_cell, style) != 0)
+		fatalx("bad pane-scrollbars-style default");
+
+	s = options_get_string(oo, "pane-scrollbars-style");
+	if (s != NULL) {
+		expanded = format_single(NULL, s, NULL, NULL, NULL, NULL);
+		if (style_parse(sb_style, &grid_default_cell, expanded) != 0)
+			style_parse(sb_style, &grid_default_cell, style);
+		free(expanded);
 	}
+	free(style);
+	if (sb_style->width < 1)
+		sb_style->width = PANE_SCROLLBARS_DEFAULT_WIDTH;
+	if (sb_style->pad < 0)
+		sb_style->pad = PANE_SCROLLBARS_DEFAULT_PADDING;
+	utf8_set(&sb_style->gc.data, PANE_SCROLLBARS_CHARACTER);
 }
 
 /* Initialize style ranges. */

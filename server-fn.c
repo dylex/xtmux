@@ -1,4 +1,4 @@
-/* $OpenBSD$ */
+/* $OpenBSD: server-fn.c,v 1.154 2026/09/21 12:43:36 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -29,6 +29,31 @@
 #include "tmux.h"
 
 static void	server_destroy_session_group(struct session *);
+static void	server_fire_pane_exit(const char *, struct window_pane *);
+
+static void
+server_fire_pane_exit(const char *name, struct window_pane *wp)
+{
+	struct event_payload	*ep;
+	struct cmd_find_state	 fs;
+	int			 status = wp->status;
+	const char		*signame;
+
+	if (WIFSIGNALED(status))
+		signame = sig2name(WTERMSIG(status));
+
+	ep = event_payload_create();
+	cmd_find_from_pane(&fs, wp, 0);
+	event_payload_set_target(ep, &fs);
+	event_payload_set_pane(ep, "pane", wp);
+	event_payload_set_window(ep, "window", wp->window);
+	if (WIFEXITED(status))
+		event_payload_set_int(ep, "exit_status", WEXITSTATUS(status));
+	else if (WIFSIGNALED(status))
+		event_payload_set_string(ep, "exit_signal", "%s", signame);
+	event_payload_set_int(ep, "exit_success", status == 0);
+	events_fire(name, ep);
+}
 
 void
 server_redraw_client(struct client *c)
@@ -100,6 +125,19 @@ server_redraw_window(struct window *w)
 		    c->session->curw != NULL &&
 		    c->session->curw->window == w)
 			server_redraw_client(c);
+	}
+}
+
+void
+server_redraw_window_menu(struct window *w)
+{
+	struct client	*c;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (c->session != NULL &&
+		    c->session->curw != NULL &&
+		    c->session->curw->window == w)
+			c->flags |= CLIENT_REDRAWMENU;
 	}
 }
 
@@ -190,10 +228,11 @@ server_kill_pane(struct window_pane *wp)
 		server_kill_window(w, 1);
 		recalculate_sizes();
 	} else {
-		server_unzoom_window(w);
+		window_push_zoom(w, 0, wp->flags & PANE_FLOATOVERZOOM);
 		server_client_remove_pane(wp);
 		layout_close_pane(wp);
 		window_remove_pane(w, wp);
+		window_pop_zoom(w);
 		server_redraw_window(w);
 	}
 }
@@ -204,6 +243,7 @@ server_kill_window(struct window *w, int renumber)
 	struct session	*s, *s1;
 	struct winlink	*wl;
 
+	window_add_ref(w, __func__);
 	RB_FOREACH_SAFE(s, sessions, &sessions, s1) {
 		if (!session_has(s, w))
 			continue;
@@ -221,6 +261,7 @@ server_kill_window(struct window *w, int renumber)
 			server_renumber_session(s);
 	}
 	recalculate_sizes();
+	window_remove_ref(w, __func__);
 }
 
 void
@@ -271,11 +312,10 @@ server_link_window(struct session *src, struct winlink *srcwl,
 		}
 		if (killflag) {
 			/*
-			 * Can't use session_detach as it will destroy session
-			 * if this makes it empty.
+			 * Can't use session_detach as it won't detach the only
+			 * window.
 			 */
-			notify_session_window("window-unlinked", dst,
-			    dstwl->window);
+			events_fire_winlink("window-unlinked", dstwl);
 			dstwl->flags &= ~WINLINK_ALERTFLAGS;
 			winlink_stack_remove(&dst->lastw, dstwl);
 			winlink_remove(&dst->windows, dstwl);
@@ -334,14 +374,21 @@ server_destroy_pane(struct window_pane *wp, int notify)
 		close(wp->fd);
 		wp->fd = -1;
 	}
+	if (wp->pipe_fd != -1) {
+		bufferevent_free(wp->pipe_event);
+		wp->pipe_event = NULL;
+		close(wp->pipe_fd);
+		wp->pipe_fd = -1;
+	}
 
-	remain_on_exit = options_get_number(wp->options, "remain-on-exit");
-	if (remain_on_exit != 0 && (~wp->flags & PANE_STATUSREADY))
+	if (~wp->flags & PANE_STATUSREADY)
 		return;
+	remain_on_exit = options_get_number(wp->options, "remain-on-exit");
 	switch (remain_on_exit) {
 	case 0:
 		break;
 	case 2:
+	case 4:
 		if (WIFEXITED(wp->status) && WEXITSTATUS(wp->status) == 0)
 			break;
 		/* FALLTHROUGH */
@@ -353,7 +400,7 @@ server_destroy_pane(struct window_pane *wp, int notify)
 
 		gettimeofday(&wp->dead_time, NULL);
 		if (notify)
-			notify_pane("pane-died", wp);
+			server_fire_pane_exit("pane-died", wp);
 
 		s = options_get_string(wp->options, "remain-on-exit-format");
 		if (*s != '\0') {
@@ -376,17 +423,19 @@ server_destroy_pane(struct window_pane *wp, int notify)
 	}
 
 	if (notify)
-		notify_pane("pane-exited", wp);
+		server_fire_pane_exit("pane-exited", wp);
 
-	server_unzoom_window(w);
+	window_push_zoom(w, 0, wp->flags & PANE_FLOATOVERZOOM);
 	server_client_remove_pane(wp);
 	layout_close_pane(wp);
 	window_remove_pane(w, wp);
 
 	if (TAILQ_EMPTY(&w->panes))
 		server_kill_window(w, 1);
-	else
+	else {
+		window_pop_zoom(w);
 		server_redraw_window(w);
+	}
 }
 
 static void
@@ -440,6 +489,7 @@ server_destroy_session(struct session *s)
 {
 	struct client	*c;
 	struct session	*s_new = NULL, *cs_new = NULL, *use_s;
+	struct sort_criteria	 sort_crit = { .order = SORT_NAME };
 	int		 detach_on_destroy;
 
 	detach_on_destroy = options_get_number(s->options, "detach-on-destroy");
@@ -448,9 +498,11 @@ server_destroy_session(struct session *s)
 	else if (detach_on_destroy == 2)
 		s_new = server_find_session(s, server_newer_detached_session);
 	else if (detach_on_destroy == 3)
-		s_new = session_previous_session(s, NULL);
+		s_new = session_previous_session(s, &sort_crit);
 	else if (detach_on_destroy == 4)
-		s_new = session_next_session(s, NULL);
+		s_new = session_next_session(s, &sort_crit);
+	if (s_new == s)
+		s_new = NULL;
 
 	/*
 	 * If no suitable new session was found above, then look for any
@@ -505,6 +557,7 @@ server_check_unattached(void)
 				continue;
 			break;
 		}
+		server_destroy_session(s);
 		session_destroy(s, 1, __func__);
 	}
 }
